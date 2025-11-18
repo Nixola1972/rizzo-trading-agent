@@ -1,0 +1,85 @@
+version: '3.8'
+
+# ===========================================
+# DOCKER COMPOSE - Rizzo Trading Agent
+# Ambiente completamente isolato
+# ===========================================
+
+services:
+  # PostgreSQL Database (dedicato per il trading bot)
+  postgres:
+    image: postgres:15-alpine
+    container_name: rizzo_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tradingbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_password}
+      POSTGRES_DB: ${POSTGRES_DB:-rizzo_trading}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - rizzo_network
+    ports:
+      - "127.0.0.1:5433:5432"  # Esposto solo su localhost, porta 5433 per non conflittare
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tradingbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Trading Bot
+  trading-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rizzo_trading_bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # HyperLiquid
+      PRIVATE_KEY: ${PRIVATE_KEY}
+      WALLET_ADDRESS: ${WALLET_ADDRESS}
+
+      # OpenAI
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      # CoinMarketCap
+      CMC_PRO_API_KEY: ${CMC_PRO_API_KEY}
+
+      # Database (connessione al postgres di questo stack)
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tradingbot}:${POSTGRES_PASSWORD:-change_this_password}@postgres:5432/${POSTGRES_DB:-rizzo_trading}
+
+      # Configurazione bot
+      TESTNET: ${TESTNET:-true}
+      VERBOSE: ${VERBOSE:-true}
+
+    volumes:
+      # Monta il codice sorgente (per sviluppo/debug)
+      # - .:/app
+
+      # Monta solo i log (per produzione)
+      - ./logs:/app/logs
+
+    networks:
+      - rizzo_network
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Rete Docker isolata per il trading bot
+networks:
+  rizzo_network:
+    driver: bridge
+    name: rizzo_trading_network
+
+# Volume persistente per PostgreSQL
+volumes:
+  postgres_data:
+    name: rizzo_postgres_data

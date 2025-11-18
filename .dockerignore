@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist
+build
+venv
+env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Env files (verranno passati come variabili d'ambiente)
+.env
+.env.*
+
+# Log
+*.log
+logs/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+*.md
+VPS_SETUP_GUIDE.md
+
+# Scripts
+setup.sh
+deploy.sh
+vps_analyze.sh
+install_service.sh
+test_*.py
+
+# Images
+*.jpg
+*.png
+*.gif
+img.jpg
+
+# Backup
+*.sql
+*.backup
