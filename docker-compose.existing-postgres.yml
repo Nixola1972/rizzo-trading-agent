@@ -1,0 +1,57 @@
+version: '3.8'
+
+# ===========================================
+# DOCKER COMPOSE - Rizzo Trading Agent
+# USA POSTGRESQL ESISTENTE (no nuovo container)
+# ===========================================
+
+services:
+  # Trading Bot (solo il bot, postgres già esiste)
+  trading-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rizzo_trading_bot
+    restart: unless-stopped
+
+    environment:
+      # HyperLiquid
+      PRIVATE_KEY: ${PRIVATE_KEY}
+      WALLET_ADDRESS: ${WALLET_ADDRESS}
+
+      # OpenAI
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      # CoinMarketCap
+      CMC_PRO_API_KEY: ${CMC_PRO_API_KEY}
+
+      # Database (connessione al postgres ESISTENTE)
+      # Modifica questo nel file .env con i dati del tuo postgres
+      DATABASE_URL: ${DATABASE_URL}
+
+      # Configurazione bot
+      TESTNET: ${TESTNET:-true}
+      VERBOSE: ${VERBOSE:-true}
+
+    volumes:
+      # Log persistenti
+      - ./logs:/app/logs
+
+    # Network esterna: il bot si collega alla network del postgres esistente
+    # IMPORTANTE: Modifica "existing_network" con il nome della network del tuo postgres
+    networks:
+      - existing_network
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Network esterna (quella del postgres esistente)
+# IMPORTANTE: Sostituisci "existing_network" con il nome reale della network
+networks:
+  existing_network:
+    external: true
+    name: ${POSTGRES_NETWORK:-bridge}
