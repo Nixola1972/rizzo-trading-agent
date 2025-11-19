@@ -15,18 +15,24 @@ services:
     restart: unless-stopped
 
     environment:
-      # HyperLiquid
-      PRIVATE_KEY: ${PRIVATE_KEY}
-      WALLET_ADDRESS: ${WALLET_ADDRESS}
+      # AI Provider
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
 
       # OpenAI
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      # OpenRouter
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-3.5-sonnet}
+
+      # HyperLiquid
+      PRIVATE_KEY: ${PRIVATE_KEY}
+      WALLET_ADDRESS: ${WALLET_ADDRESS}
 
       # CoinMarketCap
       CMC_PRO_API_KEY: ${CMC_PRO_API_KEY}
 
       # Database (connessione al postgres ESISTENTE)
-      # Modifica questo nel file .env con i dati del tuo postgres
       DATABASE_URL: ${DATABASE_URL}
 
       # Configurazione bot
