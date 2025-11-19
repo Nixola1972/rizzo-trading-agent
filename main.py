@@ -11,6 +11,11 @@ import db_utils
 from dotenv import load_dotenv
 load_dotenv()
 
+# Inizializza il database (crea tabelle se non esistono)
+print("🗄️  Inizializzazione database...")
+db_utils.init_db()
+print("✅ Database inizializzato")
+
 # Collegamento ad Hyperliquid
 TESTNET = True   # True = testnet, False = mainnet (occhio!)
 VERBOSE = True    # stampa informazioni extra
@@ -19,6 +24,16 @@ WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 
 if not PRIVATE_KEY or not WALLET_ADDRESS:
     raise RuntimeError("PRIVATE_KEY o WALLET_ADDRESS mancanti nel .env")
+
+# Variabili inizializzate prima del try per evitare NameError nel blocco except
+system_prompt = None
+tickers = []
+indicators_json = {}
+news_txt = ""
+sentiment_json = {}
+forecasts_json = {}
+account_status = {}
+
 try:
     bot = HyperLiquidTrader(
         secret_key=PRIVATE_KEY,
@@ -60,9 +75,20 @@ try:
     print(f"[db_utils] Operazione inserita con id={op_id}")
 
 except Exception as e:
-    db_utils.log_error(e, context={"prompt": system_prompt, "tickers": tickers,
-                                    "indicators":indicators_json, "news":news_txt,
-                                    "sentiment":sentiment_json, "forecasts":forecasts_json,
-                                    "balance":account_status
-                                    }, source="trading_agent")
-    print(f"An error occurred: {e}")
+    print(f"❌ An error occurred: {e}")
+    import traceback
+    traceback.print_exc()
+
+    # Log errore nel database (solo se le variabili sono state inizializzate)
+    try:
+        db_utils.log_error(e, context={
+            "prompt": system_prompt,
+            "tickers": tickers,
+            "indicators": indicators_json,
+            "news": news_txt,
+            "sentiment": sentiment_json,
+            "forecasts": forecasts_json,
+            "balance": account_status
+        }, source="trading_agent")
+    except Exception as log_err:
+        print(f"⚠️  Could not log error to database: {log_err}")
