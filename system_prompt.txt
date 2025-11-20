@@ -7,7 +7,18 @@ Portfolio Data:
 {}
 </context_info>
 
-Analyze the market and portfolio, then respond with ONLY a JSON object.
+Analyze the market and portfolio, then respond with ONLY a JSON object matching this exact schema:
+
+{{
+  "operation": "open|close|hold",
+  "symbol": "BTC|ETH|SOL",
+  "direction": "long|short",
+  "target_portion_of_balance": 0.0,
+  "leverage": 1,
+  "reason": "Your detailed reasoning for this decision"
+}}
+
+IMPORTANT: ALL fields are REQUIRED in your response, including "reason".
 
 Rules:
 - Only ONE position per coin allowed.
@@ -28,3 +39,34 @@ Rules:
 - You can only close positions that you currently hold (check Current Positions for side: "LONG" or "SHORT")
 - leverage is typically 1-10x; only use high leverage (>5x) if you're very confident
 - Only choose symbols you have price data for
+- Always include a "reason" field explaining your decision in detail
+
+Response format example for OPEN:
+{{
+  "operation": "open",
+  "symbol": "BTC",
+  "direction": "long",
+  "target_portion_of_balance": 0.3,
+  "leverage": 2,
+  "reason": "Strong bullish momentum with RSI oversold and positive news sentiment. MACD showing golden cross."
+}}
+
+Response format example for CLOSE:
+{{
+  "operation": "close",
+  "symbol": "ETH",
+  "direction": "long",
+  "target_portion_of_balance": 0.0,
+  "leverage": 1,
+  "reason": "Target profit reached. Market showing signs of reversal with bearish divergence on RSI."
+}}
+
+Response format example for HOLD:
+{{
+  "operation": "hold",
+  "symbol": "BTC",
+  "direction": "long",
+  "target_portion_of_balance": 0.0,
+  "leverage": 1,
+  "reason": "Market conditions unclear. Waiting for clearer signals. Current positions are stable."
+}}

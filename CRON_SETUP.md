@@ -187,10 +187,25 @@ nano setup_cron.sh
 
 - [ ] File `.env` configurato con tutte le API keys
 - [ ] `TESTNET=true` nel `.env`
+- [ ] **AI_PROVIDER=openrouter** e **OPENROUTER_MODEL=anthropic/claude-3.5-sonnet** nel `.env`
 - [ ] Test manuale funziona: `docker compose run --rm trading-bot`
 - [ ] Dashboard accessibile su porta 8501
 - [ ] PostgreSQL container attivo
 - [ ] Spazio disco sufficiente per log
+
+## 🔧 FIX ERRORI JSON AI:
+
+Se vedi errori come `Expecting value: line 1 column 1`:
+```bash
+# Esegui lo script di fix automatico
+./fix_ai_model.sh
+
+# Oppure leggi la guida completa
+cat AI_MODEL_FIX.md
+```
+
+**IMPORTANTE**: Usa **SOLO** `anthropic/claude-3.5-sonnet` come modello OpenRouter.
+I modelli più recenti (claude-sonnet-4.5, claude-haiku-4.5) NON funzionano con JSON strutturato!
 
 ---
 
