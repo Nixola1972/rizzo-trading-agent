@@ -299,7 +299,12 @@ class HyperLiquidTrader:
 
     def get_account_status(self) -> Dict[str, Any]:
         data = self.info.user_state(self.account_address)
+
+        # DEBUG: Stampa struttura dati raw
+        print(f"🔍 DEBUG: Recupero user_state per {self.account_address}")
+
         balance = self._extract_balance_from_user_state(data)
+        print(f"💰 Balance estratto: {balance} USDC")
 
         mids = self.info.all_mids()
         positions = []
