@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Collegamento ad Hyperliquid
-TESTNET = True   # True = testnet, False = mainnet (occhio!)
-VERBOSE = True    # stampa informazioni extra
+TESTNET = os.getenv("TESTNET", "true").lower() == "true"  # Legge da .env
+VERBOSE = os.getenv("VERBOSE", "true").lower() == "true"  # Legge da .env
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 
