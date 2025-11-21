@@ -190,9 +190,12 @@ class HyperLiquidTrader:
 
         # Ora procedi con l'apertura della posizione
         user = self.info.user_state(self.account_address)
-        balance_usd = Decimal(str(user["marginSummary"]["accountValue"]))
+        balance_float = self._extract_balance_from_user_state(user)
+        balance_usd = Decimal(str(balance_float))
 
         if balance_usd <= 0:
+            print(f"⚠️ Balance rilevato: {balance_usd} USDC")
+            print("💡 Controlla su https://app.hyperliquid.xyz che il wallet abbia fondi")
             raise RuntimeError("Balance account = 0")
 
         notional = balance_usd * portion * Decimal(str(leverage))
@@ -262,9 +265,41 @@ class HyperLiquidTrader:
     # ----------------------------------------------------------------------
     #                           STATO ACCOUNT
     # ----------------------------------------------------------------------
+    def _extract_balance_from_user_state(self, data: Dict[str, Any]) -> float:
+        """
+        Estrae il balance da user_state gestendo diverse strutture API.
+        Prova multiple chiavi per compatibilità mainnet/testnet.
+        """
+        # Prova 1: marginSummary.accountValue (formato comune)
+        try:
+            return float(data["marginSummary"]["accountValue"])
+        except (KeyError, TypeError):
+            pass
+
+        # Prova 2: withdrawable (altro formato possibile)
+        try:
+            return float(data["withdrawable"])
+        except (KeyError, TypeError):
+            pass
+
+        # Prova 3: crossMaintenanceMarginUsed calculation
+        try:
+            margin_summary = data.get("marginSummary", {})
+            account_value = margin_summary.get("accountValue")
+            if account_value is not None:
+                return float(account_value)
+        except (ValueError, TypeError):
+            pass
+
+        # Se nessuno funziona, stampa la struttura per debug e restituisce 0
+        print(f"⚠️ WARNING: Impossibile estrarre balance da user_state. Struttura ricevuta:")
+        import json
+        print(json.dumps(data, indent=2))
+        return 0.0
+
     def get_account_status(self) -> Dict[str, Any]:
         data = self.info.user_state(self.account_address)
-        balance = float(data["marginSummary"]["accountValue"])
+        balance = self._extract_balance_from_user_state(data)
 
         mids = self.info.all_mids()
         positions = []
