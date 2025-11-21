@@ -11,7 +11,7 @@ load_dotenv()
 
 # Configurazione pagina
 st.set_page_config(
-    page_title="Rizzo Trading Bot Dashboard",
+    page_title="Trading Agent Dashboard",
     page_icon="🤖",
     layout="wide"
 )
@@ -36,7 +36,7 @@ def query_db(query, params=None):
         return pd.DataFrame()
 
 # Header
-st.title("🤖 Rizzo Trading Bot Dashboard")
+st.title("🤖 Trading Agent Dashboard")
 st.markdown("---")
 
 # Metriche principali
@@ -585,5 +585,5 @@ with col_refresh2:
 
 # Footer
 st.markdown("---")
-st.caption(f"🤖 Rizzo Trading Bot Dashboard | Last refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+st.caption(f"🤖 Trading Agent Dashboard | Last refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
 st.caption("📊 Data source: PostgreSQL | 🔄 Auto-refresh: Reload page")
