@@ -37,8 +37,8 @@ echo ""
 # Chiedi all'utente quale versione vuole
 echo "🔥 Scegli la versione DeepSeek:"
 echo ""
-echo "1) deepseek/deepseek-v3.1 (raccomandato!)"
-echo "   - 671B parametri, 37B attivi"
+echo "1) deepseek/deepseek-chat (raccomandato!)"
+echo "   - DeepSeek V3 (modello principale)"
 echo "   - $0.20/1M input, $0.80/1M output"
 echo "   - Best overall per trading"
 echo ""
@@ -57,8 +57,8 @@ choice=${choice:-1}
 
 case $choice in
     1)
-        MODEL="deepseek/deepseek-v3.1"
-        echo "✅ Hai scelto: DeepSeek V3.1 (raccomandato)"
+        MODEL="deepseek/deepseek-chat"
+        echo "✅ Hai scelto: DeepSeek Chat (DeepSeek V3 - raccomandato)"
         ;;
     2)
         MODEL="deepseek/deepseek-r1"
@@ -69,8 +69,8 @@ case $choice in
         echo "✅ Hai scelto: DeepSeek R1 Free (gratuito!)"
         ;;
     *)
-        echo "❌ Scelta non valida. Uso default: deepseek/deepseek-v3.1"
-        MODEL="deepseek/deepseek-v3.1"
+        echo "❌ Scelta non valida. Uso default: deepseek/deepseek-chat"
+        MODEL="deepseek/deepseek-chat"
         ;;
 esac
 
