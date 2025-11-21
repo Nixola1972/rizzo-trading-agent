@@ -270,31 +270,40 @@ class HyperLiquidTrader:
         Estrae il balance da user_state gestendo diverse strutture API.
         Prova multiple chiavi per compatibilità mainnet/testnet.
         """
+        # DEBUG: SEMPRE stampa la struttura per capire cosa riceve l'API
+        import json
+        print("=" * 60)
+        print("🔍 STRUTTURA COMPLETA user_state RICEVUTA:")
+        print("=" * 60)
+        print(json.dumps(data, indent=2))
+        print("=" * 60)
+
         # Prova 1: marginSummary.accountValue (formato comune)
         try:
-            return float(data["marginSummary"]["accountValue"])
-        except (KeyError, TypeError):
-            pass
+            value = float(data["marginSummary"]["accountValue"])
+            print(f"✅ Trovato balance in marginSummary.accountValue: {value}")
+            return value
+        except (KeyError, TypeError) as e:
+            print(f"⚠️ Tentativo 1 fallito (marginSummary.accountValue): {e}")
 
         # Prova 2: withdrawable (altro formato possibile)
         try:
-            return float(data["withdrawable"])
-        except (KeyError, TypeError):
-            pass
+            value = float(data["withdrawable"])
+            print(f"✅ Trovato balance in withdrawable: {value}")
+            return value
+        except (KeyError, TypeError) as e:
+            print(f"⚠️ Tentativo 2 fallito (withdrawable): {e}")
 
-        # Prova 3: crossMaintenanceMarginUsed calculation
+        # Prova 3: crossMarginSummary.accountValue (formato alternativo)
         try:
-            margin_summary = data.get("marginSummary", {})
-            account_value = margin_summary.get("accountValue")
-            if account_value is not None:
-                return float(account_value)
-        except (ValueError, TypeError):
-            pass
+            value = float(data["crossMarginSummary"]["accountValue"])
+            print(f"✅ Trovato balance in crossMarginSummary.accountValue: {value}")
+            return value
+        except (KeyError, TypeError) as e:
+            print(f"⚠️ Tentativo 3 fallito (crossMarginSummary.accountValue): {e}")
 
-        # Se nessuno funziona, stampa la struttura per debug e restituisce 0
-        print(f"⚠️ WARNING: Impossibile estrarre balance da user_state. Struttura ricevuta:")
-        import json
-        print(json.dumps(data, indent=2))
+        # Se nessuno funziona, restituisce 0
+        print(f"❌ ERRORE: Nessun campo balance trovato!")
         return 0.0
 
     def get_account_status(self) -> Dict[str, Any]:
