@@ -41,13 +41,12 @@ MODELS_WITHOUT_JSON_SUPPORT = [
     'google/gemini-2.5-flash',
     'google/gemini-2.0-flash-exp',
     'google/gemini-pro',
-    # DeepSeek V3.1 e R1 (2025 - top performance, economici!) 🔥
-    'deepseek/deepseek-v3.1',
-    'deepseek/deepseek-v3.1-terminus',
-    'deepseek/deepseek-r1',
-    'deepseek/deepseek-r1:free',
+    # DeepSeek V3 e R1 (2025 - top performance, economici!) 🔥
+    'deepseek/deepseek-chat',  # DeepSeek V3 (chat model principale)
+    'deepseek/deepseek-r1',  # DeepSeek R1 (reasoning avanzato)
+    'deepseek/deepseek-r1:free',  # DeepSeek R1 FREE
     'deepseek/deepseek-r1-distill-llama-70b',
-    'deepseek/deepseek-chat',
+    'deepseek/deepseek-r1-distill-qwen-32b',
     # Qwen (Alibaba)
     'qwen/qwen-2.5-72b-instruct',
     'qwen/qwen-2.5-coder-32b-instruct',
