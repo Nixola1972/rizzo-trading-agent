@@ -1,4 +1,3 @@
-from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import json
@@ -8,6 +7,14 @@ load_dotenv()
 
 # Configurazione AI Provider
 AI_PROVIDER = os.getenv('AI_PROVIDER', 'openai').lower()
+
+# Import condizionale: importa OpenAI solo se necessario
+if AI_PROVIDER == 'openai':
+    from openai import OpenAI
+elif AI_PROVIDER == 'openrouter':
+    from openai import OpenAI  # OpenRouter usa la stessa interfaccia OpenAI
+else:
+    from openai import OpenAI  # Default fallback
 
 # Modelli che supportano nativamente response_format={"type": "json_object"}
 MODELS_WITH_JSON_SUPPORT = [
