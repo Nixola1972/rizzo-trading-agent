@@ -10,6 +10,7 @@ import json
 import signal
 import sys
 import db_utils
+import telegram_notifier as tg
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -18,6 +19,8 @@ GLOBAL_TIMEOUT = int(os.getenv("BOT_TIMEOUT_SECONDS", "300"))
 
 def timeout_handler(signum, frame):
     print(f"❌ TIMEOUT: Script exceeded {GLOBAL_TIMEOUT} seconds. Exiting...")
+    # Notifica timeout su Telegram
+    tg.notify_timeout(GLOBAL_TIMEOUT)
     sys.exit(1)
 
 # Imposta il timeout globale
@@ -69,11 +72,16 @@ try:
     out = previsione_trading_agent(system_prompt)
     bot.execute_signal(out)
 
+    # Notifica Telegram della decisione
+    tg.notify_trading_decision(out)
 
     op_id = db_utils.log_bot_operation(out, system_prompt=system_prompt, indicators=indicators_json, news_text=news_txt, sentiment=sentiment_json, forecasts=forecasts_json)
     print(f"[db_utils] Operazione inserita con id={op_id}")
 
 except Exception as e:
+    # Notifica errore su Telegram
+    tg.notify_error(type(e).__name__, str(e), source="trading_agent")
+
     db_utils.log_error(e, context={"prompt": system_prompt, "tickers": tickers,
                                     "indicators":indicators_json, "news":news_txt,
                                     "sentiment":sentiment_json, "forecasts":forecasts_json,
