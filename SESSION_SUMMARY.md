@@ -80,12 +80,35 @@ TESTNET = True
 TESTNET = os.getenv("TESTNET", "true").lower() == "true"
 ```
 
-### 6. API Key Error (CURRENT)
+### 6. API Key Error (RESOLVED)
 **Problem**: Bot using OpenAI API instead of OpenRouter.
 
 **Error**: `openai.AuthenticationError: Error code: 401 - Incorrect API key`
 
-**Status**: Needs investigation in `trading_agent.py` - should use OpenRouter when `AI_PROVIDER=openrouter`.
+**Solution**: Replaced `trading_agent.py` with version supporting `AI_PROVIDER` env var and OpenRouter.
+
+### 7. Internal Timeouts Added (NEW)
+**Problem**: Cron `timeout 600` command kills docker-compose but NOT the container itself.
+
+**Solution**: Added configurable timeouts inside the Python code:
+```python
+# main.py - Global script timeout
+GLOBAL_TIMEOUT = int(os.getenv("BOT_TIMEOUT_SECONDS", "300"))  # 5 min default
+
+# db_utils.py - Database connection/query timeouts
+connect_timeout = int(os.getenv("DB_CONNECT_TIMEOUT", "30"))  # 30 sec
+query_timeout = int(os.getenv("DB_QUERY_TIMEOUT", "60000"))   # 60 sec (ms)
+```
+
+### 8. Dashboard AI Analysis Enhanced (NEW)
+**Problem**: User couldn't understand AI reasoning clearly.
+
+**Solution**: Redesigned "AI Decisions" tab with:
+- Visual header with color-coded badges (green=open, red=close, gray=hold)
+- Sub-tabs for: Indicators, Sentiment, Forecasts, News
+- RSI/MACD/EMA signals with visual indicators
+- Fear & Greed gauge with emoji and progress bar
+- Forecast predictions with change percentages
 
 ---
 
@@ -93,16 +116,30 @@ TESTNET = os.getenv("TESTNET", "true").lower() == "true"
 
 ### Environment Variables (.env)
 ```bash
+# AI Configuration
 AI_PROVIDER=openrouter
 OPENROUTER_API_KEY=sk-or-v1-xxxxx
 OPENROUTER_MODEL=deepseek/deepseek-chat-v3.1
+
+# Wallet
 PRIVATE_KEY=0x***
 WALLET_ADDRESS=0x***
+
+# API Keys
 CMC_PRO_API_KEY=xxxxx
+
+# Database
 DATABASE_URL=postgresql://tradingbot:TradingBot2025!Secure@memory_postgres:5432/rizzo_trading
 POSTGRES_NETWORK=unified-memory-stack_memory-net
+
+# Bot Settings
 TESTNET=false
 VERBOSE=true
+
+# Timeout Configuration (NEW - prevents zombie containers)
+BOT_TIMEOUT_SECONDS=300      # Max script runtime (5 min)
+DB_CONNECT_TIMEOUT=30        # DB connection timeout (30 sec)
+DB_QUERY_TIMEOUT=60000       # Query timeout in ms (60 sec)
 ```
 
 ### Docker Setup
@@ -169,8 +206,9 @@ timeout 120 docker compose -f docker-compose.existing-postgres.yml run --rm trad
 
 ## Pending Issues
 
-1. **trading_agent.py** - Needs to be updated to use OpenRouter when `AI_PROVIDER=openrouter` instead of always using OpenAI
-2. **Dashboard rebuild** - May need rebuild after git pull to load latest changes
+1. ~~**trading_agent.py**~~ - RESOLVED: Now supports OpenRouter via `AI_PROVIDER` env var
+2. **Dashboard rebuild on VPS** - Need to pull and rebuild after git changes
+3. **Telegram Alerts** - To be implemented (see Future Improvements)
 
 ---
 
