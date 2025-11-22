@@ -192,6 +192,26 @@ CREATE TABLE IF NOT EXISTS errors (
 
 CREATE INDEX IF NOT EXISTS idx_errors_created_at
     ON errors(created_at);
+
+CREATE TABLE IF NOT EXISTS signal_scores (
+    id                  BIGSERIAL PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    context_id          BIGINT REFERENCES ai_contexts(id) ON DELETE CASCADE,
+    symbol              TEXT NOT NULL,
+    score_bullish       NUMERIC(10, 2) NOT NULL,
+    score_bearish       NUMERIC(10, 2) NOT NULL,
+    net_score           NUMERIC(10, 2) NOT NULL,
+    direction           TEXT NOT NULL,
+    confidence          TEXT,
+    signals             JSONB NOT NULL,
+    thresholds          JSONB,
+    weights_config      JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_scores_created_at
+    ON signal_scores(created_at);
+CREATE INDEX IF NOT EXISTS idx_signal_scores_symbol
+    ON signal_scores(symbol);
 """
 
 
@@ -421,6 +441,79 @@ def log_error(
             )
         conn.commit()
 
+
+
+def log_signal_score(
+    symbol: str,
+    score_result: Dict[str, Any],
+    *,
+    context_id: Optional[int] = None,
+    weights_config: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Salva il risultato dello scoring dei segnali nella tabella `signal_scores`.
+
+    Parametri:
+    - symbol: simbolo della criptovaluta (BTC, ETH, SOL)
+    - score_result: dizionario con i risultati dello scoring da signal_scorer.py
+        {
+            'score_bullish': float,
+            'score_bearish': float,
+            'net_score': float,
+            'direction': str (LONG/SHORT/HOLD),
+            'confidence': str (STRONG/NORMAL/WEAK),
+            'signals': list of dicts con dettagli per ogni indicatore,
+            'thresholds': dict con le soglie usate
+        }
+    - context_id: ID del contesto AI (opzionale, per collegare all'operazione)
+    - weights_config: configurazione dei pesi usati (opzionale, per tracciabilità)
+
+    Restituisce l'ID del record creato.
+    """
+
+    score_bullish = score_result.get('score_bullish', 0)
+    score_bearish = score_result.get('score_bearish', 0)
+    net_score = score_result.get('net_score', 0)
+    direction = score_result.get('direction', 'HOLD')
+    confidence = score_result.get('confidence', 'WEAK')
+    signals = score_result.get('signals', [])
+    thresholds = score_result.get('thresholds', {})
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO signal_scores (
+                    context_id,
+                    symbol,
+                    score_bullish,
+                    score_bearish,
+                    net_score,
+                    direction,
+                    confidence,
+                    signals,
+                    thresholds,
+                    weights_config
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    context_id,
+                    symbol,
+                    score_bullish,
+                    score_bearish,
+                    net_score,
+                    direction,
+                    confidence,
+                    Json(_normalize_for_json(signals)),
+                    Json(thresholds) if thresholds else None,
+                    Json(weights_config) if weights_config else None,
+                ),
+            )
+            score_id = cur.fetchone()[0]
+        conn.commit()
+
+    return score_id
 
 
 def log_account_status(account_status: Dict[str, Any]) -> int:
