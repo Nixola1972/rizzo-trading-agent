@@ -76,28 +76,43 @@ try:
         sentiment=sentiment_json,
         forecasts=forecasts_json
     )
+
+    print(f"[DEBUG] Tipo risposta AI: {type(out)}")
+    print(f"[DEBUG] Contenuto risposta: {out}")
+
+    print("[STEP 1] Esecuzione segnale su Hyperliquid...")
     bot.execute_signal(out)
+    print("[STEP 1] ✅ Completato")
 
     # Notifica Telegram della decisione
+    print("[STEP 2] Invio notifica Telegram...")
     tg.notify_trading_decision(out)
+    print("[STEP 2] ✅ Completato")
 
+    print("[STEP 3] Salvataggio operazione nel DB...")
+    print(f"[DEBUG] indicators_json type: {type(indicators_json)}")
+    print(f"[DEBUG] sentiment_json type: {type(sentiment_json)}")
+    print(f"[DEBUG] forecasts_json type: {type(forecasts_json)}")
     op_id = db_utils.log_bot_operation(out, system_prompt=system_prompt, indicators=indicators_json, news_text=news_txt, sentiment=sentiment_json, forecasts=forecasts_json)
-    print(f"[db_utils] Operazione inserita con id={op_id}")
+    print(f"[STEP 3] ✅ Operazione inserita con id={op_id}")
 
     # Salva signal scores nel database per tracciabilità
     if SCORING_ENABLED:
+        print("[STEP 4] Salvataggio signal scores...")
         signal_scores = get_last_signal_scores()
+        print(f"[DEBUG] signal_scores type: {type(signal_scores)}, keys: {signal_scores.keys() if isinstance(signal_scores, dict) else 'N/A'}")
         weights_config = get_scoring_config()
         for symbol, score_result in signal_scores.items():
+            print(f"[DEBUG] {symbol} score_result type: {type(score_result)}")
             try:
                 score_id = db_utils.log_signal_score(
                     symbol=symbol,
                     score_result=score_result,
                     weights_config=weights_config
                 )
-                print(f"[db_utils] Signal score {symbol} salvato con id={score_id}")
+                print(f"[STEP 4] Signal score {symbol} salvato con id={score_id}")
             except Exception as e:
-                print(f"[db_utils] Errore salvataggio score {symbol}: {e}")
+                print(f"[STEP 4] Errore salvataggio score {symbol}: {e}")
 
 except Exception as e:
     # Notifica errore su Telegram
