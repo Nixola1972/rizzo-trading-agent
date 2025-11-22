@@ -918,8 +918,8 @@ with tab4:
                         st.markdown("### 📊 Dati Input Analizzati dall'AI")
 
                         # Tab interni per i dati
-                        data_tab1, data_tab2, data_tab3, data_tab4 = st.tabs([
-                            "📈 Indicatori", "😊 Sentiment", "🔮 Forecasts", "📰 News"
+                        data_tab1, data_tab2, data_tab3, data_tab4, data_tab5, data_tab6 = st.tabs([
+                            "📈 Indicatori", "😊 Sentiment", "🔮 Forecasts", "📰 News", "📊 Signal Scores", "📝 Prompt AI"
                         ])
 
                         # --- INDICATORI ---
@@ -1089,6 +1089,111 @@ with tab4:
                                     st.info("Nessuna news disponibile")
                             else:
                                 st.info("Nessuna news disponibile")
+
+                        # --- SIGNAL SCORES ---
+                        with data_tab5:
+                            # Cerca scores salvati vicino al timestamp della decisione
+                            scores_data = query_db(f"""
+                                SELECT
+                                    symbol,
+                                    score_bullish,
+                                    score_bearish,
+                                    net_score,
+                                    direction,
+                                    confidence,
+                                    signals,
+                                    thresholds,
+                                    created_at
+                                FROM signal_scores
+                                WHERE created_at BETWEEN
+                                    '{row['created_at']}'::timestamp - interval '5 minutes'
+                                    AND '{row['created_at']}'::timestamp + interval '5 minutes'
+                                ORDER BY created_at DESC
+                            """)
+
+                            if not scores_data.empty:
+                                st.success(f"📊 {len(scores_data)} signal scores trovati")
+
+                                for _, score in scores_data.iterrows():
+                                    symbol = score['symbol']
+                                    net = float(score['net_score'])
+                                    bull = float(score['score_bullish'])
+                                    bear = float(score['score_bearish'])
+                                    direction = score['direction']
+                                    confidence = score['confidence']
+
+                                    # Colore basato sulla direzione
+                                    if direction == 'LONG':
+                                        dir_color = "#28a745"
+                                        dir_icon = "🟢"
+                                    elif direction == 'SHORT':
+                                        dir_color = "#dc3545"
+                                        dir_icon = "🔴"
+                                    else:
+                                        dir_color = "#6c757d"
+                                        dir_icon = "⚪"
+
+                                    st.markdown(f"""
+                                    <div style="background: {dir_color}22; padding: 15px; border-radius: 10px;
+                                                border-left: 4px solid {dir_color}; margin-bottom: 10px;">
+                                        <h4 style="margin: 0;">{dir_icon} {symbol} → {direction} ({confidence})</h4>
+                                        <p style="margin: 5px 0;">
+                                            <b>Net Score:</b> <span style="color: {'green' if net > 0 else 'red' if net < 0 else 'gray'}; font-size: 1.2em;">{net:+.1f}</span> |
+                                            <b>Bull:</b> {bull:.1f} |
+                                            <b>Bear:</b> {bear:.1f}
+                                        </p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+
+                                    # Mostra segnali individuali
+                                    signals = score['signals']
+                                    if signals:
+                                        with st.expander(f"📈 Dettaglio segnali {symbol}"):
+                                            for sig in signals:
+                                                contrib = sig.get('contribution', 0)
+                                                if contrib > 0:
+                                                    sig_dir = sig.get('direction', 'NEUTRAL')
+                                                    sig_icon = "🟢" if sig_dir == 'BULLISH' else "🔴" if sig_dir == 'BEARISH' else "⚪"
+                                                    st.markdown(f"""
+                                                    {sig_icon} **{sig.get('indicator')}**: {sig.get('reason')}
+                                                    *Contributo: +{contrib:.1f} (peso: {sig.get('weight', 0)}, intensità: {sig.get('intensity', 0):.1%})*
+                                                    """)
+                            else:
+                                st.info("Nessun signal score disponibile per questa decisione")
+
+                        # --- PROMPT AI COMPLETO ---
+                        with data_tab6:
+                            # Carica il prompt dalla tabella ai_contexts
+                            prompt_data = query_db(f"""
+                                SELECT system_prompt, created_at
+                                FROM ai_contexts
+                                WHERE id = {context_id}
+                            """)
+
+                            if not prompt_data.empty:
+                                prompt = prompt_data.iloc[0]['system_prompt']
+                                if prompt:
+                                    st.markdown("#### 📝 Prompt inviato all'AI")
+                                    st.text_area(
+                                        "System Prompt completo",
+                                        prompt,
+                                        height=500,
+                                        key=f"prompt_{row['id']}"
+                                    )
+
+                                    # Statistiche prompt
+                                    st.caption(f"Lunghezza: {len(prompt)} caratteri | ~{len(prompt.split())} parole")
+                                else:
+                                    st.info("Prompt non disponibile")
+                            else:
+                                st.info("Prompt non disponibile per questa decisione")
+
+                            # Mostra anche la risposta AI
+                            st.markdown("#### 🤖 Risposta AI")
+                            if pd.notna(row['full_payload']):
+                                st.json(row['full_payload'])
+                            else:
+                                st.info("Risposta AI non disponibile")
 
                     # === DETTAGLI TECNICI (collassati) ===
                     with st.expander("🔧 Dettagli Tecnici"):
