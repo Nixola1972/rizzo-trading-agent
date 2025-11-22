@@ -221,13 +221,13 @@ timeout 120 docker compose -f docker-compose.existing-postgres.yml run --rm trad
 ### Credenziali
 - **Bot**: @trade_nico_bot
 - **Token**: `8262628988:AAHe8KU9triOlZr3_HNslvRO9q2CAvp3b-s`
-- **Chat ID**: DA CONFIGURARE (usare @userinfobot per ottenerlo)
+- **Chat ID**: `7793758024`
 
 ### Environment Variables (.env)
 ```bash
 # Telegram Notifications
 TELEGRAM_BOT_TOKEN=8262628988:AAHe8KU9triOlZr3_HNslvRO9q2CAvp3b-s
-TELEGRAM_CHAT_ID=INSERIRE_CHAT_ID
+TELEGRAM_CHAT_ID=7793758024
 TELEGRAM_ENABLED=true
 TELEGRAM_NOTIFY_HOLDS=false    # true se vuoi notifiche anche per HOLD
 ```
