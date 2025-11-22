@@ -1,6 +1,6 @@
 from indicators import analyze_multiple_tickers
 from news_feed import fetch_latest_news
-from trading_agent import previsione_trading_agent
+from trading_agent import previsione_trading_agent, get_last_signal_scores, get_scoring_config, SCORING_ENABLED
 from whalealert import format_whale_alerts_to_string
 from sentiment import get_sentiment
 from forecaster import get_crypto_forecasts
@@ -69,7 +69,13 @@ try:
     system_prompt = system_prompt.format(portfolio_data, msg_info)
         
     print("L'agente sta decidendo la sua azione!")
-    out = previsione_trading_agent(system_prompt)
+    # Passa indicatori, sentiment e forecast per il sistema di scoring
+    out = previsione_trading_agent(
+        system_prompt,
+        indicators=indicators_json,
+        sentiment=sentiment_json,
+        forecasts=forecasts_json
+    )
     bot.execute_signal(out)
 
     # Notifica Telegram della decisione
@@ -77,6 +83,21 @@ try:
 
     op_id = db_utils.log_bot_operation(out, system_prompt=system_prompt, indicators=indicators_json, news_text=news_txt, sentiment=sentiment_json, forecasts=forecasts_json)
     print(f"[db_utils] Operazione inserita con id={op_id}")
+
+    # Salva signal scores nel database per tracciabilità
+    if SCORING_ENABLED:
+        signal_scores = get_last_signal_scores()
+        weights_config = get_scoring_config()
+        for symbol, score_result in signal_scores.items():
+            try:
+                score_id = db_utils.log_signal_score(
+                    symbol=symbol,
+                    score_result=score_result,
+                    weights_config=weights_config
+                )
+                print(f"[db_utils] Signal score {symbol} salvato con id={score_id}")
+            except Exception as e:
+                print(f"[db_utils] Errore salvataggio score {symbol}: {e}")
 
 except Exception as e:
     # Notifica errore su Telegram

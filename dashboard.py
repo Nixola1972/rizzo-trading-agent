@@ -763,6 +763,82 @@ with tab3:
 with tab4:
     st.subheader("🎯 AI Decision Analysis")
 
+    # === SIGNAL SCORES SECTION (NEW) ===
+    st.markdown("### 📊 Signal Scoring (Latest)")
+
+    try:
+        latest_scores = query_db("""
+            SELECT
+                symbol,
+                score_bullish,
+                score_bearish,
+                net_score,
+                direction,
+                confidence,
+                signals,
+                created_at
+            FROM signal_scores
+            WHERE created_at = (SELECT MAX(created_at) FROM signal_scores)
+            ORDER BY symbol
+        """)
+
+        if not latest_scores.empty:
+            # Mostra metriche per ogni symbol
+            score_cols = st.columns(len(latest_scores))
+
+            for idx, (_, row) in enumerate(latest_scores.iterrows()):
+                with score_cols[idx]:
+                    symbol = row['symbol']
+                    direction = row['direction']
+                    net_score = float(row['net_score'])
+                    confidence = row['confidence']
+
+                    # Colore e icona basati sulla direzione
+                    if direction == 'LONG':
+                        icon = "🟢"
+                        bg_color = "#28a74522"
+                    elif direction == 'SHORT':
+                        icon = "🔴"
+                        bg_color = "#dc354522"
+                    else:
+                        icon = "⚪"
+                        bg_color = "#6c757d22"
+
+                    st.markdown(f"""
+                    <div style="background: {bg_color}; padding: 15px; border-radius: 10px; text-align: center;">
+                        <h3 style="margin: 0;">{icon} {symbol}</h3>
+                        <h2 style="margin: 5px 0; color: {'green' if net_score > 0 else 'red' if net_score < 0 else 'gray'};">
+                            {net_score:+.1f}
+                        </h2>
+                        <p style="margin: 0;"><b>{direction}</b> ({confidence})</p>
+                        <small style="color: #666;">
+                            Bull: {float(row['score_bullish']):.1f} | Bear: {float(row['score_bearish']):.1f}
+                        </small>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # Dettagli segnali in expander
+            with st.expander("📈 Dettaglio Segnali", expanded=False):
+                for _, row in latest_scores.iterrows():
+                    st.markdown(f"**{row['symbol']}**")
+                    signals = row['signals']
+                    if signals:
+                        for sig in signals:
+                            if sig.get('contribution', 0) > 0:
+                                dir_icon = "🟢" if sig.get('direction') == 'BULLISH' else "🔴"
+                                st.markdown(f"  {dir_icon} {sig.get('indicator')}: {sig.get('reason')} (+{sig.get('contribution', 0):.1f})")
+                    st.markdown("---")
+
+            st.caption(f"Ultimo aggiornamento: {latest_scores['created_at'].iloc[0]}")
+        else:
+            st.info("📊 Nessun dato di scoring disponibile. Il bot deve eseguire almeno un ciclo con il sistema di scoring attivo.")
+
+    except Exception as e:
+        st.warning(f"Signal Scores non disponibili: {e}")
+        st.caption("La tabella signal_scores potrebbe non esistere ancora. Eseguire il bot per crearla.")
+
+    st.markdown("---")
+
     # Ultime decisioni AI con dati di contesto completi
     try:
         ai_decisions = query_db("""

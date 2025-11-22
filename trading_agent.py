@@ -5,6 +5,19 @@ import re
 
 load_dotenv()
 
+# Import signal scorer per calcolo score BULLISH/BEARISH
+try:
+    from signal_scorer import (
+        calculate_signal_score,
+        format_score_for_prompt,
+        get_scoring_config
+    )
+    SCORING_ENABLED = True
+    print("📊 Signal Scoring System: ENABLED")
+except ImportError:
+    SCORING_ENABLED = False
+    print("⚠️  Signal Scoring System: DISABLED (signal_scorer.py not found)")
+
 # Configurazione AI Provider
 AI_PROVIDER = os.getenv('AI_PROVIDER', 'openai').lower()
 
@@ -118,10 +131,15 @@ def extract_json_from_text(text):
         return None
 
 
-def validate_trading_decision(result):
+def validate_trading_decision(result, signal_scores=None):
     """
     Valida che la decisione di trading abbia tutti i campi richiesti.
     Aggiunge campi mancanti con valori di default se possibile.
+    Usa il signal scoring per determinare la direzione se non specificata.
+
+    Args:
+        result: Dizionario con la decisione AI
+        signal_scores: Dizionario con gli score calcolati per ogni symbol
     """
     required_fields = ["operation", "symbol"]  # Solo questi sono veramente obbligatori
 
@@ -130,9 +148,25 @@ def validate_trading_decision(result):
         if field not in result:
             raise ValueError(f"Campo mancante nella risposta AI: {field}")
 
-    # Aggiungi campi opzionali con default se mancanti
+    # Aggiungi direction basata su scoring invece di default "long"
     if "direction" not in result:
-        result["direction"] = "long"
+        symbol = result.get("symbol", "")
+        if signal_scores and symbol in signal_scores:
+            score = signal_scores[symbol]
+            suggested_direction = score.get('direction', 'HOLD')
+            if suggested_direction == 'LONG':
+                result["direction"] = "long"
+            elif suggested_direction == 'SHORT':
+                result["direction"] = "short"
+            else:
+                # Se scoring dice HOLD, usiamo long come fallback
+                # ma l'operazione dovrebbe essere già HOLD
+                result["direction"] = "long"
+            print(f"   📊 Direction da scoring: {result['direction']} (score: {score.get('net_score', 0):.1f})")
+        else:
+            # Fallback: long se scoring non disponibile
+            result["direction"] = "long"
+            print(f"   ⚠️  Direction default: long (scoring non disponibile)")
 
     if "target_portion_of_balance" not in result:
         result["target_portion_of_balance"] = 0.0 if result["operation"] != "open" else 0.3
@@ -155,7 +189,7 @@ def validate_trading_decision(result):
     return result
 
 
-def call_ai_api(prompt, use_json_format=True, max_retries=2):
+def call_ai_api(prompt, use_json_format=True, max_retries=2, signal_scores=None):
     """
     Chiama l'API AI con retry logic e gestione flessibile del JSON.
 
@@ -163,6 +197,7 @@ def call_ai_api(prompt, use_json_format=True, max_retries=2):
         prompt: Il prompt da inviare
         use_json_format: Se usare response_format=json_object (solo per modelli compatibili)
         max_retries: Numero massimo di tentativi
+        signal_scores: Dizionario con score calcolati per ogni symbol (per validazione)
     """
     for attempt in range(max_retries + 1):
         try:
@@ -206,8 +241,8 @@ def call_ai_api(prompt, use_json_format=True, max_retries=2):
                 if result is None:
                     raise ValueError(f"Nessun JSON valido trovato nella risposta. Risposta: {response_text[:200]}")
 
-            # Valida e normalizza il risultato
-            result = validate_trading_decision(result)
+            # Valida e normalizza il risultato (passa signal_scores per direction)
+            result = validate_trading_decision(result, signal_scores=signal_scores)
 
             return result
 
@@ -241,19 +276,197 @@ def call_ai_api(prompt, use_json_format=True, max_retries=2):
     raise RuntimeError("Tutti i tentativi falliti")
 
 
-def previsione_trading_agent(prompt):
+# Variabile globale per memorizzare l'ultimo score calcolato
+_last_signal_scores = {}
+
+
+def calculate_scores_for_symbols(indicators_data: list, sentiment_data: dict, forecasts_data: list) -> dict:
+    """
+    Calcola gli score per ogni simbolo basandosi sui dati disponibili.
+
+    Args:
+        indicators_data: Lista di dizionari con indicatori per ogni ticker
+        sentiment_data: Dizionario con Fear & Greed Index
+        forecasts_data: Lista di dizionari con previsioni Prophet
+
+    Returns:
+        dict con score per ogni simbolo: {'BTC': {...}, 'ETH': {...}, 'SOL': {...}}
+    """
+    global _last_signal_scores
+
+    if not SCORING_ENABLED:
+        return {}
+
+    scores = {}
+
+    # Estrai Fear & Greed (globale per tutti i simboli)
+    fear_greed = 50  # default neutrale
+    if sentiment_data:
+        fear_greed = sentiment_data.get('valore', sentiment_data.get('value', 50))
+        if fear_greed is None:
+            fear_greed = 50
+
+    # Crea mappa forecast per ticker
+    forecast_map = {}
+    if forecasts_data:
+        for fc in forecasts_data:
+            ticker = fc.get('Ticker') or fc.get('ticker')
+            timeframe = fc.get('Timeframe') or fc.get('timeframe', '')
+            change_pct = fc.get('Variazione %') or fc.get('change_pct', 0)
+
+            # Usa forecast a 15 min se disponibile
+            if ticker and 'Prossimi 15' in str(timeframe):
+                try:
+                    forecast_map[ticker] = float(change_pct) if change_pct else 0
+                except (ValueError, TypeError):
+                    forecast_map[ticker] = 0
+
+    # Calcola score per ogni ticker
+    if indicators_data:
+        for ind in indicators_data:
+            ticker = ind.get('ticker')
+            if not ticker:
+                continue
+
+            # Estrai valori indicatori
+            current = ind.get('current', {})
+            price = current.get('price', 0)
+            ema20 = current.get('ema20', price)
+            rsi = current.get('rsi_7', 50)
+            macd = current.get('macd', 0)
+
+            # Volume
+            volume_str = ind.get('volume', '')
+            volume_bid, volume_ask = 0, 0
+            if isinstance(volume_str, str) and 'Bid Vol' in volume_str:
+                try:
+                    parts = volume_str.replace('Bid Vol:', '').split('Ask Vol:')
+                    volume_bid = float(parts[0].strip().strip(','))
+                    volume_ask = float(parts[1].strip())
+                except:
+                    pass
+
+            # Forecast per questo ticker
+            forecast_change = forecast_map.get(ticker, 0)
+
+            # Calcola score
+            try:
+                score_result = calculate_signal_score(
+                    price=float(price) if price else 0,
+                    ema20=float(ema20) if ema20 else 0,
+                    rsi=float(rsi) if rsi else 50,
+                    macd=float(macd) if macd else 0,
+                    fear_greed=int(fear_greed),
+                    forecast_change_pct=float(forecast_change),
+                    volume_bid=float(volume_bid),
+                    volume_ask=float(volume_ask)
+                )
+                scores[ticker] = score_result
+                print(f"   📊 {ticker} Score: BULL={score_result['score_bullish']:.1f} "
+                      f"BEAR={score_result['score_bearish']:.1f} "
+                      f"NET={score_result['net_score']:.1f} → {score_result['direction']}")
+            except Exception as e:
+                print(f"   ⚠️  Errore calcolo score per {ticker}: {e}")
+
+    _last_signal_scores = scores
+    return scores
+
+
+def get_last_signal_scores() -> dict:
+    """Restituisce l'ultimo score calcolato (per logging nel DB)."""
+    return _last_signal_scores
+
+
+def enhance_prompt_with_scoring(prompt: str, scores: dict) -> str:
+    """
+    Aggiunge le informazioni di scoring al prompt per guidare l'AI.
+    """
+    if not scores:
+        return prompt
+
+    scoring_section = "\n\n=== SIGNAL SCORING ANALYSIS ===\n"
+    scoring_section += "Pre-calculated signal scores based on technical indicators:\n\n"
+
+    for ticker, score in scores.items():
+        direction = score.get('direction', 'HOLD')
+        confidence = score.get('confidence', 'WEAK')
+        net = score.get('net_score', 0)
+
+        # Emoji basato sulla direzione
+        if direction == 'LONG':
+            emoji = "🟢"
+        elif direction == 'SHORT':
+            emoji = "🔴"
+        else:
+            emoji = "⚪"
+
+        scoring_section += f"{emoji} {ticker}: {direction} (confidence: {confidence}, net_score: {net:.1f})\n"
+
+        # Dettagli segnali principali
+        signals = score.get('signals', [])
+        active_signals = [s for s in signals if s.get('contribution', 0) > 0]
+        if active_signals:
+            for sig in active_signals[:3]:  # Max 3 segnali principali
+                scoring_section += f"   - {sig['indicator']}: {sig['direction']} (+{sig['contribution']:.1f})\n"
+
+    scoring_section += "\nIMPORTANT: Use this scoring as guidance for your decision. "
+    scoring_section += "If NET_SCORE > 15, prefer LONG. If NET_SCORE < -15, prefer SHORT. "
+    scoring_section += "If |NET_SCORE| < 15, prefer HOLD unless you have strong conviction.\n"
+    scoring_section += "================================\n"
+
+    # Inserisci prima del JSON format
+    if "Analyze the market" in prompt:
+        prompt = prompt.replace(
+            "Analyze the market and portfolio",
+            scoring_section + "\nAnalyze the market and portfolio"
+        )
+    else:
+        prompt = scoring_section + prompt
+
+    return prompt
+
+
+def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=None):
     """
     Chiama l'AI (OpenAI o OpenRouter) per ottenere decisioni di trading.
     Supporta multipli modelli con gestione robusta del JSON.
+
+    Args:
+        prompt: Il prompt da inviare all'AI
+        indicators: Lista di indicatori tecnici (opzionale, per scoring)
+        sentiment: Dati sentiment Fear & Greed (opzionale, per scoring)
+        forecasts: Lista previsioni Prophet (opzionale, per scoring)
     """
+    # Calcola score se dati disponibili
+    scores = {}
+    if SCORING_ENABLED and (indicators or sentiment or forecasts):
+        scores = calculate_scores_for_symbols(
+            indicators_data=indicators or [],
+            sentiment_data=sentiment or {},
+            forecasts_data=forecasts or []
+        )
+
+        # Arricchisci il prompt con lo scoring
+        if scores:
+            prompt = enhance_prompt_with_scoring(prompt, scores)
+
     try:
         # Determina se usare response_format JSON nativo
         use_json_format = MODEL in MODELS_WITH_JSON_SUPPORT
 
-        # Chiamata con retry automatico
-        result = call_ai_api(prompt, use_json_format=use_json_format, max_retries=2)
+        # Chiamata con retry automatico (passa scores per validazione)
+        result = call_ai_api(
+            prompt,
+            use_json_format=use_json_format,
+            max_retries=2,
+            signal_scores=scores
+        )
 
-        print(f"✅ Decisione AI: {result['operation']} {result['symbol']} - {result['reason'][:80]}...")
+        # Aggiungi info scoring al risultato per logging
+        if scores and result.get('symbol') in scores:
+            result['_signal_score'] = scores[result['symbol']]
+
+        print(f"✅ Decisione AI: {result['operation']} {result['symbol']} {result['direction']} - {result['reason'][:80]}...")
         return result
 
     except Exception as e:
