@@ -53,9 +53,11 @@ try:
 
     if not latest_snapshot.empty:
         current_balance = float(latest_snapshot['balance_usd'].iloc[0])
-        col1.metric("💰 Account Value", f"${current_balance:,.2f}")
+        col1.metric("💰 Account Value", f"${current_balance:,.2f}",
+                   help="Valore totale del tuo account su Hyperliquid in USD")
     else:
-        col1.metric("💰 Account Value", "N/A")
+        col1.metric("💰 Account Value", "N/A",
+                   help="Valore totale del tuo account in USD")
 except Exception as e:
     col1.metric("💰 Account Value", "Error")
 
@@ -63,9 +65,11 @@ except Exception as e:
 try:
     total_ops = query_db("SELECT COUNT(*) as count FROM bot_operations")
     if not total_ops.empty:
-        col2.metric("📊 Total Operations", int(total_ops['count'].iloc[0]))
+        col2.metric("📊 Total Operations", int(total_ops['count'].iloc[0]),
+                   help="Numero totale di operazioni eseguite dal bot (open, close, hold)")
     else:
-        col2.metric("📊 Total Operations", "0")
+        col2.metric("📊 Total Operations", "0",
+                   help="Numero totale di operazioni eseguite")
 except:
     col2.metric("📊 Total Operations", "Error")
 
@@ -78,9 +82,11 @@ try:
         WHERE snap.id = (SELECT MAX(id) FROM account_snapshots)
     """)
     if not open_positions_query.empty:
-        col3.metric("📈 Open Positions", int(open_positions_query['count'].iloc[0]))
+        col3.metric("📈 Open Positions", int(open_positions_query['count'].iloc[0]),
+                   help="Numero di posizioni attualmente aperte (BTC, ETH, SOL)")
     else:
-        col3.metric("📈 Open Positions", "0")
+        col3.metric("📈 Open Positions", "0",
+                   help="Numero di posizioni attualmente aperte")
 except:
     col3.metric("📈 Open Positions", "Error")
 
@@ -99,11 +105,14 @@ try:
         diff = (now - last_time).total_seconds() / 60
 
         if diff < 30:
-            col4.metric("🟢 Status", "Active", f"{int(diff)}m ago")
+            col4.metric("🟢 Status", "Active", f"{int(diff)}m ago",
+                       help="Il bot è attivo se ha eseguito operazioni negli ultimi 30 minuti")
         else:
-            col4.metric("🟡 Status", "Idle", f"{int(diff)}m ago")
+            col4.metric("🟡 Status", "Idle", f"{int(diff)}m ago",
+                       help="Il bot è inattivo da più di 30 minuti - potrebbe esserci un problema")
     else:
-        col4.metric("⚪ Status", "No Data")
+        col4.metric("⚪ Status", "No Data",
+                   help="Nessuna operazione registrata ancora")
 except:
     col4.metric("❌ Status", "Error")
 
@@ -268,6 +277,25 @@ with tab1:
     st.markdown("---")
     st.subheader("📈 Trading Analytics")
 
+    # Info box con spiegazione generale
+    with st.expander("ℹ️ Cosa significano queste metriche?", expanded=False):
+        st.markdown("""
+        **Metriche di Performance del Trading Bot:**
+
+        | Metrica | Significato | Valori Ideali |
+        |---------|-------------|---------------|
+        | **Win Rate** | Percentuale di trade chiusi in profitto | >50% è buono, >60% è ottimo |
+        | **Avg P&L/Trade** | Guadagno/perdita media per ogni trade | Positivo = bot profittevole |
+        | **Max Drawdown** | Massima perdita dal picco più alto | <20% è accettabile, <10% è ottimo |
+        | **Profit Factor** | Rapporto tra profitti totali e perdite totali | >1.5 è buono, >2 è ottimo |
+
+        **Come leggere i grafici:**
+        - **Long vs Short**: Confronta le performance tra posizioni rialziste (Long) e ribassiste (Short)
+        - **Performance by Symbol**: Mostra quali criptovalute stanno performando meglio
+        - **Equity Curve**: Andamento del capitale nel tempo - la linea verde tratteggiata è il "picco" massimo raggiunto
+        - **Drawdown %**: Mostra quanto sei "sotto" rispetto al massimo - più è basso meglio è
+        """)
+
     # Row 1: Key Metrics
     col_an1, col_an2, col_an3, col_an4 = st.columns(4)
 
@@ -290,13 +318,15 @@ with tab1:
             win_rate = (wins / total * 100) if total > 0 else 0
 
             with col_an1:
-                st.metric("🎯 Win Rate", f"{win_rate:.1f}%", f"{wins}W / {losses}L")
+                st.metric("🎯 Win Rate", f"{win_rate:.1f}%", f"{wins}W / {losses}L",
+                         help="Percentuale di trade chiusi in profitto. >50% buono, >60% ottimo")
         else:
             with col_an1:
-                st.metric("🎯 Win Rate", "N/A", "No closed trades")
+                st.metric("🎯 Win Rate", "N/A", "No closed trades",
+                         help="Percentuale di trade chiusi in profitto")
     except Exception as e:
         with col_an1:
-            st.metric("🎯 Win Rate", "Error")
+            st.metric("🎯 Win Rate", "Error", help="Errore nel calcolo")
 
     # AVG P&L PER TRADE
     try:
@@ -316,14 +346,16 @@ with tab1:
 
             with col_an2:
                 delta_color = "normal" if avg_pnl >= 0 else "inverse"
-                st.metric("💰 Avg P&L/Trade", f"${avg_pnl:.2f}")
+                st.metric("💰 Avg P&L/Trade", f"${avg_pnl:.2f}",
+                         help="Guadagno/perdita media per trade. Se positivo, il bot è profittevole in media")
                 st.caption(f"Avg Win: ${avg_win:.2f} | Avg Loss: ${avg_loss:.2f}")
         else:
             with col_an2:
-                st.metric("💰 Avg P&L/Trade", "N/A")
+                st.metric("💰 Avg P&L/Trade", "N/A",
+                         help="Guadagno/perdita media per trade")
     except Exception as e:
         with col_an2:
-            st.metric("💰 Avg P&L/Trade", "Error")
+            st.metric("💰 Avg P&L/Trade", "Error", help="Errore nel calcolo")
 
     # MAX DRAWDOWN
     try:
@@ -351,13 +383,15 @@ with tab1:
                     max_drawdown_pct = drawdown_pct
 
             with col_an3:
-                st.metric("📉 Max Drawdown", f"{max_drawdown_pct:.2f}%", f"-${max_drawdown:.2f}")
+                st.metric("📉 Max Drawdown", f"{max_drawdown_pct:.2f}%", f"-${max_drawdown:.2f}",
+                         help="Massima perdita dal picco più alto. <10% ottimo, <20% accettabile, >30% rischioso")
         else:
             with col_an3:
-                st.metric("📉 Max Drawdown", "N/A")
+                st.metric("📉 Max Drawdown", "N/A",
+                         help="Massima perdita dal picco più alto")
     except Exception as e:
         with col_an3:
-            st.metric("📉 Max Drawdown", "Error")
+            st.metric("📉 Max Drawdown", "Error", help="Errore nel calcolo")
 
     # PROFIT FACTOR
     try:
@@ -376,13 +410,15 @@ with tab1:
 
             with col_an4:
                 pf_status = "Good" if profit_factor > 1.5 else ("Ok" if profit_factor > 1 else "Poor")
-                st.metric("⚖️ Profit Factor", f"{profit_factor:.2f}", pf_status)
+                st.metric("⚖️ Profit Factor", f"{profit_factor:.2f}", pf_status,
+                         help="Profitti totali / Perdite totali. >1 = profittevole, >1.5 buono, >2 ottimo")
         else:
             with col_an4:
-                st.metric("⚖️ Profit Factor", "N/A")
+                st.metric("⚖️ Profit Factor", "N/A",
+                         help="Profitti totali / Perdite totali")
     except Exception as e:
         with col_an4:
-            st.metric("⚖️ Profit Factor", "Error")
+            st.metric("⚖️ Profit Factor", "Error", help="Errore nel calcolo")
 
     # Row 2: Performance by Direction (Long vs Short)
     col_dir1, col_dir2 = st.columns(2)
@@ -971,8 +1007,8 @@ with tab4:
                             if not news_data.empty:
                                 news_text = news_data.iloc[0]['news_text']
                                 if news_text:
-                                    # Mostra le news formattate
-                                    st.text_area("📰 News analizzate dall'AI", news_text, height=300)
+                                    # Mostra le news formattate (key unica per evitare duplicati)
+                                    st.text_area("📰 News analizzate dall'AI", news_text, height=300, key=f"news_{row['id']}")
                                 else:
                                     st.info("Nessuna news disponibile")
                             else:
