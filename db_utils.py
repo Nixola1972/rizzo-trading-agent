@@ -668,6 +668,10 @@ def log_bot_operation(
             context_id = cur.fetchone()[0]
             if indicators is not None:
                 for indicator in indicators:
+                    # Skip se indicator non è un dizionario
+                    if not isinstance(indicator, dict):
+                        print(f"[db_utils] Skipping non-dict indicator: {type(indicator)}")
+                        continue
                     indicators_norm = _normalize_json_arg(indicator) if indicator is not None else None
 
                     # 2) Dettagli per tipo di input, se presenti
