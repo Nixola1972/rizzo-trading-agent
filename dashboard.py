@@ -262,6 +262,310 @@ with tab1:
         except Exception as e:
             st.error(f"Errore: {e}")
 
+    # ========================================
+    # TRADING ANALYTICS SECTION (NEW)
+    # ========================================
+    st.markdown("---")
+    st.subheader("📈 Trading Analytics")
+
+    # Row 1: Key Metrics
+    col_an1, col_an2, col_an3, col_an4 = st.columns(4)
+
+    # WIN RATE
+    try:
+        win_rate_data = query_db("""
+            SELECT
+                COUNT(*) FILTER (WHERE pnl_usd > 0) as wins,
+                COUNT(*) FILTER (WHERE pnl_usd < 0) as losses,
+                COUNT(*) FILTER (WHERE pnl_usd = 0) as breakeven,
+                COUNT(*) as total
+            FROM open_positions
+            WHERE pnl_usd IS NOT NULL
+        """)
+
+        if not win_rate_data.empty and win_rate_data['total'].iloc[0] > 0:
+            wins = int(win_rate_data['wins'].iloc[0])
+            losses = int(win_rate_data['losses'].iloc[0])
+            total = int(win_rate_data['total'].iloc[0])
+            win_rate = (wins / total * 100) if total > 0 else 0
+
+            with col_an1:
+                st.metric("🎯 Win Rate", f"{win_rate:.1f}%", f"{wins}W / {losses}L")
+        else:
+            with col_an1:
+                st.metric("🎯 Win Rate", "N/A", "No closed trades")
+    except Exception as e:
+        with col_an1:
+            st.metric("🎯 Win Rate", "Error")
+
+    # AVG P&L PER TRADE
+    try:
+        avg_pnl_data = query_db("""
+            SELECT
+                AVG(pnl_usd) as avg_pnl,
+                AVG(CASE WHEN pnl_usd > 0 THEN pnl_usd END) as avg_win,
+                AVG(CASE WHEN pnl_usd < 0 THEN pnl_usd END) as avg_loss
+            FROM open_positions
+            WHERE pnl_usd IS NOT NULL
+        """)
+
+        if not avg_pnl_data.empty and pd.notna(avg_pnl_data['avg_pnl'].iloc[0]):
+            avg_pnl = float(avg_pnl_data['avg_pnl'].iloc[0])
+            avg_win = float(avg_pnl_data['avg_win'].iloc[0]) if pd.notna(avg_pnl_data['avg_win'].iloc[0]) else 0
+            avg_loss = float(avg_pnl_data['avg_loss'].iloc[0]) if pd.notna(avg_pnl_data['avg_loss'].iloc[0]) else 0
+
+            with col_an2:
+                delta_color = "normal" if avg_pnl >= 0 else "inverse"
+                st.metric("💰 Avg P&L/Trade", f"${avg_pnl:.2f}")
+                st.caption(f"Avg Win: ${avg_win:.2f} | Avg Loss: ${avg_loss:.2f}")
+        else:
+            with col_an2:
+                st.metric("💰 Avg P&L/Trade", "N/A")
+    except Exception as e:
+        with col_an2:
+            st.metric("💰 Avg P&L/Trade", "Error")
+
+    # MAX DRAWDOWN
+    try:
+        drawdown_data = query_db("""
+            SELECT balance_usd, created_at
+            FROM account_snapshots
+            ORDER BY created_at ASC
+        """)
+
+        if not drawdown_data.empty and len(drawdown_data) > 1:
+            balances = drawdown_data['balance_usd'].astype(float).values
+
+            # Calculate running max and drawdown
+            running_max = balances[0]
+            max_drawdown = 0
+            max_drawdown_pct = 0
+
+            for balance in balances:
+                if balance > running_max:
+                    running_max = balance
+                drawdown = running_max - balance
+                drawdown_pct = (drawdown / running_max * 100) if running_max > 0 else 0
+                if drawdown_pct > max_drawdown_pct:
+                    max_drawdown = drawdown
+                    max_drawdown_pct = drawdown_pct
+
+            with col_an3:
+                st.metric("📉 Max Drawdown", f"{max_drawdown_pct:.2f}%", f"-${max_drawdown:.2f}")
+        else:
+            with col_an3:
+                st.metric("📉 Max Drawdown", "N/A")
+    except Exception as e:
+        with col_an3:
+            st.metric("📉 Max Drawdown", "Error")
+
+    # PROFIT FACTOR
+    try:
+        pf_data = query_db("""
+            SELECT
+                COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd END), 0) as gross_profit,
+                COALESCE(ABS(SUM(CASE WHEN pnl_usd < 0 THEN pnl_usd END)), 0.01) as gross_loss
+            FROM open_positions
+            WHERE pnl_usd IS NOT NULL
+        """)
+
+        if not pf_data.empty:
+            gross_profit = float(pf_data['gross_profit'].iloc[0])
+            gross_loss = float(pf_data['gross_loss'].iloc[0])
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+
+            with col_an4:
+                pf_status = "Good" if profit_factor > 1.5 else ("Ok" if profit_factor > 1 else "Poor")
+                st.metric("⚖️ Profit Factor", f"{profit_factor:.2f}", pf_status)
+        else:
+            with col_an4:
+                st.metric("⚖️ Profit Factor", "N/A")
+    except Exception as e:
+        with col_an4:
+            st.metric("⚖️ Profit Factor", "Error")
+
+    # Row 2: Performance by Direction (Long vs Short)
+    col_dir1, col_dir2 = st.columns(2)
+
+    with col_dir1:
+        st.markdown("#### 📊 Performance by Direction")
+        try:
+            direction_perf = query_db("""
+                SELECT
+                    side as direction,
+                    COUNT(*) as trades,
+                    SUM(pnl_usd) as total_pnl,
+                    AVG(pnl_usd) as avg_pnl,
+                    COUNT(*) FILTER (WHERE pnl_usd > 0) as wins,
+                    COUNT(*) FILTER (WHERE pnl_usd < 0) as losses
+                FROM open_positions
+                WHERE pnl_usd IS NOT NULL AND side IS NOT NULL
+                GROUP BY side
+            """)
+
+            if not direction_perf.empty:
+                for _, row in direction_perf.iterrows():
+                    direction = row['direction'].upper() if row['direction'] else "N/A"
+                    total_pnl = float(row['total_pnl']) if pd.notna(row['total_pnl']) else 0
+                    avg_pnl = float(row['avg_pnl']) if pd.notna(row['avg_pnl']) else 0
+                    wins = int(row['wins']) if pd.notna(row['wins']) else 0
+                    losses = int(row['losses']) if pd.notna(row['losses']) else 0
+                    trades = int(row['trades'])
+                    win_rate = (wins / trades * 100) if trades > 0 else 0
+
+                    icon = "🟢" if direction == "LONG" else "🔴"
+                    pnl_color = "green" if total_pnl >= 0 else "red"
+
+                    st.markdown(f"""
+                    <div style="background: {'#28a74522' if direction == 'LONG' else '#dc354522'};
+                                padding: 15px; border-radius: 10px; margin-bottom: 10px;">
+                        <h4 style="margin: 0;">{icon} {direction}</h4>
+                        <p style="margin: 5px 0;">
+                            <b>Trades:</b> {trades} |
+                            <b>Win Rate:</b> {win_rate:.1f}% |
+                            <b>Total P&L:</b> <span style="color: {pnl_color};">${total_pnl:+,.2f}</span>
+                        </p>
+                        <p style="margin: 0; color: #666;">Avg P&L: ${avg_pnl:+,.2f}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("Nessun dato di direzione disponibile")
+        except Exception as e:
+            st.error(f"Errore: {e}")
+
+    with col_dir2:
+        st.markdown("#### 🪙 Performance by Symbol (Detailed)")
+        try:
+            symbol_perf = query_db("""
+                SELECT
+                    symbol,
+                    COUNT(*) as trades,
+                    SUM(pnl_usd) as total_pnl,
+                    AVG(pnl_usd) as avg_pnl,
+                    COUNT(*) FILTER (WHERE pnl_usd > 0) as wins,
+                    MAX(pnl_usd) as best_trade,
+                    MIN(pnl_usd) as worst_trade
+                FROM open_positions
+                WHERE pnl_usd IS NOT NULL
+                GROUP BY symbol
+                ORDER BY total_pnl DESC
+            """)
+
+            if not symbol_perf.empty:
+                for _, row in symbol_perf.iterrows():
+                    symbol = row['symbol']
+                    total_pnl = float(row['total_pnl']) if pd.notna(row['total_pnl']) else 0
+                    avg_pnl = float(row['avg_pnl']) if pd.notna(row['avg_pnl']) else 0
+                    trades = int(row['trades'])
+                    wins = int(row['wins']) if pd.notna(row['wins']) else 0
+                    win_rate = (wins / trades * 100) if trades > 0 else 0
+                    best = float(row['best_trade']) if pd.notna(row['best_trade']) else 0
+                    worst = float(row['worst_trade']) if pd.notna(row['worst_trade']) else 0
+
+                    pnl_color = "green" if total_pnl >= 0 else "red"
+
+                    st.markdown(f"""
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 8px;
+                                margin-bottom: 8px; border-left: 4px solid {pnl_color};">
+                        <b>{symbol}</b>
+                        <span style="float: right; color: {pnl_color}; font-weight: bold;">${total_pnl:+,.2f}</span>
+                        <br/>
+                        <small style="color: #666;">
+                            {trades} trades | {win_rate:.0f}% WR |
+                            Best: ${best:+,.2f} | Worst: ${worst:+,.2f}
+                        </small>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("Nessun dato per symbol disponibile")
+        except Exception as e:
+            st.error(f"Errore: {e}")
+
+    # Row 3: Equity Curve with Drawdown
+    st.markdown("#### 📈 Equity Curve with Drawdown")
+    try:
+        equity_data = query_db("""
+            SELECT balance_usd, created_at
+            FROM account_snapshots
+            ORDER BY created_at ASC
+        """)
+
+        if not equity_data.empty and len(equity_data) > 1:
+            equity_data['created_at'] = pd.to_datetime(equity_data['created_at'])
+            equity_data['balance_usd'] = equity_data['balance_usd'].astype(float)
+
+            # Calculate running max and drawdown for each point
+            equity_data['running_max'] = equity_data['balance_usd'].cummax()
+            equity_data['drawdown'] = equity_data['running_max'] - equity_data['balance_usd']
+            equity_data['drawdown_pct'] = (equity_data['drawdown'] / equity_data['running_max'] * 100)
+
+            # Create figure with secondary y-axis
+            from plotly.subplots import make_subplots
+
+            fig_equity = make_subplots(
+                rows=2, cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.03,
+                row_heights=[0.7, 0.3],
+                subplot_titles=('Equity Curve', 'Drawdown %')
+            )
+
+            # Equity curve
+            fig_equity.add_trace(
+                go.Scatter(
+                    x=equity_data['created_at'],
+                    y=equity_data['balance_usd'],
+                    mode='lines',
+                    name='Balance',
+                    line=dict(color='#2196F3', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(33, 150, 243, 0.1)'
+                ),
+                row=1, col=1
+            )
+
+            # Running max (peak)
+            fig_equity.add_trace(
+                go.Scatter(
+                    x=equity_data['created_at'],
+                    y=equity_data['running_max'],
+                    mode='lines',
+                    name='Peak',
+                    line=dict(color='#4CAF50', width=1, dash='dot')
+                ),
+                row=1, col=1
+            )
+
+            # Drawdown
+            fig_equity.add_trace(
+                go.Scatter(
+                    x=equity_data['created_at'],
+                    y=equity_data['drawdown_pct'],
+                    mode='lines',
+                    name='Drawdown %',
+                    line=dict(color='#f44336', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(244, 67, 54, 0.3)'
+                ),
+                row=2, col=1
+            )
+
+            fig_equity.update_layout(
+                height=500,
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+
+            fig_equity.update_yaxes(title_text="Balance (USD)", row=1, col=1)
+            fig_equity.update_yaxes(title_text="Drawdown %", row=2, col=1, autorange="reversed")
+            fig_equity.update_xaxes(title_text="Date", row=2, col=1)
+
+            st.plotly_chart(fig_equity, use_container_width=True)
+        else:
+            st.info("Non ci sono abbastanza dati per l'equity curve. Attendi almeno 2 snapshot.")
+    except Exception as e:
+        st.error(f"Errore equity curve: {e}")
+
 with tab2:
     st.subheader("Recent Operations")
 

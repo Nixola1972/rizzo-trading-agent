@@ -110,6 +110,18 @@ query_timeout = int(os.getenv("DB_QUERY_TIMEOUT", "60000"))   # 60 sec (ms)
 - Fear & Greed gauge with emoji and progress bar
 - Forecast predictions with change percentages
 
+### 9. Dashboard Trading Analytics (NEW)
+**Problem**: Mancavano metriche di performance per valutare l'efficacia del bot.
+
+**Solution**: Aggiunta sezione "Trading Analytics" nel tab Performance con:
+- **Win Rate**: % di trade in profitto (wins/total)
+- **Avg P&L per Trade**: Media P&L, media win, media loss
+- **Max Drawdown**: Massimo calo dal picco (% e valore assoluto)
+- **Profit Factor**: Rapporto gross profit / gross loss
+- **Performance by Direction**: Long vs Short (trades, win rate, P&L)
+- **Performance by Symbol**: Dettaglio per coin (BTC, ETH, SOL)
+- **Equity Curve con Drawdown**: Grafico a 2 pannelli con balance + running peak e drawdown %
+
 ---
 
 ## Current Configuration
@@ -197,7 +209,7 @@ timeout 120 docker compose -f docker-compose.existing-postgres.yml run --rm trad
 
 | File | Change |
 |------|--------|
-| `dashboard.py` | Fixed SQL queries, enhanced AI Decisions tab with indicators/sentiment/forecasts/news sub-tabs, removed "Rizzo" branding |
+| `dashboard.py` | Fixed SQL queries, enhanced AI Decisions tab with indicators/sentiment/forecasts/news sub-tabs, removed "Rizzo" branding, **NEW: Trading Analytics section** (Win Rate, Avg P&L, Max Drawdown, Profit Factor, Performance by Direction/Symbol, Equity Curve) |
 | `main.py` | Read TESTNET/VERBOSE from .env, added global timeout (SIGALRM), integrated Telegram notifications |
 | `db_utils.py` | Added configurable connection timeout and query timeout |
 | `trading_agent.py` | Full rewrite to support OpenRouter via `AI_PROVIDER` env var |
@@ -318,14 +330,15 @@ timeout 120 docker compose -f docker-compose.existing-postgres.yml run --rm trad
 | **Correlation Matrix** | BTC/ETH/SOL si muovono insieme? | Bassa |
 | **Whale Alerts** | Già nel codice (`whalealert.py`), da attivare | Alta |
 
-### 2. Dashboard Analytics
-- **Win Rate**: % operazioni in profitto
-- **Avg P&L per Trade**: Media guadagno/perdita
-- **Max Drawdown**: Peggior perdita dal picco
-- **Sharpe Ratio**: Risk-adjusted return
-- **Performance by Symbol**: BTC vs ETH vs SOL
-- **Performance by Direction**: Long vs Short
-- **Equity Curve**: Grafico del balance nel tempo
+### 2. Dashboard Analytics ✅ COMPLETATO
+- ~~**Win Rate**: % operazioni in profitto~~ ✅
+- ~~**Avg P&L per Trade**: Media guadagno/perdita~~ ✅
+- ~~**Max Drawdown**: Peggior perdita dal picco~~ ✅
+- **Sharpe Ratio**: Risk-adjusted return (TODO)
+- ~~**Performance by Symbol**: BTC vs ETH vs SOL~~ ✅
+- ~~**Performance by Direction**: Long vs Short~~ ✅
+- ~~**Equity Curve**: Grafico del balance nel tempo~~ ✅
+- **Profit Factor**: Rapporto gross profit / gross loss ✅ (BONUS)
 
 ### 3. Alerting & Monitoring
 - **Telegram Bot**: Alert su ogni trade, errori, daily summary
