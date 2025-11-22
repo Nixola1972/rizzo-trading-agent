@@ -189,3 +189,58 @@ timeout 120 docker compose -f docker-compose.existing-postgres.yml run --rm trad
 3. The `--rm` flag in docker-compose run doesn't always clean up if container hangs
 4. JSONB fields in PostgreSQL need `->>'field'` syntax to extract as text
 5. Docker images cache old code - need `--no-cache` rebuild after file changes
+
+---
+
+## Future Improvements (TODO)
+
+### 1. Dati Aggiuntivi per l'AI
+| Dato | Perché serve | Priorità |
+|------|--------------|----------|
+| **Order Book Depth** | Vedere bid/ask walls, liquidità | Media |
+| **Liquidation Heatmap** | Dove sono i cluster di liquidazioni | Media |
+| **Funding Rate History** | Trend del funding, non solo snapshot | Alta |
+| **Open Interest Delta** | Variazione OI, non solo valore assoluto | Alta |
+| **Volume Profile** | Dove si concentra il volume (POC, VAH, VAL) | Media |
+| **Correlation Matrix** | BTC/ETH/SOL si muovono insieme? | Bassa |
+| **Whale Alerts** | Già nel codice (`whalealert.py`), da attivare | Alta |
+
+### 2. Dashboard Analytics
+- **Win Rate**: % operazioni in profitto
+- **Avg P&L per Trade**: Media guadagno/perdita
+- **Max Drawdown**: Peggior perdita dal picco
+- **Sharpe Ratio**: Risk-adjusted return
+- **Performance by Symbol**: BTC vs ETH vs SOL
+- **Performance by Direction**: Long vs Short
+- **Equity Curve**: Grafico del balance nel tempo
+
+### 3. Alerting & Monitoring
+- **Telegram Bot**: Alert su ogni trade, errori, daily summary
+- **Health Check**: Ping ogni 15 min, alert se bot non risponde
+- **Daily Report**: Email/Telegram con P&L giornaliero
+
+### 4. Logging Migliorato
+- **AI Response Time**: quanto impiega il modello
+- **Confidence Score**: se il modello potesse dare un punteggio 0-100
+- **Alternative Decisions**: cosa avrebbe fatto come seconda scelta
+
+### 5. Backtesting
+- Salvare tutti i dati di input per poter ri-simulare decisioni
+- Confrontare "cosa ha deciso l'AI" vs "cosa sarebbe successo"
+
+---
+
+## Profilo di Rischio del Bot
+
+**Valutazione: MODERATAMENTE AGGRESSIVO**
+
+| Parametro | Valore | Note |
+|-----------|--------|------|
+| Leverage | 1-10x (default 1x) | Potenzialmente aggressivo |
+| Position Size | 0-100% (default 30%) | Moderato |
+| Frequenza | Ogni 15 minuti | Alta frequenza |
+| Asset | BTC, ETH, SOL | Solo major (conservativo) |
+| Posizioni | 1 per coin max | Limitato |
+| Direzione | Long + Short | Bidirezionale |
+
+**Manca**: Stop-loss, take-profit, hard cap su leverage/position size
