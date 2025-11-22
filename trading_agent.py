@@ -67,6 +67,8 @@ MODELS_WITHOUT_JSON_SUPPORT = [
     'deepseek/deepseek-r1:free',  # DeepSeek R1 FREE
     'deepseek/deepseek-r1-distill-llama-70b',
     'deepseek/deepseek-r1-distill-qwen-32b',
+    'deepseek/deepseek-v3',  # DeepSeek V3
+    'deepseek/deepseek-v3.1-terminus',  # DeepSeek V3.1 Terminus
     # Qwen (Alibaba)
     'qwen/qwen-2.5-72b-instruct',
     'qwen/qwen-2.5-coder-32b-instruct',
