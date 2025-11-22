@@ -1,8 +1,12 @@
 import json
+import os
 from decimal import Decimal, ROUND_DOWN
 from typing import Dict, Any
 
 import eth_account
+from dotenv import load_dotenv
+
+load_dotenv()
 from eth_account.signers.local import LocalAccount
 
 from hyperliquid.info import Info
@@ -195,7 +199,22 @@ class HyperLiquidTrader:
         if balance_usd <= 0:
             raise RuntimeError("Balance account = 0")
 
-        notional = balance_usd * portion * Decimal(str(leverage))
+        # === RISK MANAGEMENT: MAX_POSITION_SIZE_PCT ===
+        # Limita l'investimento massimo per singola operazione
+        max_position_pct = Decimal(os.getenv('MAX_POSITION_SIZE_PCT', '50'))
+        max_investment = balance_usd * (max_position_pct / Decimal('100'))
+
+        # Calcola il notional richiesto
+        requested_notional = balance_usd * portion * Decimal(str(leverage))
+
+        # Applica il limite se necessario
+        if requested_notional > max_investment:
+            print(f"⚠️ RISK LIMIT: Notional richiesto ${requested_notional:.2f} supera il limite ${max_investment:.2f} ({max_position_pct}% del portafoglio)")
+            print(f"   📊 Ridotto notional da ${requested_notional:.2f} a ${max_investment:.2f}")
+            notional = max_investment
+        else:
+            notional = requested_notional
+            print(f"✅ Notional ${notional:.2f} entro il limite ${max_investment:.2f} ({max_position_pct}%)")
 
         mids = self.info.all_mids()
         if symbol not in mids:

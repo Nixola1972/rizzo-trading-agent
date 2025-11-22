@@ -271,6 +271,42 @@ Nella dashboard, tab "AI Decisions", vedrai:
 
 ---
 
+## Risk Management
+
+### MAX_POSITION_SIZE_PCT
+
+| Parametro | Default | Range | Descrizione |
+|-----------|---------|-------|-------------|
+| `MAX_POSITION_SIZE_PCT` | 50 | 0-100 | Percentuale massima del portafoglio per singola operazione |
+
+**Come funziona:**
+```
+Portafoglio = $100
+MAX_POSITION_SIZE_PCT = 50
+
+Massimo investimento per operazione = $100 × 50% = $50
+
+Se l'AI richiede di aprire una posizione da $80:
+→ Il bot riduce automaticamente a $50
+→ Viene loggato nel terminale il ridimensionamento
+```
+
+**Esempio di configurazioni:**
+
+| Valore | Profilo | Descrizione |
+|--------|---------|-------------|
+| 25 | Molto conservativo | Max 1/4 del portafoglio per trade |
+| 50 | Bilanciato | Max metà del portafoglio per trade |
+| 75 | Aggressivo | Max 3/4 del portafoglio per trade |
+| 100 | Nessun limite | Può usare tutto il portafoglio |
+
+**NOTA IMPORTANTE:** Questo limite si applica **PRIMA** della leva.
+Se `MAX_POSITION_SIZE_PCT=50` e `leverage=3x`:
+- Massimo capitale impiegato: 50% del portafoglio
+- Esposizione effettiva: 150% del portafoglio (50% × 3)
+
+---
+
 ## Note Tecniche
 
 - I pesi vengono letti da `.env` all'avvio del bot
