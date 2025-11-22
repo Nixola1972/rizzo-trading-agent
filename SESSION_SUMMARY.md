@@ -197,8 +197,11 @@ timeout 120 docker compose -f docker-compose.existing-postgres.yml run --rm trad
 
 | File | Change |
 |------|--------|
-| `dashboard.py` | Fixed SQL queries, added period selector, open positions tab, removed "Rizzo" branding |
-| `main.py` | Read TESTNET/VERBOSE from .env instead of hardcoded |
+| `dashboard.py` | Fixed SQL queries, enhanced AI Decisions tab with indicators/sentiment/forecasts/news sub-tabs, removed "Rizzo" branding |
+| `main.py` | Read TESTNET/VERBOSE from .env, added global timeout (SIGALRM), integrated Telegram notifications |
+| `db_utils.py` | Added configurable connection timeout and query timeout |
+| `trading_agent.py` | Full rewrite to support OpenRouter via `AI_PROVIDER` env var |
+| `telegram_notifier.py` | **NEW** - Telegram notifications for trades, errors, timeouts |
 | `docker-compose.existing-postgres.yml` | Restored from other branch |
 | Cron | Added `timeout 600` protection |
 
@@ -207,8 +210,80 @@ timeout 120 docker compose -f docker-compose.existing-postgres.yml run --rm trad
 ## Pending Issues
 
 1. ~~**trading_agent.py**~~ - RESOLVED: Now supports OpenRouter via `AI_PROVIDER` env var
-2. **Dashboard rebuild on VPS** - Need to pull and rebuild after git changes
-3. **Telegram Alerts** - To be implemented (see Future Improvements)
+2. ~~**Telegram Alerts**~~ - IMPLEMENTED: `telegram_notifier.py` created
+3. **Dashboard rebuild on VPS** - RECURRING ISSUE: Modifiche nel repo non vengono applicate finché non si fa `git pull` + `docker build --no-cache`
+4. **Zombie containers** - RECURRING: Anche con timeout interno, se non si fa rebuild i container usano codice vecchio
+
+---
+
+## Telegram Configuration (NEW)
+
+### Credenziali
+- **Bot**: @trade_nico_bot
+- **Token**: `8262628988:AAHe8KU9triOlZr3_HNslvRO9q2CAvp3b-s`
+- **Chat ID**: DA CONFIGURARE (usare @userinfobot per ottenerlo)
+
+### Environment Variables (.env)
+```bash
+# Telegram Notifications
+TELEGRAM_BOT_TOKEN=8262628988:AAHe8KU9triOlZr3_HNslvRO9q2CAvp3b-s
+TELEGRAM_CHAT_ID=INSERIRE_CHAT_ID
+TELEGRAM_ENABLED=true
+TELEGRAM_NOTIFY_HOLDS=false    # true se vuoi notifiche anche per HOLD
+```
+
+### Messaggi inviati:
+| Evento | Messaggio |
+|--------|-----------|
+| Trade OPEN | 🟢 Symbol, direction, leverage, size, reason |
+| Trade CLOSE | 🔴 Symbol, direction, P&L, reason |
+| HOLD | ⚪ (disabilitato di default) |
+| Errore | ⚠️ Tipo errore, messaggio, source |
+| Timeout | 💀 Bot ha superato timeout |
+
+---
+
+## Known Issues & Troubleshooting
+
+### Dashboard non si aggiorna
+**Problema**: Modifiche al codice non visibili nella dashboard.
+
+**Soluzione**:
+```bash
+cd /root/trading-bots/rizzo-trading-agent
+git pull origin claude/review-project-status-01JBWiEE8H8qGffgjKWWZvaX
+docker compose -f docker-compose.dashboard.yml down
+docker compose -f docker-compose.dashboard.yml build --no-cache
+docker compose -f docker-compose.dashboard.yml up -d
+```
+
+### Bot crea container zombie
+**Problema**: Ogni 15 minuti si accumula un nuovo container che non termina.
+
+**Causa**: Il codice vecchio non ha timeout interni. Il cron `timeout 600` uccide docker-compose ma non il container.
+
+**Soluzione**:
+```bash
+# 1. Pulire container esistenti
+docker ps -a | grep "trading-bot" | awk '{print $1}' | xargs -r docker stop
+docker ps -a | grep "trading-bot" | awk '{print $1}' | xargs -r docker rm
+
+# 2. Killare connessioni DB
+docker exec memory_postgres psql -U tradingbot -d rizzo_trading -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'rizzo_trading' AND pid != pg_backend_pid();"
+
+# 3. Pull e rebuild
+cd /root/trading-bots/rizzo-trading-agent
+git pull origin claude/review-project-status-01JBWiEE8H8qGffgjKWWZvaX
+docker compose -f docker-compose.existing-postgres.yml build --no-cache
+
+# 4. Test
+timeout 120 docker compose -f docker-compose.existing-postgres.yml run --rm trading-bot
+```
+
+### Come ottenere Telegram Chat ID
+1. Cerca **@userinfobot** su Telegram
+2. Scrivi `/start`
+3. Copia il numero sotto "Id:"
 
 ---
 
