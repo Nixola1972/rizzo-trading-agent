@@ -423,22 +423,21 @@ with tab3:
 with tab4:
     st.subheader("🎯 AI Decision Analysis")
 
-    # Ultime decisioni AI ✅ FIXATO!
+    # Ultime decisioni AI con dati di contesto completi
     try:
         ai_decisions = query_db("""
             SELECT
                 bo.id,
                 bo.created_at,
+                bo.context_id,
                 bo.operation,
                 bo.symbol,
                 bo.direction,
                 bo.leverage,
                 bo.target_portion_of_balance,
                 bo.raw_payload->>'reason' as reason,
-                bo.raw_payload as full_payload,
-                ac.system_prompt
+                bo.raw_payload as full_payload
             FROM bot_operations bo
-            LEFT JOIN ai_contexts ac ON bo.context_id = ac.id
             ORDER BY bo.created_at DESC
             LIMIT 50
         """)
@@ -446,70 +445,248 @@ with tab4:
         if not ai_decisions.empty:
             st.success(f"📊 {len(ai_decisions)} decisioni AI trovate")
 
-            # Filtro per operazione
-            decision_filter = st.selectbox(
-                "Filter by Operation",
-                ["All", "open", "close", "hold"]
-            )
+            # Filtri
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                decision_filter = st.selectbox(
+                    "🔍 Filtra per Operazione",
+                    ["Tutte", "open", "close", "hold"]
+                )
+            with col_f2:
+                symbol_filter_ai = st.selectbox(
+                    "🪙 Filtra per Symbol",
+                    ["Tutti", "BTC", "ETH", "SOL"],
+                    key="ai_symbol_filter"
+                )
 
-            filtered_decisions = ai_decisions if decision_filter == "All" else ai_decisions[ai_decisions['operation'] == decision_filter]
+            filtered_decisions = ai_decisions
+            if decision_filter != "Tutte":
+                filtered_decisions = filtered_decisions[filtered_decisions['operation'] == decision_filter]
+            if symbol_filter_ai != "Tutti":
+                filtered_decisions = filtered_decisions[filtered_decisions['symbol'] == symbol_filter_ai]
 
             for idx, row in filtered_decisions.iterrows():
                 # Icon e colore per tipo operazione
                 if row['operation'] == 'open':
                     icon = "🟢"
-                    color = "green"
+                    badge_color = "#28a745"
                 elif row['operation'] == 'close':
                     icon = "🔴"
-                    color = "red"
+                    badge_color = "#dc3545"
                 else:
                     icon = "⚪"
-                    color = "gray"
+                    badge_color = "#6c757d"
 
                 with st.expander(
                     f"{icon} {row['created_at']} - {row['operation'].upper()} {row['symbol']} ({row['direction']})",
                     expanded=(idx==0)
                 ):
-                    col_a, col_b = st.columns([3, 1])
+                    # Header con decisione
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(90deg, {badge_color}22, transparent);
+                                padding: 15px; border-radius: 10px; border-left: 4px solid {badge_color}; margin-bottom: 15px;">
+                        <h3 style="margin: 0; color: {badge_color};">{icon} {row['operation'].upper()} {row['symbol']}</h3>
+                        <p style="margin: 5px 0 0 0; color: #666;">Direction: {row['direction']} | Leverage: {row['leverage']}x | Target: {(row['target_portion_of_balance'] or 0) * 100:.1f}%</p>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-                    with col_a:
-                        st.markdown(f"### 💭 AI Reasoning")
-                        st.markdown(f"**{row['reason']}**")
+                    # === REASONING PRINCIPALE ===
+                    st.markdown("### 💭 Ragionamento AI")
+                    reason_text = row['reason'] or "Nessun reasoning disponibile"
+                    st.info(reason_text)
 
-                        if pd.notna(row['leverage']) and row['leverage'] > 0:
-                            st.markdown(f"**Leverage:** {row['leverage']}x")
+                    # === DATI INPUT - Carica solo se context_id esiste ===
+                    context_id = row.get('context_id')
+                    if pd.notna(context_id):
+                        st.markdown("---")
+                        st.markdown("### 📊 Dati Input Analizzati dall'AI")
 
-                        if pd.notna(row['target_portion_of_balance']):
-                            st.markdown(f"**Target %:** {row['target_portion_of_balance'] * 100:.1f}%")
+                        # Tab interni per i dati
+                        data_tab1, data_tab2, data_tab3, data_tab4 = st.tabs([
+                            "📈 Indicatori", "😊 Sentiment", "🔮 Forecasts", "📰 News"
+                        ])
 
-                    with col_b:
-                        if row['operation'] == 'open':
-                            st.success("✅ OPEN")
-                        elif row['operation'] == 'close':
-                            st.error("❌ CLOSE")
-                        else:
-                            st.info("⏸️ HOLD")
+                        # --- INDICATORI ---
+                        with data_tab1:
+                            indicators_data = query_db(f"""
+                                SELECT
+                                    ticker,
+                                    price,
+                                    ema20,
+                                    macd,
+                                    rsi_7,
+                                    pp, s1, s2, r1, r2,
+                                    funding_rate,
+                                    open_interest_latest,
+                                    volume_bid,
+                                    volume_ask
+                                FROM indicators_contexts
+                                WHERE context_id = {context_id}
+                            """)
 
-                        st.caption(f"ID: {row['id']}")
+                            if not indicators_data.empty:
+                                for _, ind in indicators_data.iterrows():
+                                    ticker = ind['ticker']
 
-                    # Full payload JSON
-                    if pd.notna(row['full_payload']):
-                        with st.expander("📦 Full Decision Payload (JSON)"):
+                                    # Calcola segnali
+                                    price = float(ind['price']) if pd.notna(ind['price']) else 0
+                                    ema20 = float(ind['ema20']) if pd.notna(ind['ema20']) else 0
+                                    macd = float(ind['macd']) if pd.notna(ind['macd']) else 0
+                                    rsi = float(ind['rsi_7']) if pd.notna(ind['rsi_7']) else 50
+
+                                    # Segnali visivi
+                                    trend_signal = "🟢 BULLISH" if price > ema20 else "🔴 BEARISH"
+                                    macd_signal = "🟢 Positivo" if macd > 0 else "🔴 Negativo"
+                                    if rsi > 70:
+                                        rsi_signal = "🔴 Overbought"
+                                    elif rsi < 30:
+                                        rsi_signal = "🟢 Oversold"
+                                    else:
+                                        rsi_signal = "⚪ Neutro"
+
+                                    st.markdown(f"#### {ticker}")
+
+                                    col_i1, col_i2, col_i3, col_i4 = st.columns(4)
+                                    with col_i1:
+                                        st.metric("💰 Price", f"${price:,.2f}")
+                                        st.caption(f"EMA20: ${ema20:,.2f}")
+                                    with col_i2:
+                                        st.metric("📊 RSI(7)", f"{rsi:.1f}")
+                                        st.caption(rsi_signal)
+                                    with col_i3:
+                                        st.metric("📈 MACD", f"{macd:.4f}")
+                                        st.caption(macd_signal)
+                                    with col_i4:
+                                        st.metric("🎯 Trend", trend_signal.split()[1])
+                                        st.caption(trend_signal)
+
+                                    # Pivot points
+                                    if pd.notna(ind['pp']):
+                                        with st.expander(f"📍 Pivot Points {ticker}"):
+                                            pp_col1, pp_col2 = st.columns(2)
+                                            with pp_col1:
+                                                st.write(f"**PP:** ${float(ind['pp']):,.2f}")
+                                                st.write(f"**S1:** ${float(ind['s1']):,.2f}" if pd.notna(ind['s1']) else "S1: N/A")
+                                                st.write(f"**S2:** ${float(ind['s2']):,.2f}" if pd.notna(ind['s2']) else "S2: N/A")
+                                            with pp_col2:
+                                                st.write(f"**R1:** ${float(ind['r1']):,.2f}" if pd.notna(ind['r1']) else "R1: N/A")
+                                                st.write(f"**R2:** ${float(ind['r2']):,.2f}" if pd.notna(ind['r2']) else "R2: N/A")
+                                                if pd.notna(ind['funding_rate']):
+                                                    st.write(f"**Funding:** {float(ind['funding_rate'])*100:.4f}%")
+
+                                    st.markdown("---")
+                            else:
+                                st.info("Nessun dato indicatori disponibile per questa decisione")
+
+                        # --- SENTIMENT ---
+                        with data_tab2:
+                            sentiment_data = query_db(f"""
+                                SELECT value, classification, raw
+                                FROM sentiment_contexts
+                                WHERE context_id = {context_id}
+                            """)
+
+                            if not sentiment_data.empty:
+                                sent = sentiment_data.iloc[0]
+                                value = int(sent['value']) if pd.notna(sent['value']) else 50
+                                classification = sent['classification'] or "Unknown"
+
+                                # Colore basato su valore
+                                if value <= 25:
+                                    sent_color = "#dc3545"  # Extreme Fear - Red
+                                    sent_icon = "😱"
+                                elif value <= 45:
+                                    sent_color = "#fd7e14"  # Fear - Orange
+                                    sent_icon = "😰"
+                                elif value <= 55:
+                                    sent_color = "#ffc107"  # Neutral - Yellow
+                                    sent_icon = "😐"
+                                elif value <= 75:
+                                    sent_color = "#28a745"  # Greed - Green
+                                    sent_icon = "😊"
+                                else:
+                                    sent_color = "#20c997"  # Extreme Greed - Teal
+                                    sent_icon = "🤑"
+
+                                st.markdown(f"""
+                                <div style="text-align: center; padding: 20px; background: {sent_color}22; border-radius: 15px;">
+                                    <h1 style="font-size: 64px; margin: 0;">{sent_icon}</h1>
+                                    <h2 style="color: {sent_color}; margin: 10px 0;">{value}/100</h2>
+                                    <p style="font-size: 18px; margin: 0;"><strong>{classification}</strong></p>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                                # Barra visiva del sentiment
+                                st.progress(value / 100)
+                                st.caption("0 = Extreme Fear | 50 = Neutral | 100 = Extreme Greed")
+                            else:
+                                st.info("Nessun dato sentiment disponibile")
+
+                        # --- FORECASTS ---
+                        with data_tab3:
+                            forecasts_data = query_db(f"""
+                                SELECT ticker, timeframe, last_price, prediction,
+                                       lower_bound, upper_bound, change_pct
+                                FROM forecasts_contexts
+                                WHERE context_id = {context_id}
+                                ORDER BY ticker, timeframe
+                            """)
+
+                            if not forecasts_data.empty:
+                                for _, fc in forecasts_data.iterrows():
+                                    change = float(fc['change_pct']) if pd.notna(fc['change_pct']) else 0
+                                    change_color = "green" if change >= 0 else "red"
+                                    change_icon = "📈" if change >= 0 else "📉"
+
+                                    st.markdown(f"#### {fc['ticker']} - {fc['timeframe']}")
+
+                                    fc_col1, fc_col2, fc_col3 = st.columns(3)
+                                    with fc_col1:
+                                        last_p = float(fc['last_price']) if pd.notna(fc['last_price']) else 0
+                                        st.metric("Prezzo Attuale", f"${last_p:,.2f}")
+                                    with fc_col2:
+                                        pred = float(fc['prediction']) if pd.notna(fc['prediction']) else 0
+                                        st.metric("Previsione", f"${pred:,.2f}", f"{change:+.2f}%")
+                                    with fc_col3:
+                                        lower = float(fc['lower_bound']) if pd.notna(fc['lower_bound']) else 0
+                                        upper = float(fc['upper_bound']) if pd.notna(fc['upper_bound']) else 0
+                                        st.metric("Range", f"${lower:,.0f} - ${upper:,.0f}")
+
+                                    st.markdown("---")
+                            else:
+                                st.info("Nessun forecast disponibile")
+
+                        # --- NEWS ---
+                        with data_tab4:
+                            news_data = query_db(f"""
+                                SELECT news_text
+                                FROM news_contexts
+                                WHERE context_id = {context_id}
+                            """)
+
+                            if not news_data.empty:
+                                news_text = news_data.iloc[0]['news_text']
+                                if news_text:
+                                    # Mostra le news formattate
+                                    st.text_area("📰 News analizzate dall'AI", news_text, height=300)
+                                else:
+                                    st.info("Nessuna news disponibile")
+                            else:
+                                st.info("Nessuna news disponibile")
+
+                    # === DETTAGLI TECNICI (collassati) ===
+                    with st.expander("🔧 Dettagli Tecnici"):
+                        st.caption(f"Operation ID: {row['id']} | Context ID: {context_id}")
+
+                        if pd.notna(row['full_payload']):
+                            st.markdown("**Raw Decision Payload:**")
                             st.json(row['full_payload'])
 
-                    # System prompt
-                    if pd.notna(row['system_prompt']):
-                        with st.expander("📄 System Prompt (Input AI)"):
-                            prompt_text = str(row['system_prompt'])
-                            if len(prompt_text) > 5000:
-                                st.text_area("Prompt", prompt_text[:5000] + "\n... (truncated)", height=300)
-                                st.caption(f"Total length: {len(prompt_text)} characters")
-                            else:
-                                st.text_area("Prompt", prompt_text, height=300)
         else:
-            st.info("Nessuna decisione AI registrata")
+            st.info("Nessuna decisione AI registrata. Il bot deve eseguire almeno un ciclo.")
     except Exception as e:
         st.error(f"Errore nel caricamento decisioni AI: {e}")
+        st.exception(e)
 
 with tab5:
     st.subheader("⚙️ Bot Configuration")
