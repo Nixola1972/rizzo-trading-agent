@@ -303,15 +303,20 @@ def calculate_scores_for_symbols(indicators_data: list, sentiment_data: dict, fo
 
     # Estrai Fear & Greed (globale per tutti i simboli)
     fear_greed = 50  # default neutrale
-    if sentiment_data:
+    if sentiment_data and isinstance(sentiment_data, dict):
         fear_greed = sentiment_data.get('valore', sentiment_data.get('value', 50))
         if fear_greed is None:
             fear_greed = 50
+    elif sentiment_data:
+        print(f"[DEBUG] sentiment_data non è un dict: {type(sentiment_data)}")
 
     # Crea mappa forecast per ticker
     forecast_map = {}
-    if forecasts_data:
+    if forecasts_data and isinstance(forecasts_data, list):
         for fc in forecasts_data:
+            if not isinstance(fc, dict):
+                print(f"[DEBUG] forecast item non è un dict: {type(fc)}")
+                continue
             ticker = fc.get('Ticker') or fc.get('ticker')
             timeframe = fc.get('Timeframe') or fc.get('timeframe', '')
             change_pct = fc.get('Variazione %') or fc.get('change_pct', 0)
@@ -324,14 +329,19 @@ def calculate_scores_for_symbols(indicators_data: list, sentiment_data: dict, fo
                     forecast_map[ticker] = 0
 
     # Calcola score per ogni ticker
-    if indicators_data:
+    if indicators_data and isinstance(indicators_data, list):
         for ind in indicators_data:
+            if not isinstance(ind, dict):
+                print(f"[DEBUG] indicator item non è un dict: {type(ind)}")
+                continue
             ticker = ind.get('ticker')
             if not ticker:
                 continue
 
             # Estrai valori indicatori
             current = ind.get('current', {})
+            if not isinstance(current, dict):
+                current = {}
             price = current.get('price', 0)
             ema20 = current.get('ema20', price)
             rsi = current.get('rsi_7', 50)
