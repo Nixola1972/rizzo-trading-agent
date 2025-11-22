@@ -13,8 +13,8 @@ import db_utils
 from dotenv import load_dotenv
 load_dotenv()
 
-# Timeout globale di 5 minuti per evitare container zombie
-GLOBAL_TIMEOUT = 300  # 5 minuti
+# Timeout globale configurabile da .env (default 5 minuti)
+GLOBAL_TIMEOUT = int(os.getenv("BOT_TIMEOUT_SECONDS", "300"))
 
 def timeout_handler(signum, frame):
     print(f"❌ TIMEOUT: Script exceeded {GLOBAL_TIMEOUT} seconds. Exiting...")
@@ -23,7 +23,7 @@ def timeout_handler(signum, frame):
 # Imposta il timeout globale
 signal.signal(signal.SIGALRM, timeout_handler)
 signal.alarm(GLOBAL_TIMEOUT)
-print(f"⏱️ Global timeout set: {GLOBAL_TIMEOUT} seconds")
+print(f"⏱️ Global timeout set: {GLOBAL_TIMEOUT} seconds (BOT_TIMEOUT_SECONDS)")
 
 # Collegamento ad Hyperliquid
 TESTNET = os.getenv("TESTNET", "true").lower() == "true"  # Legge da .env

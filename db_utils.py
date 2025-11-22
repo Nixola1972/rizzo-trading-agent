@@ -46,15 +46,19 @@ def get_connection():
     """Context manager che restituisce una connessione PostgreSQL.
 
     Usa il DSN in DATABASE_URL.
-    Timeout di 30 secondi per evitare blocchi infiniti.
+    Timeout configurabili da .env:
+    - DB_CONNECT_TIMEOUT: timeout connessione in secondi (default 30)
+    - DB_QUERY_TIMEOUT: timeout query in millisecondi (default 60000 = 60s)
     """
 
     config = get_db_config()
-    # Aggiungi timeout di connessione per evitare blocchi
+    connect_timeout = int(os.getenv("DB_CONNECT_TIMEOUT", "30"))
+    query_timeout = int(os.getenv("DB_QUERY_TIMEOUT", "60000"))
+
     conn = psycopg2.connect(
         config.dsn,
-        connect_timeout=30,  # Timeout connessione 30 sec
-        options='-c statement_timeout=60000'  # Timeout query 60 sec
+        connect_timeout=connect_timeout,
+        options=f'-c statement_timeout={query_timeout}'
     )
     try:
         yield conn
