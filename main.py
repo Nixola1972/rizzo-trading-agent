@@ -7,9 +7,23 @@ from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
 import os
 import json
+import signal
+import sys
 import db_utils
 from dotenv import load_dotenv
 load_dotenv()
+
+# Timeout globale di 5 minuti per evitare container zombie
+GLOBAL_TIMEOUT = 300  # 5 minuti
+
+def timeout_handler(signum, frame):
+    print(f"❌ TIMEOUT: Script exceeded {GLOBAL_TIMEOUT} seconds. Exiting...")
+    sys.exit(1)
+
+# Imposta il timeout globale
+signal.signal(signal.SIGALRM, timeout_handler)
+signal.alarm(GLOBAL_TIMEOUT)
+print(f"⏱️ Global timeout set: {GLOBAL_TIMEOUT} seconds")
 
 # Collegamento ad Hyperliquid
 TESTNET = os.getenv("TESTNET", "true").lower() == "true"  # Legge da .env
