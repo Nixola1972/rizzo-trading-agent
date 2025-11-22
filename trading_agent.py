@@ -123,7 +123,7 @@ def validate_trading_decision(result):
     Valida che la decisione di trading abbia tutti i campi richiesti.
     Aggiunge campi mancanti con valori di default se possibile.
     """
-    required_fields = ["operation", "symbol", "reason"]
+    required_fields = ["operation", "symbol"]  # Solo questi sono veramente obbligatori
 
     # Validazione campi obbligatori
     for field in required_fields:
@@ -139,6 +139,9 @@ def validate_trading_decision(result):
 
     if "leverage" not in result:
         result["leverage"] = 1
+
+    if "reason" not in result:
+        result["reason"] = "No reason provided by AI model"
 
     # Validazione valori
     valid_operations = ["open", "close", "hold"]
