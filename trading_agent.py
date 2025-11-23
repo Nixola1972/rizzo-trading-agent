@@ -474,6 +474,22 @@ def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=
             signal_scores=scores
         )
 
+        # ===== FORZA RISPETTO DELLO SCORING =====
+        # Non permettere all'AI di aprire posizioni se lo score è sotto soglia
+        if scores and result.get('symbol') in scores:
+            score = scores[result['symbol']]
+            net_score = score.get('net_score', 0)
+            threshold = score.get('thresholds', {}).get('open', 15.0)
+
+            # Se score sotto soglia E AI vuole aprire → FORZA HOLD
+            if abs(net_score) < threshold and result.get('operation') == 'open':
+                original_decision = f"{result['operation']} {result['direction']}"
+                print(f"⚠️  OVERRIDE: net_score={net_score:.1f} < threshold={threshold}")
+                print(f"   AI voleva: {original_decision} → Forzato: HOLD")
+                result['operation'] = 'hold'
+                result['_override_reason'] = f"Score {net_score:.1f} sotto soglia {threshold}. AI voleva: {original_decision}"
+        # ===== FINE FIX =====
+
         # Aggiungi info scoring al risultato per logging
         if scores and result.get('symbol') in scores:
             result['_signal_score'] = scores[result['symbol']]
