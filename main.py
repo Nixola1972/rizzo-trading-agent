@@ -69,12 +69,16 @@ try:
     system_prompt = system_prompt.format(portfolio_data, msg_info)
         
     print("L'agente sta decidendo la sua azione!")
-    # Passa indicatori, sentiment e forecast per il sistema di scoring
+    # Estrai posizioni aperte per il sistema di trailing stop
+    open_positions = account_status.get("open_positions", [])
+
+    # Passa indicatori, sentiment, forecast e posizioni aperte
     out = previsione_trading_agent(
         system_prompt,
         indicators=indicators_json,
         sentiment=sentiment_json,
-        forecasts=forecasts_json
+        forecasts=forecasts_json,
+        open_positions=open_positions
     )
 
     print(f"[DEBUG] Tipo risposta AI: {type(out)}")
@@ -83,6 +87,34 @@ try:
     print("[STEP 1] Esecuzione segnale su Hyperliquid...")
     bot.execute_signal(out)
     print("[STEP 1] ✅ Completato")
+
+    # Se la posizione è stata chiusa, elimina il tracking
+    if out.get("_delete_tracking") and out.get("symbol"):
+        try:
+            deleted = db_utils.delete_position_tracking(out["symbol"])
+            if deleted:
+                print(f"[TRACKING] ✅ Tracking eliminato per {out['symbol']}")
+        except Exception as e:
+            print(f"[TRACKING] ⚠️ Errore eliminazione tracking: {e}")
+
+    # Se è stata aperta una nuova posizione, crea il tracking
+    if out.get("operation") == "open" and out.get("symbol"):
+        try:
+            # Ottieni il prezzo corrente per inizializzare il tracking
+            current_status = bot.get_account_status()
+            for pos in current_status.get("open_positions", []):
+                if pos.get("symbol") == out["symbol"]:
+                    db_utils.upsert_position_tracking(
+                        symbol=pos["symbol"],
+                        direction=pos["side"],
+                        entry_price=pos["entry_price"],
+                        current_price=pos["mark_price"],
+                        trailing_active=False
+                    )
+                    print(f"[TRACKING] ✅ Tracking creato per {out['symbol']} @ {pos['entry_price']}")
+                    break
+        except Exception as e:
+            print(f"[TRACKING] ⚠️ Errore creazione tracking: {e}")
 
     # Notifica Telegram della decisione
     print("[STEP 2] Invio notifica Telegram...")

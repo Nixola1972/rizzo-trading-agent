@@ -2,8 +2,20 @@ from dotenv import load_dotenv
 import os
 import json
 import re
+from typing import Dict, List, Any, Optional
 
 load_dotenv()
+
+# ===== CONFIGURAZIONE TRAILING STOP & POSITION PROTECTION =====
+TRAILING_STOP_ENABLED = os.getenv('TRAILING_STOP_ENABLED', 'true').lower() == 'true'
+TRAILING_STOP_PERCENT = float(os.getenv('TRAILING_STOP_PERCENT', '7'))
+TRAILING_STOP_ACTIVATION_PERCENT = float(os.getenv('TRAILING_STOP_ACTIVATION_PERCENT', '3'))
+INITIAL_STOP_LOSS_PERCENT = float(os.getenv('INITIAL_STOP_LOSS_PERCENT', '10'))
+SCORE_THRESHOLD_CLOSE_REVERSAL = float(os.getenv('SCORE_THRESHOLD_CLOSE_REVERSAL', '10'))
+
+if TRAILING_STOP_ENABLED:
+    print(f"🛡️  Trailing Stop: ENABLED (trailing={TRAILING_STOP_PERCENT}%, activation={TRAILING_STOP_ACTIVATION_PERCENT}%, stop_loss={INITIAL_STOP_LOSS_PERCENT}%)")
+    print(f"🛡️  Close Reversal Threshold: {SCORE_THRESHOLD_CLOSE_REVERSAL}")
 
 # Import signal scorer per calcolo score BULLISH/BEARISH
 try:
@@ -282,6 +294,238 @@ def call_ai_api(prompt, use_json_format=True, max_retries=2, signal_scores=None)
 _last_signal_scores = {}
 
 
+def check_trailing_stop(
+    position: Dict[str, Any],
+    current_price: float,
+    tracking_data: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Controlla se il trailing stop o lo stop loss iniziale è stato triggerato.
+
+    Args:
+        position: Dati della posizione aperta (symbol, side, entry_price, mark_price, pnl_usd)
+        current_price: Prezzo corrente del mercato
+        tracking_data: Dati di tracking dal DB (peak_price, trailing_active, etc.)
+
+    Returns:
+        dict con:
+            - triggered: bool (se deve chiudere)
+            - reason: str (motivo)
+            - trailing_active: bool (se il trailing è attivo)
+            - new_peak: float (nuovo peak price da salvare)
+    """
+    if not TRAILING_STOP_ENABLED:
+        return {"triggered": False, "reason": "Trailing stop disabled", "trailing_active": False}
+
+    symbol = position.get("symbol", "")
+    direction = position.get("side", "long").lower()
+    entry_price = float(position.get("entry_price", 0))
+
+    if entry_price == 0:
+        return {"triggered": False, "reason": "No entry price", "trailing_active": False}
+
+    # Calcola profitto attuale in percentuale
+    if direction == "long":
+        profit_pct = ((current_price - entry_price) / entry_price) * 100
+    else:  # short
+        profit_pct = ((entry_price - current_price) / entry_price) * 100
+
+    # Determina peak_price (dal tracking o dal prezzo corrente se nuovo)
+    if tracking_data:
+        peak_price = tracking_data.get("peak_price", current_price)
+        trailing_active = tracking_data.get("trailing_active", False)
+    else:
+        peak_price = current_price
+        trailing_active = False
+
+    # Aggiorna peak_price se migliore
+    if direction == "long":
+        new_peak = max(peak_price, current_price)
+    else:
+        new_peak = min(peak_price, current_price)
+
+    # Calcola profitto dal peak
+    if direction == "long":
+        profit_from_peak_pct = ((current_price - new_peak) / new_peak) * 100
+    else:
+        profit_from_peak_pct = ((new_peak - current_price) / new_peak) * 100
+
+    # Attiva trailing se profitto >= soglia attivazione
+    if profit_pct >= TRAILING_STOP_ACTIVATION_PERCENT:
+        trailing_active = True
+
+    result = {
+        "triggered": False,
+        "reason": "",
+        "trailing_active": trailing_active,
+        "new_peak": new_peak,
+        "profit_pct": profit_pct,
+        "profit_from_peak_pct": profit_from_peak_pct
+    }
+
+    # CHECK 1: Stop loss iniziale (prima che trailing si attivi)
+    if not trailing_active and profit_pct <= -INITIAL_STOP_LOSS_PERCENT:
+        result["triggered"] = True
+        result["reason"] = f"STOP LOSS: perdita {profit_pct:.2f}% >= {INITIAL_STOP_LOSS_PERCENT}%"
+        return result
+
+    # CHECK 2: Trailing stop (dopo attivazione)
+    if trailing_active and profit_from_peak_pct <= -TRAILING_STOP_PERCENT:
+        result["triggered"] = True
+        result["reason"] = f"TRAILING STOP: {-profit_from_peak_pct:.2f}% dal peak (soglia {TRAILING_STOP_PERCENT}%)"
+        return result
+
+    return result
+
+
+def check_close_protection(
+    position: Dict[str, Any],
+    score: Dict[str, Any],
+    ai_wants_close: bool
+) -> Dict[str, Any]:
+    """
+    Controlla se la chiusura richiesta dall'AI deve essere bloccata.
+
+    Args:
+        position: Dati della posizione aperta
+        score: Score calcolato per il symbol
+        ai_wants_close: True se l'AI vuole chiudere
+
+    Returns:
+        dict con:
+            - allow_close: bool
+            - reason: str
+    """
+    if not ai_wants_close:
+        return {"allow_close": True, "reason": "AI non vuole chiudere"}
+
+    direction = position.get("side", "long").lower()
+    net_score = score.get("net_score", 0)
+
+    # Logica di protezione:
+    # - Se LONG e score >= -REVERSAL_THRESHOLD → NON chiudere (trend non invertito)
+    # - Se SHORT e score <= +REVERSAL_THRESHOLD → NON chiudere (trend non invertito)
+
+    if direction == "long":
+        # Per LONG, chiudi solo se score < -THRESHOLD (inversione bearish confermata)
+        if net_score >= -SCORE_THRESHOLD_CLOSE_REVERSAL:
+            return {
+                "allow_close": False,
+                "reason": f"PROTECT LONG: score {net_score:.1f} >= -{SCORE_THRESHOLD_CLOSE_REVERSAL} (no inversione)"
+            }
+        else:
+            return {
+                "allow_close": True,
+                "reason": f"ALLOW CLOSE LONG: score {net_score:.1f} < -{SCORE_THRESHOLD_CLOSE_REVERSAL} (inversione confermata)"
+            }
+    else:  # short
+        # Per SHORT, chiudi solo se score > +THRESHOLD (inversione bullish confermata)
+        if net_score <= SCORE_THRESHOLD_CLOSE_REVERSAL:
+            return {
+                "allow_close": False,
+                "reason": f"PROTECT SHORT: score {net_score:.1f} <= +{SCORE_THRESHOLD_CLOSE_REVERSAL} (no inversione)"
+            }
+        else:
+            return {
+                "allow_close": True,
+                "reason": f"ALLOW CLOSE SHORT: score {net_score:.1f} > +{SCORE_THRESHOLD_CLOSE_REVERSAL} (inversione confermata)"
+            }
+
+
+def evaluate_position_override(
+    result: Dict[str, Any],
+    positions: List[Dict[str, Any]],
+    scores: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Valuta se l'operazione richiesta dall'AI deve essere modificata
+    in base a trailing stop, stop loss, e protezione chiusure.
+
+    Args:
+        result: Decisione AI originale
+        positions: Lista delle posizioni aperte
+        scores: Score calcolati per ogni symbol
+
+    Returns:
+        result modificato se necessario
+    """
+    # Import db_utils qui per evitare import circolare
+    try:
+        import db_utils
+    except ImportError:
+        print("⚠️  db_utils non disponibile per tracking posizioni")
+        return result
+
+    symbol = result.get("symbol", "")
+    operation = result.get("operation", "hold")
+
+    # Trova la posizione aperta per questo symbol
+    position = None
+    for pos in positions:
+        if pos.get("symbol") == symbol:
+            position = pos
+            break
+
+    # Se non c'è posizione aperta per questo symbol, niente override
+    if not position:
+        # Se l'AI vuole aprire una nuova posizione, crea il tracking
+        if operation == "open":
+            print(f"   📝 Nuova posizione {symbol}: tracking verrà creato dopo apertura")
+        return result
+
+    # Ottieni tracking data dal DB
+    tracking_data = db_utils.get_position_tracking(symbol)
+
+    # Ottieni score per questo symbol
+    score = scores.get(symbol, {})
+    current_price = float(position.get("mark_price", 0))
+    direction = position.get("side", "long")
+
+    # CHECK 1: Trailing Stop / Stop Loss
+    trailing_result = check_trailing_stop(position, current_price, tracking_data)
+
+    # Aggiorna tracking nel DB
+    if current_price > 0:
+        db_utils.upsert_position_tracking(
+            symbol=symbol,
+            direction=direction,
+            entry_price=float(position.get("entry_price", current_price)),
+            current_price=current_price,
+            trailing_active=trailing_result.get("trailing_active", False)
+        )
+
+    # Se trailing/stop loss triggerato → FORZA CLOSE
+    if trailing_result.get("triggered", False):
+        print(f"🛑 {trailing_result['reason']}")
+        result["operation"] = "close"
+        result["_override_reason"] = trailing_result["reason"]
+        # Elimina tracking dopo close
+        result["_delete_tracking"] = True
+        return result
+
+    # CHECK 2: Protezione chiusure premature
+    if operation == "close":
+        close_check = check_close_protection(position, score, ai_wants_close=True)
+
+        if not close_check.get("allow_close", True):
+            print(f"🛡️  {close_check['reason']}")
+            print(f"   AI voleva: CLOSE {symbol} → Forzato: HOLD")
+            result["operation"] = "hold"
+            result["_override_reason"] = close_check["reason"]
+            return result
+        else:
+            print(f"✅ {close_check['reason']}")
+            # Elimina tracking dopo close
+            result["_delete_tracking"] = True
+
+    # Log stato trailing
+    if trailing_result.get("trailing_active"):
+        print(f"   📊 Trailing attivo per {symbol}: profit={trailing_result.get('profit_pct', 0):.2f}%, "
+              f"dal peak={trailing_result.get('profit_from_peak_pct', 0):.2f}%")
+
+    return result
+
+
 def calculate_scores_for_symbols(indicators_data: list, sentiment_data: dict, forecasts_data: list) -> dict:
     """
     Calcola gli score per ogni simbolo basandosi sui dati disponibili.
@@ -438,7 +682,7 @@ def enhance_prompt_with_scoring(prompt: str, scores: dict) -> str:
     return prompt
 
 
-def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=None):
+def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=None, open_positions=None):
     """
     Chiama l'AI (OpenAI o OpenRouter) per ottenere decisioni di trading.
     Supporta multipli modelli con gestione robusta del JSON.
@@ -448,6 +692,7 @@ def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=
         indicators: Lista di indicatori tecnici (opzionale, per scoring)
         sentiment: Dati sentiment Fear & Greed (opzionale, per scoring)
         forecasts: Lista previsioni Prophet (opzionale, per scoring)
+        open_positions: Lista delle posizioni aperte (opzionale, per trailing stop)
     """
     # Calcola score se dati disponibili
     scores = {}
@@ -474,8 +719,9 @@ def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=
             signal_scores=scores
         )
 
-        # ===== FORZA RISPETTO DELLO SCORING =====
-        # Non permettere all'AI di aprire posizioni se lo score è sotto soglia
+        # ===== SISTEMA DI OVERRIDE COMPLETO =====
+
+        # 1. Non permettere all'AI di aprire posizioni se lo score è sotto soglia
         if scores and result.get('symbol') in scores:
             score = scores[result['symbol']]
             net_score = score.get('net_score', 0)
@@ -484,11 +730,16 @@ def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=
             # Se score sotto soglia E AI vuole aprire → FORZA HOLD
             if abs(net_score) < threshold and result.get('operation') == 'open':
                 original_decision = f"{result['operation']} {result['direction']}"
-                print(f"⚠️  OVERRIDE: net_score={net_score:.1f} < threshold={threshold}")
+                print(f"⚠️  OVERRIDE OPEN: net_score={net_score:.1f} < threshold={threshold}")
                 print(f"   AI voleva: {original_decision} → Forzato: HOLD")
                 result['operation'] = 'hold'
                 result['_override_reason'] = f"Score {net_score:.1f} sotto soglia {threshold}. AI voleva: {original_decision}"
-        # ===== FINE FIX =====
+
+        # 2. Trailing Stop, Stop Loss, e Protezione Chiusure Premature
+        if open_positions is not None:
+            result = evaluate_position_override(result, open_positions, scores)
+
+        # ===== FINE OVERRIDE =====
 
         # Aggiungi info scoring al risultato per logging
         if scores and result.get('symbol') in scores:

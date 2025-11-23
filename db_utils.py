@@ -212,6 +212,21 @@ CREATE INDEX IF NOT EXISTS idx_signal_scores_created_at
     ON signal_scores(created_at);
 CREATE INDEX IF NOT EXISTS idx_signal_scores_symbol
     ON signal_scores(symbol);
+
+CREATE TABLE IF NOT EXISTS position_tracking (
+    id                  BIGSERIAL PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol              TEXT NOT NULL UNIQUE,
+    direction           TEXT NOT NULL,
+    entry_price         NUMERIC(30, 10) NOT NULL,
+    peak_price          NUMERIC(30, 10) NOT NULL,
+    trailing_active     BOOLEAN DEFAULT FALSE,
+    last_checked_price  NUMERIC(30, 10)
+);
+
+CREATE INDEX IF NOT EXISTS idx_position_tracking_symbol
+    ON position_tracking(symbol);
 """
 
 
@@ -967,6 +982,152 @@ def get_recent_bot_operations(limit: int = 50) -> List[Dict[str, Any]]:
             )
             rows = cur.fetchall()
             return [r[0] for r in rows]
+
+
+# =====================
+# Position Tracking per Trailing Stop
+# =====================
+
+
+def get_position_tracking(symbol: str) -> Optional[Dict[str, Any]]:
+    """Restituisce il tracking di una posizione per symbol, oppure None se non esiste."""
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, updated_at
+                FROM position_tracking
+                WHERE symbol = %s;
+                """,
+                (symbol,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "symbol": row[0],
+                "direction": row[1],
+                "entry_price": float(row[2]),
+                "peak_price": float(row[3]),
+                "trailing_active": row[4],
+                "last_checked_price": float(row[5]) if row[5] else None,
+                "updated_at": row[6],
+            }
+
+
+def upsert_position_tracking(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    current_price: float,
+    trailing_active: bool = False,
+) -> Dict[str, Any]:
+    """
+    Crea o aggiorna il tracking di una posizione.
+    Aggiorna peak_price se il prezzo corrente è migliore (più alto per LONG, più basso per SHORT).
+
+    Returns: dict con i dati aggiornati del tracking
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Controlla se esiste già
+            cur.execute(
+                "SELECT peak_price, direction FROM position_tracking WHERE symbol = %s",
+                (symbol,),
+            )
+            existing = cur.fetchone()
+
+            if existing:
+                old_peak = float(existing[0])
+                old_direction = existing[1]
+
+                # Calcola nuovo peak_price
+                if direction.lower() == 'long':
+                    # Per LONG, peak è il massimo
+                    new_peak = max(old_peak, current_price)
+                else:
+                    # Per SHORT, peak è il minimo
+                    new_peak = min(old_peak, current_price)
+
+                # Update
+                cur.execute(
+                    """
+                    UPDATE position_tracking
+                    SET peak_price = %s,
+                        trailing_active = %s,
+                        last_checked_price = %s,
+                        updated_at = NOW(),
+                        direction = %s
+                    WHERE symbol = %s
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active;
+                    """,
+                    (new_peak, trailing_active, current_price, direction, symbol),
+                )
+            else:
+                # Insert nuovo
+                cur.execute(
+                    """
+                    INSERT INTO position_tracking (symbol, direction, entry_price, peak_price, trailing_active, last_checked_price)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active;
+                    """,
+                    (symbol, direction, entry_price, current_price, trailing_active, current_price),
+                )
+
+            row = cur.fetchone()
+        conn.commit()
+
+    return {
+        "symbol": row[0],
+        "direction": row[1],
+        "entry_price": float(row[2]),
+        "peak_price": float(row[3]),
+        "trailing_active": row[4],
+    }
+
+
+def delete_position_tracking(symbol: str) -> bool:
+    """Elimina il tracking di una posizione (da chiamare quando si chiude la posizione)."""
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM position_tracking WHERE symbol = %s RETURNING id;",
+                (symbol,),
+            )
+            deleted = cur.fetchone()
+        conn.commit()
+
+    return deleted is not None
+
+
+def get_all_position_trackings() -> List[Dict[str, Any]]:
+    """Restituisce tutti i tracking attivi."""
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, updated_at
+                FROM position_tracking;
+                """
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "symbol": row[0],
+            "direction": row[1],
+            "entry_price": float(row[2]),
+            "peak_price": float(row[3]),
+            "trailing_active": row[4],
+            "last_checked_price": float(row[5]) if row[5] else None,
+            "updated_at": row[6],
+        }
+        for row in rows
+    ]
 
 
 if __name__ == "__main__":
