@@ -682,6 +682,62 @@ with tab2:
 with tab3:
     st.subheader("📈 Open Positions with P&L")
 
+    # === SENTINEL STATUS BOX ===
+    st.markdown("### 🛡️ Sentinel Monitor")
+
+    try:
+        # Stato sentinel
+        sentinel_status = query_db("""
+            SELECT
+                MAX(created_at) as last_check,
+                COUNT(*) as checks_24h,
+                COUNT(action_taken) as actions_24h,
+                COUNT(CASE WHEN action_taken = 'CLOSE_STOP_LOSS' THEN 1 END) as stop_loss_count,
+                COUNT(CASE WHEN action_taken = 'CLOSE_TRAILING_STOP' THEN 1 END) as trailing_stop_count
+            FROM sentinel_logs
+            WHERE created_at > NOW() - INTERVAL '24 hours'
+        """)
+
+        # Config da .env (valori di default se non letti)
+        trailing_pct = os.getenv('TRAILING_STOP_PERCENT', '7')
+        activation_pct = os.getenv('TRAILING_STOP_ACTIVATION_PERCENT', '3')
+        stop_loss_pct = os.getenv('INITIAL_STOP_LOSS_PERCENT', '10')
+        sentinel_enabled = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
+
+        col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+
+        with col_s1:
+            status_icon = "🟢" if sentinel_enabled else "🔴"
+            st.metric("Stato", f"{status_icon} {'ATTIVO' if sentinel_enabled else 'OFF'}")
+
+        with col_s2:
+            last_check = sentinel_status['last_check'].iloc[0] if not sentinel_status.empty and pd.notna(sentinel_status['last_check'].iloc[0]) else None
+            if last_check:
+                # Formatta timestamp
+                last_check_str = pd.to_datetime(last_check).strftime('%H:%M:%S')
+                st.metric("Ultimo Check", last_check_str)
+            else:
+                st.metric("Ultimo Check", "N/A")
+
+        with col_s3:
+            checks = int(sentinel_status['checks_24h'].iloc[0]) if not sentinel_status.empty else 0
+            st.metric("Check 24h", checks)
+
+        with col_s4:
+            actions = int(sentinel_status['actions_24h'].iloc[0]) if not sentinel_status.empty else 0
+            st.metric("Azioni 24h", actions)
+
+        with col_s5:
+            st.caption(f"**Config:**")
+            st.caption(f"Trailing: {trailing_pct}%")
+            st.caption(f"Activation: {activation_pct}%")
+            st.caption(f"Stop Loss: {stop_loss_pct}%")
+
+    except Exception as e:
+        st.warning(f"⚠️ Sentinel status non disponibile: {e}")
+
+    st.markdown("---")
+
     # Posizioni aperte correnti ✅ NUOVO!
     try:
         open_positions = query_db("""
@@ -704,10 +760,20 @@ with tab3:
         if not open_positions.empty:
             st.success(f"🎯 {len(open_positions)} posizioni aperte")
 
+            # Carica tracking per tutte le posizioni
+            tracking_data = query_db("""
+                SELECT symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, updated_at
+                FROM position_tracking
+            """)
+            tracking_dict = {row['symbol']: row for _, row in tracking_data.iterrows()} if not tracking_data.empty else {}
+
             for idx, pos in open_positions.iterrows():
                 pnl = float(pos['pnl_usd']) if pd.notna(pos['pnl_usd']) else 0
                 pnl_color = "green" if pnl >= 0 else "red"
                 pnl_icon = "📈" if pnl >= 0 else "📉"
+
+                # Ottieni tracking per questa posizione
+                symbol_tracking = tracking_dict.get(pos['symbol'])
 
                 with st.expander(
                     f"{pnl_icon} {pos['symbol']} {pos['side'].upper()} - P&L: ${pnl:,.2f}",
@@ -731,6 +797,56 @@ with tab3:
                     with col_pos4:
                         st.metric("Side", pos['side'].upper())
                         st.caption(f"Updated: {pos['last_update']}")
+
+                    # === TRAILING STOP MONITOR ===
+                    if symbol_tracking is not None:
+                        st.markdown("---")
+                        st.markdown("**🛡️ Trailing Stop Monitor**")
+
+                        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+
+                        peak_price = float(symbol_tracking['peak_price'])
+                        trailing_active = symbol_tracking['trailing_active']
+                        current_price = float(pos['mark_price'])
+
+                        # Calcola distanza dal peak
+                        if pos['side'].lower() == 'long':
+                            peak_dist = ((current_price - peak_price) / peak_price) * 100
+                        else:
+                            peak_dist = ((peak_price - current_price) / peak_price) * 100
+
+                        with col_t1:
+                            st.metric("Peak Price", f"${peak_price:,.2f}")
+
+                        with col_t2:
+                            # Colore per distanza dal peak
+                            dist_color = "green" if peak_dist >= 0 else ("red" if peak_dist < -5 else "orange")
+                            st.metric("Dist. dal Peak", f"{peak_dist:+.2f}%")
+
+                        with col_t3:
+                            trailing_icon = "🟢 ATTIVO" if trailing_active else "⚪ Inattivo"
+                            st.metric("Trailing", trailing_icon)
+
+                        with col_t4:
+                            # Calcola soglia stop
+                            if trailing_active:
+                                stop_trigger = f"-{trailing_pct}% dal peak"
+                            else:
+                                stop_trigger = f"-{stop_loss_pct}% da entry"
+                            st.metric("Stop Trigger", stop_trigger)
+
+                        # Barra progresso verso stop
+                        if trailing_active:
+                            # Trailing attivo: mostra quanto manca allo stop
+                            progress = min(100, max(0, (float(trailing_pct) + peak_dist) / float(trailing_pct) * 100))
+                            st.progress(progress / 100, text=f"Margine trailing: {float(trailing_pct) + peak_dist:.2f}%")
+                        else:
+                            # Stop loss: mostra quanto manca
+                            profit_pct = price_change if pos['side'].lower() == 'long' else -price_change
+                            progress = min(100, max(0, (float(stop_loss_pct) + profit_pct) / float(stop_loss_pct) * 100))
+                            st.progress(progress / 100, text=f"Margine stop loss: {float(stop_loss_pct) + profit_pct:.2f}%")
+                    else:
+                        st.caption("⚠️ Tracking non ancora inizializzato per questa posizione")
 
             # Grafico posizioni
             fig_pos = go.Figure()
@@ -759,6 +875,82 @@ with tab3:
 
     except Exception as e:
         st.error(f"Errore nel caricamento delle posizioni: {e}")
+
+    # === SENTINEL HISTORY ===
+    st.markdown("---")
+    st.markdown("### 📜 Sentinel Price History")
+
+    try:
+        sentinel_logs = query_db("""
+            SELECT
+                created_at,
+                symbol,
+                direction,
+                entry_price,
+                current_price,
+                peak_price,
+                profit_pct,
+                profit_from_peak_pct,
+                trailing_active,
+                action_taken,
+                action_reason
+            FROM sentinel_logs
+            ORDER BY created_at DESC
+            LIMIT 30
+        """)
+
+        if not sentinel_logs.empty:
+            # Filtri
+            col_f1, col_f2 = st.columns([1, 3])
+            with col_f1:
+                symbols = ['Tutti'] + sorted(sentinel_logs['symbol'].unique().tolist())
+                selected_symbol = st.selectbox("Filtra Symbol", symbols, key="sentinel_filter")
+
+            if selected_symbol != 'Tutti':
+                sentinel_logs = sentinel_logs[sentinel_logs['symbol'] == selected_symbol]
+
+            # Formatta la tabella
+            display_df = sentinel_logs.copy()
+            display_df['created_at'] = pd.to_datetime(display_df['created_at']).dt.strftime('%H:%M:%S')
+            display_df['profit_pct'] = display_df['profit_pct'].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+            display_df['profit_from_peak_pct'] = display_df['profit_from_peak_pct'].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+            display_df['entry_price'] = display_df['entry_price'].apply(lambda x: f"${x:,.2f}")
+            display_df['current_price'] = display_df['current_price'].apply(lambda x: f"${x:,.2f}")
+            display_df['peak_price'] = display_df['peak_price'].apply(lambda x: f"${x:,.2f}")
+            display_df['trailing_active'] = display_df['trailing_active'].apply(lambda x: "🟢" if x else "⚪")
+            display_df['action_taken'] = display_df['action_taken'].fillna("-")
+
+            # Rinomina colonne
+            display_df = display_df.rename(columns={
+                'created_at': 'Time',
+                'symbol': 'Symbol',
+                'direction': 'Dir',
+                'entry_price': 'Entry',
+                'current_price': 'Price',
+                'peak_price': 'Peak',
+                'profit_pct': 'P/L%',
+                'profit_from_peak_pct': 'Peak%',
+                'trailing_active': 'Trail',
+                'action_taken': 'Action',
+                'action_reason': 'Reason'
+            })
+
+            # Mostra solo colonne rilevanti
+            columns_to_show = ['Time', 'Symbol', 'Dir', 'Entry', 'Price', 'Peak', 'P/L%', 'Peak%', 'Trail', 'Action']
+            st.dataframe(display_df[columns_to_show], use_container_width=True, hide_index=True)
+
+            # Mostra azioni recenti se ci sono
+            actions = sentinel_logs[sentinel_logs['action_taken'].notna() & (sentinel_logs['action_taken'] != '')]
+            if not actions.empty:
+                st.markdown("#### ⚡ Azioni Recenti")
+                for _, action in actions.iterrows():
+                    action_icon = "🛑" if action['action_taken'] else "ℹ️"
+                    st.warning(f"{action_icon} **{action['action_taken']}** - {action['symbol']} {action['direction'].upper()}: {action['action_reason']}")
+        else:
+            st.info("📊 Nessun log sentinel disponibile. Il sentinel registrerà i dati quando ci sono posizioni aperte.")
+
+    except Exception as e:
+        st.warning(f"⚠️ Sentinel history non disponibile: {e}")
 
 with tab4:
     st.subheader("🎯 AI Decision Analysis")

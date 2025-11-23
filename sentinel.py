@@ -186,12 +186,25 @@ def run_sentinel_check():
             )
 
             profit_pct = result.get("profit_pct", 0)
+            profit_from_peak_pct = result.get("profit_from_peak_pct", 0)
+            new_peak = result.get("new_peak", mark_price)
             trailing_status = "ACTIVE" if result.get("trailing_active") else "inactive"
+
+            # Determina azione
+            action_taken = None
+            action_reason = None
 
             if result.get("triggered"):
                 # CHIUDI POSIZIONE
                 log(f"🛑 {symbol}: {result['reason']}")
                 log(f"   Chiusura posizione {direction.upper()}...")
+
+                # Determina tipo di azione
+                if "STOP LOSS" in result['reason']:
+                    action_taken = "CLOSE_STOP_LOSS"
+                else:
+                    action_taken = "CLOSE_TRAILING_STOP"
+                action_reason = result['reason']
 
                 try:
                     close_result = bot.exchange.market_close(symbol)
@@ -221,8 +234,25 @@ def run_sentinel_check():
                 # Log stato
                 peak_info = ""
                 if result.get("trailing_active"):
-                    peak_info = f", peak_dist={result.get('profit_from_peak_pct', 0):.2f}%"
+                    peak_info = f", peak_dist={profit_from_peak_pct:.2f}%"
                 log(f"   {symbol}: {direction.upper()} profit={profit_pct:.2f}% trailing={trailing_status}{peak_info}")
+
+            # Log nel database per dashboard
+            try:
+                db_utils.log_sentinel_check(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    current_price=mark_price,
+                    peak_price=new_peak,
+                    profit_pct=profit_pct,
+                    profit_from_peak_pct=profit_from_peak_pct,
+                    trailing_active=result.get("trailing_active", False),
+                    action_taken=action_taken,
+                    action_reason=action_reason,
+                )
+            except Exception as e:
+                log(f"   ⚠️ Errore log DB: {e}")
 
     except Exception as e:
         log(f"❌ Errore sentinel: {e}")

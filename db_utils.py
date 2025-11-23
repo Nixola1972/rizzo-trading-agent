@@ -227,6 +227,26 @@ CREATE TABLE IF NOT EXISTS position_tracking (
 
 CREATE INDEX IF NOT EXISTS idx_position_tracking_symbol
     ON position_tracking(symbol);
+
+CREATE TABLE IF NOT EXISTS sentinel_logs (
+    id                  BIGSERIAL PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol              TEXT NOT NULL,
+    direction           TEXT NOT NULL,
+    entry_price         NUMERIC(30, 10) NOT NULL,
+    current_price       NUMERIC(30, 10) NOT NULL,
+    peak_price          NUMERIC(30, 10) NOT NULL,
+    profit_pct          NUMERIC(10, 4),
+    profit_from_peak_pct NUMERIC(10, 4),
+    trailing_active     BOOLEAN DEFAULT FALSE,
+    action_taken        TEXT,
+    action_reason       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sentinel_logs_created_at
+    ON sentinel_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_sentinel_logs_symbol
+    ON sentinel_logs(symbol);
 """
 
 
@@ -1128,6 +1148,161 @@ def get_all_position_trackings() -> List[Dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+# ==================== SENTINEL LOGS ====================
+
+def log_sentinel_check(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    current_price: float,
+    peak_price: float,
+    profit_pct: float = None,
+    profit_from_peak_pct: float = None,
+    trailing_active: bool = False,
+    action_taken: str = None,
+    action_reason: str = None,
+) -> int:
+    """Logga un controllo sentinel nel database.
+
+    Parametri:
+    - symbol: simbolo (BTC, ETH, SOL)
+    - direction: direzione posizione (long/short)
+    - entry_price: prezzo di entrata
+    - current_price: prezzo corrente
+    - peak_price: prezzo massimo raggiunto
+    - profit_pct: percentuale di profitto dall'entry
+    - profit_from_peak_pct: percentuale dal peak (negativo = sceso dal peak)
+    - trailing_active: se il trailing stop è attivo
+    - action_taken: azione intrapresa (CLOSE_STOP_LOSS, CLOSE_TRAILING_STOP, None)
+    - action_reason: motivo dell'azione
+
+    Restituisce l'ID del record creato.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO sentinel_logs (
+                    symbol, direction, entry_price, current_price, peak_price,
+                    profit_pct, profit_from_peak_pct, trailing_active,
+                    action_taken, action_reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    symbol,
+                    direction,
+                    entry_price,
+                    current_price,
+                    peak_price,
+                    profit_pct,
+                    profit_from_peak_pct,
+                    trailing_active,
+                    action_taken,
+                    action_reason,
+                ),
+            )
+            log_id = cur.fetchone()[0]
+        conn.commit()
+
+    return log_id
+
+
+def get_sentinel_logs(symbol: str = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Restituisce gli ultimi log sentinel.
+
+    Parametri:
+    - symbol: filtra per simbolo (opzionale)
+    - limit: numero massimo di record da restituire (default 50)
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if symbol:
+                cur.execute(
+                    """
+                    SELECT id, created_at, symbol, direction, entry_price, current_price,
+                           peak_price, profit_pct, profit_from_peak_pct, trailing_active,
+                           action_taken, action_reason
+                    FROM sentinel_logs
+                    WHERE symbol = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (symbol, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, created_at, symbol, direction, entry_price, current_price,
+                           peak_price, profit_pct, profit_from_peak_pct, trailing_active,
+                           action_taken, action_reason
+                    FROM sentinel_logs
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (limit,),
+                )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "created_at": row[1],
+            "symbol": row[2],
+            "direction": row[3],
+            "entry_price": float(row[4]),
+            "current_price": float(row[5]),
+            "peak_price": float(row[6]),
+            "profit_pct": float(row[7]) if row[7] else None,
+            "profit_from_peak_pct": float(row[8]) if row[8] else None,
+            "trailing_active": row[9],
+            "action_taken": row[10],
+            "action_reason": row[11],
+        }
+        for row in rows
+    ]
+
+
+def get_sentinel_status() -> Dict[str, Any]:
+    """Restituisce lo stato del sentinel con statistiche."""
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Ultimo check
+            cur.execute(
+                """
+                SELECT created_at FROM sentinel_logs
+                ORDER BY created_at DESC LIMIT 1;
+                """
+            )
+            last_check_row = cur.fetchone()
+
+            # Conteggio azioni
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) as total_checks,
+                    COUNT(action_taken) as total_actions,
+                    COUNT(CASE WHEN action_taken = 'CLOSE_STOP_LOSS' THEN 1 END) as stop_loss_count,
+                    COUNT(CASE WHEN action_taken = 'CLOSE_TRAILING_STOP' THEN 1 END) as trailing_stop_count
+                FROM sentinel_logs
+                WHERE created_at > NOW() - INTERVAL '24 hours';
+                """
+            )
+            stats_row = cur.fetchone()
+
+    return {
+        "last_check": last_check_row[0] if last_check_row else None,
+        "checks_24h": stats_row[0] if stats_row else 0,
+        "actions_24h": stats_row[1] if stats_row else 0,
+        "stop_loss_24h": stats_row[2] if stats_row else 0,
+        "trailing_stop_24h": stats_row[3] if stats_row else 0,
+    }
 
 
 if __name__ == "__main__":
