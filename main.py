@@ -62,97 +62,177 @@ try:
     snapshot_id = db_utils.log_account_status(account_status)
     print(f"[db_utils] Operazione inserita con id={snapshot_id}")
 
-
-    # Creating System prompt
-    with open('system_prompt.txt', 'r') as f:
-        system_prompt = f.read()
-    system_prompt = system_prompt.format(portfolio_data, msg_info)
-        
-    print("L'agente sta decidendo la sua azione!")
     # Estrai posizioni aperte per il sistema di trailing stop
     open_positions = account_status.get("open_positions", [])
+    open_symbols = [p.get("symbol") for p in open_positions]
 
-    # Passa indicatori, sentiment, forecast e posizioni aperte
-    out = previsione_trading_agent(
-        system_prompt,
-        indicators=indicators_json,
-        sentiment=sentiment_json,
-        forecasts=forecasts_json,
-        open_positions=open_positions
+    print("L'agente sta decidendo le sue azioni!")
+
+    # ===== CICLO PER OGNI SIMBOLO =====
+    # Calcola gli score una volta sola
+    from trading_agent import calculate_scores_for_symbols, SCORE_THRESHOLD_OPEN
+    scores = calculate_scores_for_symbols(indicators_json, sentiment_json, forecasts_json)
+
+    # Ordina i simboli per forza del segnale (più forte prima)
+    symbols_by_strength = sorted(
+        tickers,
+        key=lambda t: abs(scores.get(t, {}).get('net_score', 0)),
+        reverse=True
     )
 
-    print(f"[DEBUG] Tipo risposta AI: {type(out)}")
-    print(f"[DEBUG] Contenuto risposta: {out}")
+    print(f"\n📊 Ordine valutazione (per forza segnale): {symbols_by_strength}")
 
-    print("[STEP 1] Esecuzione segnale su Hyperliquid...")
-    bot.execute_signal(out)
-    print("[STEP 1] ✅ Completato")
+    actions_taken = []
 
-    # Se la posizione è stata chiusa, elimina il tracking
-    if out.get("_delete_tracking") and out.get("symbol"):
-        try:
-            deleted = db_utils.delete_position_tracking(out["symbol"])
-            if deleted:
-                print(f"[TRACKING] ✅ Tracking eliminato per {out['symbol']}")
-        except Exception as e:
-            print(f"[TRACKING] ⚠️ Errore eliminazione tracking: {e}")
+    for ticker in symbols_by_strength:
+        score_data = scores.get(ticker, {})
+        net_score = score_data.get('net_score', 0)
+        direction = score_data.get('direction', 'HOLD')
 
-    # Se è stata aperta una nuova posizione, crea il tracking
-    if out.get("operation") == "open" and out.get("symbol"):
-        try:
-            # Ottieni il prezzo corrente per inizializzare il tracking
-            current_status = bot.get_account_status()
-            for pos in current_status.get("open_positions", []):
-                if pos.get("symbol") == out["symbol"]:
-                    db_utils.upsert_position_tracking(
-                        symbol=pos["symbol"],
-                        direction=pos["side"],
-                        entry_price=pos["entry_price"],
-                        current_price=pos["mark_price"],
-                        trailing_active=False
-                    )
-                    print(f"[TRACKING] ✅ Tracking creato per {out['symbol']} @ {pos['entry_price']}")
-                    break
-        except Exception as e:
-            print(f"[TRACKING] ⚠️ Errore creazione tracking: {e}")
+        # Verifica se c'è già una posizione aperta su questo simbolo
+        has_position = ticker in open_symbols
 
-    # Notifica Telegram della decisione
-    print("[STEP 2] Invio notifica Telegram...")
-    tg.notify_trading_decision(out)
-    print("[STEP 2] ✅ Completato")
+        print(f"\n{'='*50}")
+        print(f"📈 Valutazione {ticker}: score={net_score:.1f}, direction={direction}, position={'YES' if has_position else 'NO'}")
 
-    print("[STEP 3] Salvataggio operazione nel DB...")
-    print(f"[DEBUG] indicators_json type: {type(indicators_json)}")
-    print(f"[DEBUG] sentiment_json type: {type(sentiment_json)}")
-    print(f"[DEBUG] forecasts_json type: {type(forecasts_json)}")
-    op_id = db_utils.log_bot_operation(out, system_prompt=system_prompt, indicators=indicators_json, news_text=news_txt, sentiment=sentiment_json, forecasts=forecasts_json)
-    print(f"[STEP 3] ✅ Operazione inserita con id={op_id}")
+        # Se c'è già una posizione, gestiscila (HOLD o CLOSE)
+        # Se NON c'è posizione e il segnale è forte, considera OPEN
+        if not has_position and abs(net_score) < SCORE_THRESHOLD_OPEN:
+            print(f"   ⏭️  Skip {ticker}: no position e score {net_score:.1f} sotto soglia {SCORE_THRESHOLD_OPEN}")
+            continue
+
+        # Costruisci prompt specifico per questo simbolo
+        with open('system_prompt_single.txt', 'r') as f:
+            system_prompt_template = f.read()
+
+        # Filtra indicatori per questo ticker
+        ticker_indicators = [ind for ind in indicators_json if ind.get('ticker') == ticker]
+        ticker_forecasts = [fc for fc in forecasts_json if fc.get('Ticker') == ticker or fc.get('ticker') == ticker] if isinstance(forecasts_json, list) else forecasts_json
+
+        # Trova la posizione per questo ticker (se esiste)
+        ticker_position = None
+        for pos in open_positions:
+            if pos.get("symbol") == ticker:
+                ticker_position = pos
+                break
+
+        # Costruisci il contesto per questo singolo ticker
+        ticker_context = {
+            "symbol": ticker,
+            "score": score_data,
+            "has_position": has_position,
+            "position": ticker_position,
+            "indicators": ticker_indicators[0] if ticker_indicators else {},
+            "sentiment": sentiment_json,
+            "forecast": ticker_forecasts,
+            "account_balance": account_status.get("balance_usd", 0),
+            "open_positions_count": len(open_positions),
+            "all_open_symbols": open_symbols
+        }
+
+        system_prompt = system_prompt_template.format(
+            json.dumps(ticker_context, indent=2, default=str),
+            msg_info
+        )
+
+        # Chiama AI per questo specifico ticker
+        out = previsione_trading_agent(
+            system_prompt,
+            indicators=ticker_indicators,
+            sentiment=sentiment_json,
+            forecasts=ticker_forecasts,
+            open_positions=[ticker_position] if ticker_position else []
+        )
+
+        # Forza il simbolo corretto
+        out['symbol'] = ticker
+
+        print(f"   ✅ Decisione per {ticker}: {out.get('operation')} {out.get('direction', '')}")
+
+        # Esegui solo se non è HOLD
+        if out.get("operation") != "hold":
+            print(f"[EXEC] Esecuzione {out.get('operation')} su {ticker}...")
+            bot.execute_signal(out)
+            actions_taken.append(out)
+
+            # Gestisci tracking
+            if out.get("_delete_tracking") and out.get("symbol"):
+                try:
+                    deleted = db_utils.delete_position_tracking(out["symbol"])
+                    if deleted:
+                        print(f"[TRACKING] ✅ Tracking eliminato per {out['symbol']}")
+                except Exception as e:
+                    print(f"[TRACKING] ⚠️ Errore eliminazione tracking: {e}")
+
+            if out.get("operation") == "open":
+                try:
+                    current_status = bot.get_account_status()
+                    for pos in current_status.get("open_positions", []):
+                        if pos.get("symbol") == out["symbol"]:
+                            db_utils.upsert_position_tracking(
+                                symbol=pos["symbol"],
+                                direction=pos["side"],
+                                entry_price=pos["entry_price"],
+                                current_price=pos["mark_price"],
+                                trailing_active=False
+                            )
+                            print(f"[TRACKING] ✅ Tracking creato per {out['symbol']} @ {pos['entry_price']}")
+                            # Aggiorna open_symbols per il prossimo ciclo
+                            if out["symbol"] not in open_symbols:
+                                open_symbols.append(out["symbol"])
+                            break
+                except Exception as e:
+                    print(f"[TRACKING] ⚠️ Errore creazione tracking: {e}")
+
+        # Notifica Telegram
+        tg.notify_trading_decision(out)
+
+        # Salva operazione nel DB
+        op_id = db_utils.log_bot_operation(
+            out,
+            system_prompt=system_prompt,
+            indicators=ticker_indicators,
+            news_text=news_txt,
+            sentiment=sentiment_json,
+            forecasts=ticker_forecasts
+        )
+        print(f"   💾 Operazione {ticker} salvata con id={op_id}")
+
+    # ===== FINE CICLO =====
+
+    print(f"\n{'='*50}")
+    print(f"📊 Riepilogo: {len(actions_taken)} azioni eseguite")
+    for action in actions_taken:
+        print(f"   - {action.get('operation')} {action.get('symbol')} {action.get('direction', '')}")
 
     # Salva signal scores nel database per tracciabilità
     if SCORING_ENABLED:
-        print("[STEP 4] Salvataggio signal scores...")
+        print("\n[STEP FINAL] Salvataggio signal scores...")
         signal_scores = get_last_signal_scores()
-        print(f"[DEBUG] signal_scores type: {type(signal_scores)}, keys: {signal_scores.keys() if isinstance(signal_scores, dict) else 'N/A'}")
         weights_config = get_scoring_config()
         for symbol, score_result in signal_scores.items():
-            print(f"[DEBUG] {symbol} score_result type: {type(score_result)}")
             try:
                 score_id = db_utils.log_signal_score(
                     symbol=symbol,
                     score_result=score_result,
                     weights_config=weights_config
                 )
-                print(f"[STEP 4] Signal score {symbol} salvato con id={score_id}")
+                print(f"   Signal score {symbol} salvato con id={score_id}")
             except Exception as e:
-                print(f"[STEP 4] Errore salvataggio score {symbol}: {e}")
+                print(f"   Errore salvataggio score {symbol}: {e}")
 
 except Exception as e:
     # Notifica errore su Telegram
     tg.notify_error(type(e).__name__, str(e), source="trading_agent")
 
-    db_utils.log_error(e, context={"prompt": system_prompt, "tickers": tickers,
-                                    "indicators":indicators_json, "news":news_txt,
-                                    "sentiment":sentiment_json, "forecasts":forecasts_json,
-                                    "balance":account_status
+    db_utils.log_error(e, context={"prompt": system_prompt if 'system_prompt' in dir() else "",
+                                    "tickers": tickers if 'tickers' in dir() else [],
+                                    "indicators":indicators_json if 'indicators_json' in dir() else None,
+                                    "news":news_txt if 'news_txt' in dir() else "",
+                                    "sentiment":sentiment_json if 'sentiment_json' in dir() else None,
+                                    "forecasts":forecasts_json if 'forecasts_json' in dir() else None,
+                                    "balance":account_status if 'account_status' in dir() else None
                                     }, source="trading_agent")
     print(f"An error occurred: {e}")
+    import traceback
+    traceback.print_exc()
