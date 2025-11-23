@@ -12,6 +12,7 @@ TRAILING_STOP_PERCENT = float(os.getenv('TRAILING_STOP_PERCENT', '7'))
 TRAILING_STOP_ACTIVATION_PERCENT = float(os.getenv('TRAILING_STOP_ACTIVATION_PERCENT', '3'))
 INITIAL_STOP_LOSS_PERCENT = float(os.getenv('INITIAL_STOP_LOSS_PERCENT', '10'))
 SCORE_THRESHOLD_CLOSE_REVERSAL = float(os.getenv('SCORE_THRESHOLD_CLOSE_REVERSAL', '10'))
+SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '16'))
 
 if TRAILING_STOP_ENABLED:
     print(f"🛡️  Trailing Stop: ENABLED (trailing={TRAILING_STOP_PERCENT}%, activation={TRAILING_STOP_ACTIVATION_PERCENT}%, stop_loss={INITIAL_STOP_LOSS_PERCENT}%)")
@@ -665,9 +666,9 @@ def enhance_prompt_with_scoring(prompt: str, scores: dict) -> str:
             for sig in active_signals[:3]:  # Max 3 segnali principali
                 scoring_section += f"   - {sig['indicator']}: {sig['direction']} (+{sig['contribution']:.1f})\n"
 
-    scoring_section += "\nIMPORTANT: Use this scoring as guidance for your decision. "
-    scoring_section += "If NET_SCORE > 15, prefer LONG. If NET_SCORE < -15, prefer SHORT. "
-    scoring_section += "If |NET_SCORE| < 15, prefer HOLD unless you have strong conviction.\n"
+    scoring_section += f"\nIMPORTANT: Use this scoring as guidance for your decision. "
+    scoring_section += f"If NET_SCORE > {SCORE_THRESHOLD_OPEN}, prefer LONG. If NET_SCORE < -{SCORE_THRESHOLD_OPEN}, prefer SHORT. "
+    scoring_section += f"If |NET_SCORE| < {SCORE_THRESHOLD_OPEN}, prefer HOLD unless you have strong conviction.\n"
     scoring_section += "================================\n"
 
     # Inserisci prima del JSON format
