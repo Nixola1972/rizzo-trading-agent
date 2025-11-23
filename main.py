@@ -205,12 +205,12 @@ try:
     for action in actions_taken:
         print(f"   - {action.get('operation')} {action.get('symbol')} {action.get('direction', '')}")
 
-    # Salva signal scores nel database per tracciabilità
+    # Salva signal scores nel database per tracciabilità (usa gli score calcolati all'inizio)
     if SCORING_ENABLED:
         print("\n[STEP FINAL] Salvataggio signal scores...")
-        signal_scores = get_last_signal_scores()
         weights_config = get_scoring_config()
-        for symbol, score_result in signal_scores.items():
+        # Usa 'scores' calcolato all'inizio, non get_last_signal_scores()
+        for symbol, score_result in scores.items():
             try:
                 score_id = db_utils.log_signal_score(
                     symbol=symbol,
