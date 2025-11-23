@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""
+Sentinel - Monitoraggio continuo trailing stop e stop loss.
+
+Script leggero che gira frequentemente (ogni 1-2 minuti) per:
+1. Controllare i prezzi correnti delle posizioni aperte
+2. Aggiornare il peak_price nel database
+3. Chiudere posizioni se trailing stop o stop loss viene triggerato
+
+NON fa:
+- Chiamate AI
+- Calcolo indicatori
+- Analisi di mercato
+
+Uso:
+    python sentinel.py              # Esegue un singolo controllo
+    python sentinel.py --loop       # Esegue in loop continuo
+    python sentinel.py --interval 60  # Loop con intervallo personalizzato
+"""
+
+import os
+import sys
+import time
+import argparse
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Configurazione
+SENTINEL_ENABLED = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
+SENTINEL_INTERVAL = int(os.getenv('SENTINEL_INTERVAL_SECONDS', '120'))
+SENTINEL_TELEGRAM_NOTIFY = os.getenv('SENTINEL_TELEGRAM_NOTIFY', 'true').lower() == 'true'
+
+# Trailing Stop Config
+TRAILING_STOP_ENABLED = os.getenv('TRAILING_STOP_ENABLED', 'true').lower() == 'true'
+TRAILING_STOP_PERCENT = float(os.getenv('TRAILING_STOP_PERCENT', '7'))
+TRAILING_STOP_ACTIVATION_PERCENT = float(os.getenv('TRAILING_STOP_ACTIVATION_PERCENT', '3'))
+INITIAL_STOP_LOSS_PERCENT = float(os.getenv('INITIAL_STOP_LOSS_PERCENT', '10'))
+
+# Hyperliquid Config
+TESTNET = os.getenv("TESTNET", "true").lower() == "true"
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
+
+
+def log(msg: str):
+    """Log con timestamp."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}] {msg}")
+
+
+def check_trailing_stop(position: dict, tracking_data: dict = None) -> dict:
+    """
+    Controlla se trailing stop o stop loss è triggerato.
+
+    Returns:
+        dict con triggered, reason, trailing_active, new_peak
+    """
+    if not TRAILING_STOP_ENABLED:
+        return {"triggered": False, "reason": "Disabled", "trailing_active": False}
+
+    direction = position.get("side", "long").lower()
+    entry_price = float(position.get("entry_price", 0))
+    current_price = float(position.get("mark_price", 0))
+
+    if entry_price == 0 or current_price == 0:
+        return {"triggered": False, "reason": "No price", "trailing_active": False}
+
+    # Calcola profitto attuale
+    if direction == "long":
+        profit_pct = ((current_price - entry_price) / entry_price) * 100
+    else:
+        profit_pct = ((entry_price - current_price) / entry_price) * 100
+
+    # Peak price dal tracking
+    if tracking_data:
+        peak_price = tracking_data.get("peak_price", current_price)
+        trailing_active = tracking_data.get("trailing_active", False)
+    else:
+        peak_price = current_price
+        trailing_active = False
+
+    # Aggiorna peak
+    if direction == "long":
+        new_peak = max(peak_price, current_price)
+    else:
+        new_peak = min(peak_price, current_price)
+
+    # Calcola distanza dal peak
+    if direction == "long":
+        profit_from_peak_pct = ((current_price - new_peak) / new_peak) * 100
+    else:
+        profit_from_peak_pct = ((new_peak - current_price) / new_peak) * 100
+
+    # Attiva trailing se in profitto
+    if profit_pct >= TRAILING_STOP_ACTIVATION_PERCENT:
+        trailing_active = True
+
+    result = {
+        "triggered": False,
+        "reason": "",
+        "trailing_active": trailing_active,
+        "new_peak": new_peak,
+        "profit_pct": profit_pct,
+        "profit_from_peak_pct": profit_from_peak_pct
+    }
+
+    # Check stop loss iniziale
+    if not trailing_active and profit_pct <= -INITIAL_STOP_LOSS_PERCENT:
+        result["triggered"] = True
+        result["reason"] = f"STOP LOSS: {profit_pct:.2f}% (soglia -{INITIAL_STOP_LOSS_PERCENT}%)"
+        return result
+
+    # Check trailing stop
+    if trailing_active and profit_from_peak_pct <= -TRAILING_STOP_PERCENT:
+        result["triggered"] = True
+        result["reason"] = f"TRAILING STOP: {-profit_from_peak_pct:.2f}% dal peak (soglia {TRAILING_STOP_PERCENT}%)"
+        return result
+
+    return result
+
+
+def run_sentinel_check():
+    """Esegue un singolo controllo di tutte le posizioni."""
+
+    if not SENTINEL_ENABLED:
+        log("Sentinel disabilitato (SENTINEL_ENABLED=false)")
+        return
+
+    if not TRAILING_STOP_ENABLED:
+        log("Trailing stop disabilitato (TRAILING_STOP_ENABLED=false)")
+        return
+
+    if not PRIVATE_KEY or not WALLET_ADDRESS:
+        log("PRIVATE_KEY o WALLET_ADDRESS mancanti")
+        return
+
+    # Import qui per evitare errori se mancano dipendenze
+    try:
+        from hyperliquid_trader import HyperLiquidTrader
+        import db_utils
+        import telegram_notifier as tg
+    except ImportError as e:
+        log(f"Errore import: {e}")
+        return
+
+    try:
+        # Connetti a Hyperliquid
+        bot = HyperLiquidTrader(
+            secret_key=PRIVATE_KEY,
+            account_address=WALLET_ADDRESS,
+            testnet=TESTNET
+        )
+
+        # Ottieni posizioni aperte
+        account_status = bot.get_account_status()
+        positions = account_status.get("open_positions", [])
+
+        if not positions:
+            log("Nessuna posizione aperta")
+            return
+
+        log(f"Controllo {len(positions)} posizioni...")
+
+        for pos in positions:
+            symbol = pos.get("symbol", "")
+            direction = pos.get("side", "")
+            entry_price = pos.get("entry_price", 0)
+            mark_price = pos.get("mark_price", 0)
+            pnl = pos.get("pnl_usd", 0)
+
+            # Ottieni tracking dal DB
+            tracking_data = db_utils.get_position_tracking(symbol)
+
+            # Check trailing stop
+            result = check_trailing_stop(pos, tracking_data)
+
+            # Aggiorna tracking nel DB
+            db_utils.upsert_position_tracking(
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry_price,
+                current_price=mark_price,
+                trailing_active=result.get("trailing_active", False)
+            )
+
+            profit_pct = result.get("profit_pct", 0)
+            trailing_status = "ACTIVE" if result.get("trailing_active") else "inactive"
+
+            if result.get("triggered"):
+                # CHIUDI POSIZIONE
+                log(f"🛑 {symbol}: {result['reason']}")
+                log(f"   Chiusura posizione {direction.upper()}...")
+
+                try:
+                    close_result = bot.exchange.market_close(symbol)
+                    log(f"   ✅ Posizione chiusa: {close_result}")
+
+                    # Elimina tracking
+                    db_utils.delete_position_tracking(symbol)
+
+                    # Notifica Telegram
+                    if SENTINEL_TELEGRAM_NOTIFY:
+                        try:
+                            tg.send_message(
+                                f"🛑 *SENTINEL CLOSE*\n\n"
+                                f"Symbol: {symbol}\n"
+                                f"Direction: {direction.upper()}\n"
+                                f"Reason: {result['reason']}\n"
+                                f"Entry: ${entry_price:.2f}\n"
+                                f"Exit: ${mark_price:.2f}\n"
+                                f"PnL: ${pnl:.2f}"
+                            )
+                        except Exception as e:
+                            log(f"   ⚠️ Errore Telegram: {e}")
+
+                except Exception as e:
+                    log(f"   ❌ Errore chiusura: {e}")
+            else:
+                # Log stato
+                peak_info = ""
+                if result.get("trailing_active"):
+                    peak_info = f", peak_dist={result.get('profit_from_peak_pct', 0):.2f}%"
+                log(f"   {symbol}: {direction.upper()} profit={profit_pct:.2f}% trailing={trailing_status}{peak_info}")
+
+    except Exception as e:
+        log(f"❌ Errore sentinel: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def run_loop(interval: int = None):
+    """Esegue il sentinel in loop continuo."""
+
+    interval = interval or SENTINEL_INTERVAL
+
+    log(f"🔄 Sentinel avviato in loop (intervallo: {interval}s)")
+    log(f"   Trailing: {TRAILING_STOP_PERCENT}%, Activation: {TRAILING_STOP_ACTIVATION_PERCENT}%, Stop Loss: {INITIAL_STOP_LOSS_PERCENT}%")
+
+    try:
+        while True:
+            run_sentinel_check()
+            log(f"💤 Prossimo check tra {interval}s...")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        log("Sentinel interrotto (Ctrl+C)")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Sentinel - Monitoraggio trailing stop")
+    parser.add_argument("--loop", action="store_true", help="Esegui in loop continuo")
+    parser.add_argument("--interval", type=int, default=None, help="Intervallo in secondi (default: da .env)")
+    args = parser.parse_args()
+
+    print("=" * 50)
+    print("🛡️  SENTINEL - Trailing Stop Monitor")
+    print("=" * 50)
+
+    if args.loop:
+        run_loop(args.interval)
+    else:
+        run_sentinel_check()
+
+
+if __name__ == "__main__":
+    main()
