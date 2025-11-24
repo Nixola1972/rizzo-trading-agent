@@ -119,7 +119,7 @@ except:
 st.markdown("---")
 
 # Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Performance", "💼 Operations", "📈 Open Positions", "🎯 AI Decisions", "⚙️ Settings"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Performance", "💼 Operations", "📈 Open Positions", "🎯 AI Decisions", "🧠 AI Strategy Analysis", "⚙️ Settings"])
 
 with tab1:
     st.subheader("Account Balance Over Time")
@@ -1402,6 +1402,231 @@ with tab4:
         st.exception(e)
 
 with tab5:
+    st.subheader("🧠 AI Strategy Analysis")
+
+    st.markdown("""
+    ### Performance Analytics & AI-Powered Optimization
+
+    Questo modulo analizza le tue performance storiche e usa l'AI per suggerire miglioramenti concreti.
+    """)
+
+    # Import analytics modules
+    try:
+        import analytics
+        import strategy_controller
+
+        col_days, col_analyze = st.columns([1, 3])
+
+        with col_days:
+            analysis_days = st.selectbox(
+                "📅 Analysis Period",
+                [7, 14, 30, 60],
+                index=2,  # Default: 30 days
+                help="Giorni di storico da analizzare"
+            )
+
+        with col_analyze:
+            st.write("")  # Spacer
+            st.write("")  # Spacer
+            if st.button("🚀 Run AI Analysis", type="primary", use_container_width=True):
+                st.session_state['run_analysis'] = True
+
+        if st.session_state.get('run_analysis', False):
+            with st.spinner(f"🔍 Analyzing last {analysis_days} days of trading data..."):
+                # Run analytics
+                performance = analytics.get_performance_summary(days=analysis_days)
+
+                if performance.get('error'):
+                    st.error(f"❌ Error: {performance['error']}")
+                else:
+                    # Display Performance Summary
+                    st.markdown("---")
+                    st.subheader("📊 Performance Summary")
+
+                    col_metric1, col_metric2, col_metric3, col_metric4 = st.columns(4)
+
+                    col_metric1.metric(
+                        "Total Trades",
+                        performance['total_trades'],
+                        help="Numero totale di trade completati"
+                    )
+
+                    col_metric2.metric(
+                        "Win Rate",
+                        f"{performance['win_rate']*100:.1f}%",
+                        delta=f"{performance['winning_trades']}W / {performance['losing_trades']}L",
+                        help="Percentuale di trade vincenti"
+                    )
+
+                    col_metric3.metric(
+                        "Profit Factor",
+                        f"{performance['profit_factor']:.2f}",
+                        delta="Good" if performance['profit_factor'] > 1.5 else "Needs Improvement",
+                        delta_color="normal" if performance['profit_factor'] > 1.5 else "inverse",
+                        help="Rapporto profitti/perdite"
+                    )
+
+                    col_metric4.metric(
+                        "Net Profit",
+                        f"${performance['net_profit_usd']:.2f}",
+                        delta=f"Avg: ${performance['net_profit_usd']/performance['total_trades']:.2f}/trade" if performance['total_trades'] > 0 else "N/A",
+                        help="Profitto netto totale"
+                    )
+
+                    # Trade Metrics
+                    st.markdown("---")
+                    st.subheader("📈 Trade Metrics")
+
+                    col_trade1, col_trade2 = st.columns(2)
+
+                    with col_trade1:
+                        st.metric("Avg Win", f"+{performance['avg_win_pct']:.2f}%", help="Media dei trade vincenti")
+                        st.metric("Max Win", f"+{performance['max_win_pct']:.2f}%", help="Miglior trade")
+
+                    with col_trade2:
+                        st.metric("Avg Loss", f"{performance['avg_loss_pct']:.2f}%", help="Media delle perdite")
+                        st.metric("Max Loss", f"{performance['max_loss_pct']:.2f}%", help="Peggior trade")
+
+                    st.metric("Avg Duration", f"{performance['avg_duration_minutes']:.0f} minutes", help="Durata media dei trade")
+
+                    # Close Quality Analysis
+                    st.markdown("---")
+                    st.subheader("🎯 Close Quality Analysis")
+
+                    st.markdown("""
+                    Analisi "hindsight": quanto bene hai chiuso le posizioni rispetto al movimento successivo del prezzo.
+                    """)
+
+                    close_quality = performance['close_quality_distribution']
+
+                    col_quality1, col_quality2 = st.columns(2)
+
+                    with col_quality1:
+                        # Close quality distribution
+                        quality_df = pd.DataFrame([
+                            {"Quality": k, "Count": v} for k, v in close_quality.items()
+                        ])
+
+                        if not quality_df.empty:
+                            fig = px.pie(
+                                quality_df,
+                                values='Count',
+                                names='Quality',
+                                title="Close Quality Distribution",
+                                color_discrete_sequence=px.colors.qualitative.Set3
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                    with col_quality2:
+                        st.metric(
+                            "Total Missed Profit",
+                            f"{performance['total_missed_profit_pct']:.1f}%",
+                            delta=f"Avg: {performance['avg_missed_per_trade_pct']:.2f}% per trade",
+                            delta_color="inverse",
+                            help="Profitto lasciato sul tavolo chiudendo troppo presto"
+                        )
+
+                        st.info(f"""
+                        **Interpretation:**
+                        - EXCELLENT: Closed near peak (<1% missed)
+                        - GOOD: Price dropped after close
+                        - TOO_EARLY: Left >5% on table
+                        - TOO_LATE: Held too long, gave back profit
+                        """)
+
+                    # Per-Symbol Breakdown
+                    st.markdown("---")
+                    st.subheader("📊 Per-Symbol Performance")
+
+                    per_symbol_data = []
+                    for symbol, stats in performance['per_symbol'].items():
+                        per_symbol_data.append({
+                            "Symbol": symbol,
+                            "Trades": stats['total_trades'],
+                            "Win Rate": f"{stats['win_rate']*100:.1f}%",
+                            "Profit Factor": f"{stats['profit_factor']:.2f}",
+                            "Net Profit": f"${stats['net_profit_usd']:.2f}",
+                            "Avg Win": f"+{stats['avg_win_pct']:.2f}%",
+                            "Avg Loss": f"{stats['avg_loss_pct']:.2f}%"
+                        })
+
+                    if per_symbol_data:
+                        df_symbols = pd.DataFrame(per_symbol_data)
+                        st.dataframe(df_symbols, use_container_width=True)
+
+                    # AI Analysis
+                    st.markdown("---")
+                    st.subheader("🤖 AI-Powered Strategy Recommendations")
+
+                    with st.spinner("🧠 Running AI analysis..."):
+                        try:
+                            ai_result = strategy_controller.analyze_with_ai(days=analysis_days, verbose=False)
+
+                            if ai_result.get('error'):
+                                st.error(f"❌ AI Analysis Error: {ai_result['error']}")
+                            else:
+                                st.success("✅ AI Analysis Complete!")
+
+                                # Display AI Analysis
+                                st.markdown(ai_result['analysis'])
+
+                                # Download Report Button
+                                if 'report_path' in ai_result:
+                                    st.markdown("---")
+                                    st.success(f"📄 Report saved: {ai_result['report_path']}")
+
+                                    try:
+                                        with open(ai_result['report_path'], 'r') as f:
+                                            report_content = f.read()
+
+                                        st.download_button(
+                                            label="📥 Download Full Report",
+                                            data=report_content,
+                                            file_name=f"strategy_analysis_{datetime.now().strftime('%Y%m%d')}.md",
+                                            mime="text/markdown"
+                                        )
+                                    except:
+                                        pass
+
+                        except Exception as e:
+                            st.error(f"❌ Error running AI analysis: {e}")
+                            st.exception(e)
+
+                    # Reset button
+                    if st.button("🔄 Run New Analysis"):
+                        st.session_state['run_analysis'] = False
+                        st.rerun()
+
+        else:
+            st.info("👆 Select analysis period and click 'Run AI Analysis' to start")
+
+            st.markdown("""
+            ### 📋 What This Analysis Provides:
+
+            1. **Performance Metrics**: Win rate, profit factor, average trade duration
+            2. **Close Quality Analysis**: How well you timed your exits using hindsight data
+            3. **Per-Symbol Breakdown**: Performance for each crypto (BTC/ETH/SOL)
+            4. **Missed Opportunities**: Profit left on the table from early exits
+            5. **AI Recommendations**: Concrete suggestions to improve profitability
+            6. **Parameter Optimization**: Suggested changes to .env configuration
+
+            ### 🆕 Advanced Features:
+
+            - **Per-symbol inactivity analysis**: Identifies when bot was inactive on specific symbols
+            - **Portfolio opportunity cost**: Finds suboptimal position choices
+            - **Threshold optimization**: Calculates optimal SCORE_THRESHOLD_OPEN per symbol
+
+            See [README_ANALYTICS.md](/README_ANALYTICS.md) for full documentation.
+            """)
+
+    except ImportError as e:
+        st.error(f"❌ Analytics modules not found: {e}")
+        st.info("Make sure analytics.py and strategy_controller.py are in the same directory as dashboard.py")
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {e}")
+        st.exception(e)
+
+with tab6:
     st.subheader("⚙️ Bot Configuration")
 
     # Mostra env vars (senza valori sensibili)
