@@ -114,6 +114,8 @@ def check_trailing_stop(position: dict, tracking_data: dict = None) -> dict:
     """
     Controlla se trailing stop o stop loss è triggerato.
 
+    Calcola P&L reale considerando la leva.
+
     Returns:
         dict con triggered, reason, trailing_active, new_peak
     """
@@ -124,14 +126,26 @@ def check_trailing_stop(position: dict, tracking_data: dict = None) -> dict:
     entry_price = float(position.get("entry_price", 0))
     current_price = float(position.get("mark_price", 0))
 
+    # Parse leverage (può essere "3x (cross)" o numero)
+    leverage_raw = position.get("leverage", 1)
+    if isinstance(leverage_raw, str):
+        import re
+        match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+        leverage = float(match.group(1)) if match else 1.0
+    else:
+        leverage = float(leverage_raw)
+
     if entry_price == 0 or current_price == 0:
         return {"triggered": False, "reason": "No price", "trailing_active": False}
 
-    # Calcola profitto attuale
+    # Calcola movimento prezzo (senza leva)
     if direction == "long":
-        profit_pct = ((current_price - entry_price) / entry_price) * 100
+        price_change_pct = ((current_price - entry_price) / entry_price) * 100
     else:
-        profit_pct = ((entry_price - current_price) / entry_price) * 100
+        price_change_pct = ((entry_price - current_price) / entry_price) * 100
+
+    # P&L reale = movimento prezzo * leva
+    pnl_pct = price_change_pct * leverage
 
     # Peak price dal tracking
     if tracking_data:
@@ -147,14 +161,17 @@ def check_trailing_stop(position: dict, tracking_data: dict = None) -> dict:
     else:
         new_peak = min(peak_price, current_price)
 
-    # Calcola distanza dal peak
+    # Calcola distanza dal peak (movimento prezzo)
     if direction == "long":
-        profit_from_peak_pct = ((current_price - new_peak) / new_peak) * 100
+        price_change_from_peak_pct = ((current_price - new_peak) / new_peak) * 100
     else:
-        profit_from_peak_pct = ((new_peak - current_price) / new_peak) * 100
+        price_change_from_peak_pct = ((new_peak - current_price) / new_peak) * 100
 
-    # Attiva trailing se in profitto
-    if profit_pct >= TRAILING_STOP_ACTIVATION_PERCENT:
+    # P&L dal peak = movimento dal peak * leva
+    pnl_from_peak_pct = price_change_from_peak_pct * leverage
+
+    # Attiva trailing se P&L reale >= soglia (soglia interpretata come P&L reale)
+    if pnl_pct >= TRAILING_STOP_ACTIVATION_PERCENT:
         trailing_active = True
 
     result = {
@@ -162,20 +179,23 @@ def check_trailing_stop(position: dict, tracking_data: dict = None) -> dict:
         "reason": "",
         "trailing_active": trailing_active,
         "new_peak": new_peak,
-        "profit_pct": profit_pct,
-        "profit_from_peak_pct": profit_from_peak_pct
+        "profit_pct": price_change_pct,  # Movimento prezzo (per compatibilità log)
+        "profit_from_peak_pct": price_change_from_peak_pct,  # Per compatibilità log
+        "pnl_pct": pnl_pct,  # P&L reale
+        "pnl_from_peak_pct": pnl_from_peak_pct,  # P&L reale dal peak
+        "leverage": leverage
     }
 
-    # Check stop loss iniziale
-    if not trailing_active and profit_pct <= -INITIAL_STOP_LOSS_PERCENT:
+    # Check stop loss iniziale (usa P&L reale)
+    if not trailing_active and pnl_pct <= -INITIAL_STOP_LOSS_PERCENT:
         result["triggered"] = True
-        result["reason"] = f"STOP LOSS: {profit_pct:.2f}% (soglia -{INITIAL_STOP_LOSS_PERCENT}%)"
+        result["reason"] = f"STOP LOSS: {pnl_pct:.2f}% P&L (soglia -{INITIAL_STOP_LOSS_PERCENT}%, leva {leverage}x)"
         return result
 
-    # Check trailing stop
-    if trailing_active and profit_from_peak_pct <= -TRAILING_STOP_PERCENT:
+    # Check trailing stop (usa P&L reale dal peak)
+    if trailing_active and pnl_from_peak_pct <= -TRAILING_STOP_PERCENT:
         result["triggered"] = True
-        result["reason"] = f"TRAILING STOP: {-profit_from_peak_pct:.2f}% dal peak (soglia {TRAILING_STOP_PERCENT}%)"
+        result["reason"] = f"TRAILING STOP: {-pnl_from_peak_pct:.2f}% P&L dal peak (soglia {TRAILING_STOP_PERCENT}%, leva {leverage}x)"
         return result
 
     return result
