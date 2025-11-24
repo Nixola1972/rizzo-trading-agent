@@ -29,7 +29,7 @@ load_dotenv()
 
 # Configurazione
 SENTINEL_ENABLED = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
-SENTINEL_INTERVAL = int(os.getenv('SENTINEL_INTERVAL_SECONDS', '120'))
+SENTINEL_INTERVAL = int(os.getenv('SENTINEL_INTERVAL_SECONDS', '60'))
 SENTINEL_TELEGRAM_NOTIFY = os.getenv('SENTINEL_TELEGRAM_NOTIFY', 'true').lower() == 'true'
 
 # Trailing Stop Config
@@ -37,6 +37,10 @@ TRAILING_STOP_ENABLED = os.getenv('TRAILING_STOP_ENABLED', 'true').lower() == 't
 TRAILING_STOP_PERCENT = float(os.getenv('TRAILING_STOP_PERCENT', '7'))
 TRAILING_STOP_ACTIVATION_PERCENT = float(os.getenv('TRAILING_STOP_ACTIVATION_PERCENT', '3'))
 INITIAL_STOP_LOSS_PERCENT = float(os.getenv('INITIAL_STOP_LOSS_PERCENT', '10'))
+
+# Take Profit Config
+TAKE_PROFIT_ENABLED = os.getenv('TAKE_PROFIT_ENABLED', 'true').lower() == 'true'
+TAKE_PROFIT_PERCENT = float(os.getenv('TAKE_PROFIT_PERCENT', '5'))
 
 # Hyperliquid Config
 TESTNET = os.getenv("TESTNET", "true").lower() == "true"
@@ -48,6 +52,51 @@ def log(msg: str):
     """Log con timestamp."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}")
+
+
+def check_take_profit(position: dict) -> dict:
+    """
+    Controlla se take profit è triggerato.
+
+    Calcola il P&L reale considerando la leva.
+
+    Returns:
+        dict con triggered, reason, pnl_pct
+    """
+    if not TAKE_PROFIT_ENABLED:
+        return {"triggered": False, "reason": "Disabled", "pnl_pct": 0}
+
+    direction = position.get("side", "long").lower()
+    entry_price = float(position.get("entry_price", 0))
+    current_price = float(position.get("mark_price", 0))
+    leverage = float(position.get("leverage", 1))
+
+    if entry_price == 0 or current_price == 0:
+        return {"triggered": False, "reason": "No price", "pnl_pct": 0}
+
+    # Calcola movimento prezzo
+    if direction == "long":
+        price_change_pct = ((current_price - entry_price) / entry_price) * 100
+    else:
+        price_change_pct = ((entry_price - current_price) / entry_price) * 100
+
+    # P&L reale = movimento prezzo * leva
+    pnl_pct = price_change_pct * leverage
+
+    result = {
+        "triggered": False,
+        "reason": "",
+        "pnl_pct": pnl_pct,
+        "price_change_pct": price_change_pct,
+        "leverage": leverage
+    }
+
+    # Check take profit
+    if pnl_pct >= TAKE_PROFIT_PERCENT:
+        result["triggered"] = True
+        result["reason"] = f"TAKE PROFIT: +{pnl_pct:.2f}% P&L (soglia +{TAKE_PROFIT_PERCENT}%, leva {leverage}x)"
+
+    return result
 
 
 def check_trailing_stop(position: dict, tracking_data: dict = None) -> dict:
@@ -170,10 +219,17 @@ def run_sentinel_check():
             mark_price = pos.get("mark_price", 0)
             pnl = pos.get("pnl_usd", 0)
 
+            leverage = pos.get("leverage", 1)
+
             # Ottieni tracking dal DB
             tracking_data = db_utils.get_position_tracking(symbol)
 
-            # Check trailing stop
+            # === CHECK TAKE PROFIT (prima del trailing stop) ===
+            tp_result = check_take_profit(pos)
+            tp_triggered = tp_result.get("triggered", False)
+            pnl_pct = tp_result.get("pnl_pct", 0)
+
+            # === CHECK TRAILING STOP ===
             result = check_trailing_stop(pos, tracking_data)
 
             # Aggiorna tracking nel DB
@@ -193,18 +249,28 @@ def run_sentinel_check():
             # Determina azione
             action_taken = None
             action_reason = None
+            should_close = False
+            close_reason = ""
 
-            if result.get("triggered"):
-                # CHIUDI POSIZIONE
-                log(f"🛑 {symbol}: {result['reason']}")
-                log(f"   Chiusura posizione {direction.upper()}...")
-
-                # Determina tipo di azione
-                if "STOP LOSS" in result['reason']:
+            # Take profit ha priorità
+            if tp_triggered:
+                should_close = True
+                close_reason = tp_result['reason']
+                action_taken = "CLOSE_TAKE_PROFIT"
+                action_reason = close_reason
+            elif result.get("triggered"):
+                should_close = True
+                close_reason = result['reason']
+                if "STOP LOSS" in close_reason:
                     action_taken = "CLOSE_STOP_LOSS"
                 else:
                     action_taken = "CLOSE_TRAILING_STOP"
-                action_reason = result['reason']
+                action_reason = close_reason
+
+            if should_close:
+                # CHIUDI POSIZIONE
+                log(f"🛑 {symbol}: {close_reason}")
+                log(f"   Chiusura posizione {direction.upper()}...")
 
                 try:
                     close_result = bot.exchange.market_close(symbol)
@@ -215,15 +281,16 @@ def run_sentinel_check():
 
                     # Notifica Telegram
                     if SENTINEL_TELEGRAM_NOTIFY:
+                        emoji = "💰" if action_taken == "CLOSE_TAKE_PROFIT" else "🛑"
                         try:
                             tg.send_message(
-                                f"🛑 *SENTINEL CLOSE*\n\n"
+                                f"{emoji} *SENTINEL CLOSE*\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Direction: {direction.upper()}\n"
-                                f"Reason: {result['reason']}\n"
+                                f"Reason: {close_reason}\n"
                                 f"Entry: ${entry_price:.2f}\n"
                                 f"Exit: ${mark_price:.2f}\n"
-                                f"PnL: ${pnl:.2f}"
+                                f"PnL: ${pnl:.2f} ({pnl_pct:+.2f}%)"
                             )
                         except Exception as e:
                             log(f"   ⚠️ Errore Telegram: {e}")
@@ -235,7 +302,8 @@ def run_sentinel_check():
                 peak_info = ""
                 if result.get("trailing_active"):
                     peak_info = f", peak_dist={profit_from_peak_pct:.2f}%"
-                log(f"   {symbol}: {direction.upper()} profit={profit_pct:.2f}% trailing={trailing_status}{peak_info}")
+                tp_info = f", P&L={pnl_pct:+.2f}%" if TAKE_PROFIT_ENABLED else ""
+                log(f"   {symbol}: {direction.upper()} price_chg={profit_pct:.2f}% trailing={trailing_status}{peak_info}{tp_info}")
 
             # Log nel database per dashboard
             try:
@@ -267,6 +335,8 @@ def run_loop(interval: int = None):
 
     log(f"🔄 Sentinel avviato in loop (intervallo: {interval}s)")
     log(f"   Trailing: {TRAILING_STOP_PERCENT}%, Activation: {TRAILING_STOP_ACTIVATION_PERCENT}%, Stop Loss: {INITIAL_STOP_LOSS_PERCENT}%")
+    if TAKE_PROFIT_ENABLED:
+        log(f"   Take Profit: {TAKE_PROFIT_PERCENT}% P&L")
 
     try:
         while True:
