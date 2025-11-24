@@ -1407,7 +1407,7 @@ with tab5:
     st.markdown("""
     ### Performance Analytics & AI-Powered Optimization
 
-    Questo modulo analizza le tue performance storiche e usa l'AI per suggerire miglioramenti concreti.
+    This module analyzes your historical trading performance and uses AI to suggest concrete improvements.
     """)
 
     # Import analytics modules
@@ -1422,7 +1422,7 @@ with tab5:
                 "📅 Analysis Period",
                 [7, 14, 30, 60],
                 index=2,  # Default: 30 days
-                help="Giorni di storico da analizzare"
+                help="Days of historical data to analyze"
             )
 
         with col_analyze:
@@ -1448,14 +1448,14 @@ with tab5:
                     col_metric1.metric(
                         "Total Trades",
                         performance['total_trades'],
-                        help="Numero totale di trade completati"
+                        help="Total number of completed trades"
                     )
 
                     col_metric2.metric(
                         "Win Rate",
                         f"{performance['win_rate']*100:.1f}%",
                         delta=f"{performance['winning_trades']}W / {performance['losing_trades']}L",
-                        help="Percentuale di trade vincenti"
+                        help="Percentage of winning trades"
                     )
 
                     col_metric3.metric(
@@ -1463,14 +1463,14 @@ with tab5:
                         f"{performance['profit_factor']:.2f}",
                         delta="Good" if performance['profit_factor'] > 1.5 else "Needs Improvement",
                         delta_color="normal" if performance['profit_factor'] > 1.5 else "inverse",
-                        help="Rapporto profitti/perdite"
+                        help="Profit to loss ratio"
                     )
 
                     col_metric4.metric(
                         "Net Profit",
                         f"${performance['net_profit_usd']:.2f}",
                         delta=f"Avg: ${performance['net_profit_usd']/performance['total_trades']:.2f}/trade" if performance['total_trades'] > 0 else "N/A",
-                        help="Profitto netto totale"
+                        help="Total net profit"
                     )
 
                     # Trade Metrics
@@ -1480,21 +1480,21 @@ with tab5:
                     col_trade1, col_trade2 = st.columns(2)
 
                     with col_trade1:
-                        st.metric("Avg Win", f"+{performance['avg_win_pct']:.2f}%", help="Media dei trade vincenti")
-                        st.metric("Max Win", f"+{performance['max_win_pct']:.2f}%", help="Miglior trade")
+                        st.metric("Avg Win", f"+{performance['avg_win_pct']:.2f}%", help="Average winning trade")
+                        st.metric("Max Win", f"+{performance['max_win_pct']:.2f}%", help="Best trade")
 
                     with col_trade2:
-                        st.metric("Avg Loss", f"{performance['avg_loss_pct']:.2f}%", help="Media delle perdite")
-                        st.metric("Max Loss", f"{performance['max_loss_pct']:.2f}%", help="Peggior trade")
+                        st.metric("Avg Loss", f"{performance['avg_loss_pct']:.2f}%", help="Average losing trade")
+                        st.metric("Max Loss", f"{performance['max_loss_pct']:.2f}%", help="Worst trade")
 
-                    st.metric("Avg Duration", f"{performance['avg_duration_minutes']:.0f} minutes", help="Durata media dei trade")
+                    st.metric("Avg Duration", f"{performance['avg_duration_minutes']:.0f} minutes", help="Average trade duration")
 
                     # Close Quality Analysis
                     st.markdown("---")
                     st.subheader("🎯 Close Quality Analysis")
 
                     st.markdown("""
-                    Analisi "hindsight": quanto bene hai chiuso le posizioni rispetto al movimento successivo del prezzo.
+                    Hindsight analysis: how well you closed your positions relative to subsequent price movements.
                     """)
 
                     close_quality = performance['close_quality_distribution']
@@ -1523,7 +1523,7 @@ with tab5:
                             f"{performance['total_missed_profit_pct']:.1f}%",
                             delta=f"Avg: {performance['avg_missed_per_trade_pct']:.2f}% per trade",
                             delta_color="inverse",
-                            help="Profitto lasciato sul tavolo chiudendo troppo presto"
+                            help="Profit left on the table by closing too early"
                         )
 
                         st.info(f"""
