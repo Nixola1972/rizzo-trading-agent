@@ -10,6 +10,7 @@ Configurazione .env:
 
 import os
 import requests
+import html
 from datetime import datetime
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
@@ -74,6 +75,8 @@ def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
 def notify_trade_open(symbol: str, direction: str, leverage: float,
                       target_pct: float, reason: str) -> bool:
     """Notifica apertura posizione."""
+    # Escape HTML characters in reason to prevent parsing errors
+    safe_reason = html.escape(reason[:500])
     message = f"""🟢 <b>TRADE APERTO</b>
 
 <b>Symbol:</b> {symbol}
@@ -82,7 +85,7 @@ def notify_trade_open(symbol: str, direction: str, leverage: float,
 <b>Size:</b> {target_pct * 100:.1f}% del balance
 
 <b>Motivo AI:</b>
-<i>{reason[:500]}</i>
+<i>{safe_reason}</i>
 
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
 
@@ -93,6 +96,8 @@ def notify_trade_close(symbol: str, direction: str, reason: str,
                        pnl_usd: Optional[float] = None,
                        pnl_pct: Optional[float] = None) -> bool:
     """Notifica chiusura posizione."""
+    # Escape HTML characters in reason to prevent parsing errors
+    safe_reason = html.escape(reason[:500])
     pnl_text = ""
     if pnl_usd is not None:
         pnl_emoji = "📈" if pnl_usd >= 0 else "📉"
@@ -106,7 +111,7 @@ def notify_trade_close(symbol: str, direction: str, reason: str,
 <b>Direction:</b> {direction.upper()}{pnl_text}
 
 <b>Motivo AI:</b>
-<i>{reason[:500]}</i>
+<i>{safe_reason}</i>
 
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
 
@@ -120,12 +125,14 @@ def notify_hold(symbol: str, reason: str) -> bool:
     if not notify_holds:
         return True
 
+    # Escape HTML characters in reason to prevent parsing errors
+    safe_reason = html.escape(reason[:300])
     message = f"""⚪ <b>HOLD</b>
 
 <b>Symbol:</b> {symbol}
 
 <b>Motivo AI:</b>
-<i>{reason[:300]}</i>
+<i>{safe_reason}</i>
 
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
 
@@ -135,14 +142,17 @@ def notify_hold(symbol: str, reason: str) -> bool:
 def notify_error(error_type: str, error_message: str,
                  source: Optional[str] = None) -> bool:
     """Notifica errore."""
-    source_text = f"\n<b>Source:</b> {source}" if source else ""
+    # Escape HTML characters to prevent parsing errors
+    safe_error_type = html.escape(error_type)
+    safe_error_message = html.escape(error_message[:500])
+    source_text = f"\n<b>Source:</b> {html.escape(source)}" if source else ""
 
     message = f"""⚠️ <b>ERRORE BOT</b>
 
-<b>Tipo:</b> {error_type}{source_text}
+<b>Tipo:</b> {safe_error_type}{source_text}
 
 <b>Messaggio:</b>
-<code>{error_message[:500]}</code>
+<code>{safe_error_message}</code>
 
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
 
