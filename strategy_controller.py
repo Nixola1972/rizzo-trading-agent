@@ -399,13 +399,14 @@ Be concise, actionable, and focus on HIGH IMPACT changes.
 
 
 def _save_report(analysis: str, performance: Dict[str, Any], days: int) -> str:
-    """Salva il report in reports/"""
+    """Salva il report in /tmp/reports/ (writable in Docker)"""
 
-    # Crea directory se non esiste
-    os.makedirs('reports', exist_ok=True)
+    # Use /tmp directory for Docker compatibility (has write permissions)
+    report_dir = '/tmp/reports'
+    os.makedirs(report_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"reports/strategy_analysis_{timestamp}.md"
+    filename = f"{report_dir}/strategy_analysis_{timestamp}.md"
 
     with open(filename, 'w') as f:
         f.write(f"# Trading Bot Strategy Analysis\n\n")
