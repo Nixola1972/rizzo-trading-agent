@@ -10,6 +10,7 @@ Funzionalità:
 """
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
@@ -22,17 +23,161 @@ TESTNET = os.getenv("TESTNET", "true").lower() == "true"
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 
+# Global bot instance cache to avoid recreating connections
+_bot_instance = None
+
 
 def get_hyperliquid_bot():
-    """Crea istanza HyperLiquidTrader per fetch dati."""
-    if not PRIVATE_KEY or not WALLET_ADDRESS:
-        raise RuntimeError("PRIVATE_KEY o WALLET_ADDRESS mancanti nel .env")
+    """
+    Returns cached HyperLiquidTrader instance to avoid rate limits.
+    Uses exponential backoff on rate limit errors (429).
+    """
+    global _bot_instance
 
-    return HyperLiquidTrader(
-        secret_key=PRIVATE_KEY,
-        account_address=WALLET_ADDRESS,
-        testnet=TESTNET
-    )
+    if not PRIVATE_KEY or not WALLET_ADDRESS:
+        raise RuntimeError("PRIVATE_KEY or WALLET_ADDRESS missing in .env")
+
+    # Return cached instance if available
+    if _bot_instance is not None:
+        return _bot_instance
+
+    # Create new instance with retry logic
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            _bot_instance = HyperLiquidTrader(
+                secret_key=PRIVATE_KEY,
+                account_address=WALLET_ADDRESS,
+                testnet=TESTNET
+            )
+            return _bot_instance
+        except Exception as e:
+            error_str = str(e)
+            # Check if it's a 429 rate limit error
+            if '429' in error_str:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
+                    print(f"⚠️  Rate limit hit (429). Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise RuntimeError(f"Failed to connect to Hyperliquid after {max_retries} attempts due to rate limiting. Please wait a few minutes and try again.") from e
+            else:
+                # Not a rate limit error, raise immediately
+                raise
+
+
+def fetch_completed_trades_from_db(days: int = 30) -> List[Dict[str, Any]]:
+    """
+    Recupera trade completati dal database PostgreSQL (bot_operations).
+    Non richiede chiamate API Hyperliquid - usa solo dati locali.
+
+    Args:
+        days: Numero di giorni di storico da recuperare
+
+    Returns:
+        Lista di trade con stesso formato di fetch_completed_trades_from_hyperliquid
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Query per recuperare open/close operations dal DB
+    query = """
+        SELECT
+            id,
+            created_at,
+            operation,
+            symbol,
+            direction,
+            raw_payload
+        FROM bot_operations
+        WHERE created_at >= %s
+            AND operation IN ('open', 'close')
+            AND symbol IS NOT NULL
+        ORDER BY symbol, created_at
+    """
+
+    try:
+        with db_utils.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (cutoff_date,))
+                rows = cur.fetchall()
+
+        # Raggruppa operations in trade completi (match open + close per symbol)
+        trades = []
+        open_positions = {}  # {symbol: open_operation}
+
+        for row in rows:
+            op_id, created_at, operation, symbol, direction, raw_payload = row
+
+            if operation == 'open':
+                # Store open position
+                open_positions[symbol] = {
+                    'id': op_id,
+                    'open_time': created_at,
+                    'direction': direction,
+                    'raw_payload': raw_payload
+                }
+
+            elif operation == 'close' and symbol in open_positions:
+                # Match with open position to create complete trade
+                open_op = open_positions.pop(symbol)
+
+                # Extract prices and PnL from raw_payload
+                open_payload = open_op['raw_payload']
+                close_payload = raw_payload
+
+                # Get entry/exit prices
+                entry_price = None
+                exit_price = None
+                pnl_usd = None
+                size = None
+
+                # Try to extract from payload
+                if isinstance(open_payload, dict):
+                    entry_price = open_payload.get('entry_price') or open_payload.get('price')
+                    size = open_payload.get('size') or open_payload.get('target_portion_of_balance')
+
+                if isinstance(close_payload, dict):
+                    exit_price = close_payload.get('exit_price') or close_payload.get('price')
+                    pnl_usd = close_payload.get('pnl_usd')
+
+                # Calculate PnL if not provided
+                if pnl_usd is None and entry_price and exit_price and size:
+                    if direction == 'long':
+                        pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+                    else:  # short
+                        pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+                else:
+                    pnl_pct = (pnl_usd / (entry_price * size) * 100) if entry_price and size and pnl_usd else 0
+
+                # Calculate duration
+                duration = (created_at - open_op['open_time']).total_seconds() / 60  # minutes
+
+                trade = {
+                    'symbol': symbol.replace('-USD', ''),  # BTC-USD -> BTC
+                    'side': direction or 'long',
+                    'entry_price': float(entry_price) if entry_price else 0.0,
+                    'exit_price': float(exit_price) if exit_price else 0.0,
+                    'size': float(size) if size else 0.0,
+                    'pnl_usd': float(pnl_usd) if pnl_usd else 0.0,
+                    'pnl_pct': float(pnl_pct) if pnl_pct else 0.0,
+                    'open_time': open_op['open_time'],
+                    'close_time': created_at,
+                    'duration_minutes': duration,
+                    'close_reason': close_payload.get('reason', 'unknown') if isinstance(close_payload, dict) else 'unknown'
+                }
+
+                trades.append(trade)
+
+        return trades
+
+    except Exception as e:
+        print(f"⚠️  Error fetching trades from database: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 
 def fetch_completed_trades_from_hyperliquid(days: int = 30) -> List[Dict[str, Any]]:
@@ -292,12 +437,13 @@ def analyze_close_decision_quality(trade: Dict[str, Any], lookback_minutes: int 
         }
 
 
-def get_performance_summary(days: int = 30) -> Dict[str, Any]:
+def get_performance_summary(days: int = 30, use_database_only: bool = True) -> Dict[str, Any]:
     """
     Restituisce metriche complete di performance con analisi hindsight.
 
     Args:
         days: Giorni di storico da analizzare
+        use_database_only: Se True, usa solo dati dal DB (evita rate limits Hyperliquid)
 
     Returns:
         {
@@ -325,23 +471,47 @@ def get_performance_summary(days: int = 30) -> Dict[str, Any]:
     print(f"📊 PERFORMANCE ANALYSIS - Last {days} days")
     print(f"{'='*60}\n")
 
-    # Fetch trade da Hyperliquid
-    print("1️⃣  Fetching trade completati da Hyperliquid...")
-    trades = fetch_completed_trades_from_hyperliquid(days)
+    # Fetch trade da database o Hyperliquid
+    if use_database_only:
+        print("1️⃣  Fetching trade completati dal database...")
+        trades = fetch_completed_trades_from_db(days)
+    else:
+        print("1️⃣  Fetching trade completati da Hyperliquid...")
+        try:
+            trades = fetch_completed_trades_from_hyperliquid(days)
+        except RuntimeError as e:
+            # Fallback to database if Hyperliquid fails (rate limits)
+            if "rate limiting" in str(e).lower():
+                print(f"   ⚠️  {e}")
+                print("   🔄 Fallback: using database instead...")
+                trades = fetch_completed_trades_from_db(days)
+            else:
+                raise
+
     print(f"   ✅ {len(trades)} trade trovati\n")
 
     if not trades:
         return {
-            'error': 'Nessun trade trovato',
+            'error': 'No trades found in the selected period',
             'total_trades': 0
         }
 
-    # Analizza ogni trade con hindsight
-    print("2️⃣  Analisi hindsight (cosa è successo dopo ogni close)...")
-    for i, trade in enumerate(trades):
-        print(f"   Analizzando {trade['symbol']} #{i+1}/{len(trades)}...", end='\r')
-        trade['close_analysis'] = analyze_close_decision_quality(trade)
-    print(f"   ✅ Analisi hindsight completata\n")
+    # Analizza ogni trade con hindsight (solo se non stiamo usando solo DB)
+    if not use_database_only:
+        print("2️⃣  Analisi hindsight (cosa è successo dopo ogni close)...")
+        for i, trade in enumerate(trades):
+            print(f"   Analizzando {trade['symbol']} #{i+1}/{len(trades)}...", end='\r')
+            trade['close_analysis'] = analyze_close_decision_quality(trade)
+        print(f"   ✅ Analisi hindsight completata\n")
+    else:
+        # Skip hindsight analysis to avoid Hyperliquid API calls
+        print("2️⃣  Skipping hindsight analysis (database-only mode to avoid rate limits)\n")
+        for trade in trades:
+            trade['close_analysis'] = {
+                'close_quality': 'SKIPPED',
+                'verdict': 'Hindsight analysis skipped (database-only mode)',
+                'missed_opportunity_pct': 0
+            }
 
     # Calcola metriche aggregate
     print("3️⃣  Calcolo metriche...\n")

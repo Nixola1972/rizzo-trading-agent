@@ -1604,17 +1604,21 @@ with tab5:
             ### 📋 What This Analysis Provides:
 
             1. **Performance Metrics**: Win rate, profit factor, average trade duration
-            2. **Close Quality Analysis**: How well you timed your exits using hindsight data
-            3. **Per-Symbol Breakdown**: Performance for each crypto (BTC/ETH/SOL)
-            4. **Missed Opportunities**: Profit left on the table from early exits
-            5. **AI Recommendations**: Concrete suggestions to improve profitability
-            6. **Parameter Optimization**: Suggested changes to .env configuration
+            2. **Per-Symbol Breakdown**: Performance for each crypto (BTC/ETH/SOL)
+            3. **AI Recommendations**: Concrete suggestions to improve profitability
+            4. **Parameter Optimization**: Suggested changes to .env configuration
 
             ### 🆕 Advanced Features:
 
             - **Per-symbol inactivity analysis**: Identifies when bot was inactive on specific symbols
             - **Portfolio opportunity cost**: Finds suboptimal position choices
             - **Threshold optimization**: Calculates optimal SCORE_THRESHOLD_OPEN per symbol
+
+            ### ℹ️ Note:
+
+            - Analysis uses **database-only mode** to avoid Hyperliquid API rate limits
+            - Hindsight analysis (close quality) is disabled in this mode
+            - All performance metrics are calculated from your local trading database
 
             See [README_ANALYTICS.md](/README_ANALYTICS.md) for full documentation.
             """)
