@@ -69,7 +69,16 @@ def check_take_profit(position: dict) -> dict:
     direction = position.get("side", "long").lower()
     entry_price = float(position.get("entry_price", 0))
     current_price = float(position.get("mark_price", 0))
-    leverage = float(position.get("leverage", 1))
+
+    # Parse leverage (può essere "3x (cross)" o numero)
+    leverage_raw = position.get("leverage", 1)
+    if isinstance(leverage_raw, str):
+        # Estrai il numero da stringhe tipo "3x (cross)"
+        import re
+        match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+        leverage = float(match.group(1)) if match else 1.0
+    else:
+        leverage = float(leverage_raw)
 
     if entry_price == 0 or current_price == 0:
         return {"triggered": False, "reason": "No price", "pnl_pct": 0}
