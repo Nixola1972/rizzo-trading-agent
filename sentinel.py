@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import argparse
+import subprocess
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -41,6 +42,7 @@ INITIAL_STOP_LOSS_PERCENT = float(os.getenv('INITIAL_STOP_LOSS_PERCENT', '10'))
 # Take Profit Config
 TAKE_PROFIT_ENABLED = os.getenv('TAKE_PROFIT_ENABLED', 'true').lower() == 'true'
 TAKE_PROFIT_PERCENT = float(os.getenv('TAKE_PROFIT_PERCENT', '5'))
+TAKE_PROFIT_TRIGGER_BOT = os.getenv('TAKE_PROFIT_TRIGGER_BOT', 'true').lower() == 'true'
 
 # Hyperliquid Config
 TESTNET = os.getenv("TESTNET", "true").lower() == "true"
@@ -292,17 +294,32 @@ def run_sentinel_check():
                     if SENTINEL_TELEGRAM_NOTIFY:
                         emoji = "💰" if action_taken == "CLOSE_TAKE_PROFIT" else "🛑"
                         try:
-                            tg.send_message(
-                                f"{emoji} *SENTINEL CLOSE*\n\n"
-                                f"Symbol: {symbol}\n"
-                                f"Direction: {direction.upper()}\n"
-                                f"Reason: {close_reason}\n"
-                                f"Entry: ${entry_price:.2f}\n"
-                                f"Exit: ${mark_price:.2f}\n"
-                                f"PnL: ${pnl:.2f} ({pnl_pct:+.2f}%)"
+                            tg.send_telegram_message(
+                                f"{emoji} <b>SENTINEL CLOSE</b>\n\n"
+                                f"<b>Symbol:</b> {symbol}\n"
+                                f"<b>Direction:</b> {direction.upper()}\n"
+                                f"<b>Reason:</b> {close_reason}\n"
+                                f"<b>Entry:</b> ${entry_price:.2f}\n"
+                                f"<b>Exit:</b> ${mark_price:.2f}\n"
+                                f"<b>PnL:</b> ${pnl:.2f} ({pnl_pct:+.2f}%)"
                             )
                         except Exception as e:
                             log(f"   ⚠️ Errore Telegram: {e}")
+
+                    # Trigger bot dopo take profit per rivalutare
+                    if action_taken == "CLOSE_TAKE_PROFIT" and TAKE_PROFIT_TRIGGER_BOT:
+                        log(f"   🚀 Triggering bot per rivalutare {symbol}...")
+                        try:
+                            # Lancia main.py in background per questo ticker
+                            subprocess.Popen(
+                                ["python", "main.py", "--ticker", symbol, "--reason", "take_profit"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True
+                            )
+                            log(f"   ✅ Bot triggerato per {symbol}")
+                        except Exception as e:
+                            log(f"   ⚠️ Errore trigger bot: {e}")
 
                 except Exception as e:
                     log(f"   ❌ Errore chiusura: {e}")

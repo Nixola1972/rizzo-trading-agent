@@ -9,10 +9,17 @@ import os
 import json
 import signal
 import sys
+import argparse
 import db_utils
 import telegram_notifier as tg
 from dotenv import load_dotenv
 load_dotenv()
+
+# Parse arguments
+parser = argparse.ArgumentParser(description="Trading Bot")
+parser.add_argument("--ticker", type=str, help="Analizza solo questo ticker (es: ETH)")
+parser.add_argument("--reason", type=str, default="manual", help="Motivo trigger (es: take_profit)")
+args = parser.parse_args()
 
 # Timeout globale configurabile da .env (default 5 minuti)
 GLOBAL_TIMEOUT = int(os.getenv("BOT_TIMEOUT_SECONDS", "300"))
@@ -44,7 +51,20 @@ try:
     )
 
     # Calcolo delle informazioni in input per Ticker
-    tickers = ['BTC', 'ETH', 'SOL']
+    all_tickers = ['BTC', 'ETH', 'SOL']
+
+    # Se specificato --ticker, analizza solo quello
+    if args.ticker:
+        ticker_upper = args.ticker.upper()
+        if ticker_upper in all_tickers:
+            tickers = [ticker_upper]
+            print(f"🎯 Modalità singolo ticker: {ticker_upper} (reason: {args.reason})")
+        else:
+            print(f"⚠️ Ticker {ticker_upper} non supportato. Uso tutti: {all_tickers}")
+            tickers = all_tickers
+    else:
+        tickers = all_tickers
+
     indicators_txt, indicators_json  = analyze_multiple_tickers(tickers)
     news_txt = fetch_latest_news()
     # whale_alerts_txt = format_whale_alerts_to_string()
