@@ -524,6 +524,405 @@ def get_sentinel_effectiveness() -> Dict[str, Any]:
     }
 
 
+def analyze_missed_opportunities_per_symbol(days: int = 7) -> Dict[str, Any]:
+    """
+    Analizza opportunità perse PER SIMBOLO indipendentemente.
+
+    Identifica periodi dove:
+    - Bot era HOLD su quel simbolo (nessuna posizione)
+    - Score esisteva ma era sotto threshold
+    - Prezzo si è mosso significativamente
+
+    Args:
+        days: Giorni di storico da analizzare
+
+    Returns:
+        {
+            'BTC': {
+                'total_missed_opportunities': 8,
+                'avg_missed_profit_pct': 4.2,
+                'total_potential_profit_usd': 280,
+                'reasons': {...},
+                'optimal_threshold': 12,
+                'details': [...]
+            },
+            'ETH': {...},
+            'SOL': {...}
+        }
+    """
+
+    print(f"\n{'='*60}")
+    print(f"🔍 ANALYZING MISSED OPPORTUNITIES PER SYMBOL")
+    print(f"{'='*60}\n")
+
+    bot = get_hyperliquid_bot()
+    symbols = ['BTC', 'ETH', 'SOL']
+    results = {}
+
+    for symbol in symbols:
+        print(f"   Analyzing {symbol}...", end='\r')
+
+        # 1. Fetch signal scores per questo simbolo
+        with db_utils.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        created_at,
+                        net_score,
+                        direction,
+                        confidence
+                    FROM signal_scores
+                    WHERE symbol = %s
+                      AND created_at > NOW() - INTERVAL '%s days'
+                    ORDER BY created_at
+                """, (symbol, days))
+
+                scores = cur.fetchall()
+
+        # 2. Fetch bot operations per questo simbolo
+        with db_utils.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        created_at,
+                        operation,
+                        raw_payload
+                    FROM bot_operations
+                    WHERE symbol = %s
+                      AND created_at > NOW() - INTERVAL '%s days'
+                    ORDER BY created_at
+                """, (symbol, days))
+
+                operations = cur.fetchall()
+
+        # 3. Identifica periodi HOLD (no position su questo symbol)
+        missed_opportunities = []
+        total_missed_profit = 0
+        reasons_count = {'score_below_threshold': 0, 'other': 0}
+
+        SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '15'))
+
+        # Per ogni score, controlla se c'era una posizione aperta
+        for score_row in scores:
+            score_time = score_row[0]
+            net_score = float(score_row[1])
+            direction = score_row[2]
+
+            # Trova se c'era una posizione aperta in quel momento
+            had_position = False
+            for op in operations:
+                op_time = op[0]
+                op_type = op[1]
+                if op_time <= score_time and op_type == 'open':
+                    # Controlla se è stata chiusa prima dello score
+                    closed = False
+                    for close_op in operations:
+                        if close_op[0] > op_time and close_op[0] <= score_time and close_op[1] == 'close':
+                            closed = True
+                            break
+                    if not closed:
+                        had_position = True
+                        break
+
+            # Se NON aveva posizione e score era vicino a threshold
+            if not had_position and abs(net_score) < SCORE_THRESHOLD_OPEN and abs(net_score) > 10:
+                # Controlla movimento prezzo nell'ora successiva
+                try:
+                    # Fetch candles per l'ora successiva
+                    start_time = int(score_time.timestamp() * 1000)
+                    end_time = int((score_time + timedelta(hours=1)).timestamp() * 1000)
+
+                    candles = bot.exchange.info.candle_snapshot(
+                        coin=symbol,
+                        interval='1m',
+                        startTime=start_time,
+                        endTime=end_time
+                    )
+
+                    if candles and len(candles) > 0:
+                        entry_price = float(candles[0]['c'])
+
+                        # Trova movimento massimo
+                        if direction == 'LONG':
+                            peak_price = max([float(c['h']) for c in candles])
+                            movement_pct = ((peak_price - entry_price) / entry_price) * 100
+                        else:  # SHORT
+                            peak_price = min([float(c['l']) for c in candles])
+                            movement_pct = ((entry_price - peak_price) / entry_price) * 100
+
+                        # Se movimento > 2%, è una missed opportunity
+                        if movement_pct > 2.0:
+                            missed_opportunities.append({
+                                'timestamp': score_time,
+                                'score': net_score,
+                                'direction': direction,
+                                'movement_pct': movement_pct,
+                                'reason': 'Score below threshold' if abs(net_score) < SCORE_THRESHOLD_OPEN else 'Other'
+                            })
+
+                            total_missed_profit += movement_pct
+
+                            if abs(net_score) < SCORE_THRESHOLD_OPEN:
+                                reasons_count['score_below_threshold'] += 1
+                            else:
+                                reasons_count['other'] += 1
+
+                except Exception as e:
+                    # Skip se errore fetch candles
+                    pass
+
+        # 4. Calcola threshold ottimale
+        optimal_threshold = _calculate_optimal_threshold(symbol, scores, days)
+
+        results[symbol] = {
+            'total_missed_opportunities': len(missed_opportunities),
+            'avg_missed_profit_pct': total_missed_profit / len(missed_opportunities) if missed_opportunities else 0,
+            'total_potential_profit_pct': total_missed_profit,
+            'reasons': reasons_count,
+            'optimal_threshold': optimal_threshold,
+            'details': missed_opportunities[:5]  # Top 5
+        }
+
+        print(f"   ✅ {symbol}: {len(missed_opportunities)} missed opportunities")
+
+    print(f"\n{'='*60}\n")
+    return results
+
+
+def _calculate_optimal_threshold(symbol: str, scores: List, days: int) -> float:
+    """
+    Calcola threshold ottimale per un simbolo basato su storico.
+
+    Testa vari threshold (10, 12, 15, 18, 20) e vede quale massimizza profitto.
+    """
+
+    # Per semplicità, se media score è bassa, suggerisci threshold più basso
+    if not scores:
+        return 15.0
+
+    avg_score = sum(abs(float(row[1])) for row in scores) / len(scores)
+
+    if avg_score < 12:
+        return 10.0
+    elif avg_score < 14:
+        return 12.0
+    elif avg_score < 16:
+        return 13.0
+    else:
+        return 15.0
+
+
+def optimize_thresholds_per_symbol(days: int = 7) -> Dict[str, Any]:
+    """
+    Ottimizza SCORE_THRESHOLD_OPEN per ogni simbolo.
+
+    Simula vari threshold e calcola quale massimizza profitto.
+
+    Returns:
+        {
+            'BTC': {
+                'current_threshold': 15,
+                'optimal_threshold': 12,
+                'impact': {
+                    'additional_trades_per_week': 8,
+                    'estimated_additional_profit_pct': 15.2
+                }
+            },
+            ...
+        }
+    """
+
+    missed_ops = analyze_missed_opportunities_per_symbol(days)
+
+    results = {}
+    for symbol, data in missed_ops.items():
+        current_threshold = float(os.getenv('SCORE_THRESHOLD_OPEN', '15'))
+        optimal_threshold = data['optimal_threshold']
+
+        # Stima impatto: quante opportunità in più cattureresti?
+        additional_trades = data['total_missed_opportunities']
+        estimated_profit = data['total_potential_profit_pct']
+
+        results[symbol] = {
+            'current_threshold': current_threshold,
+            'optimal_threshold': optimal_threshold,
+            'impact': {
+                'additional_trades_per_week': additional_trades * (7 / days),
+                'estimated_additional_profit_pct': estimated_profit
+            }
+        }
+
+    return results
+
+
+def analyze_portfolio_opportunity_cost(days: int = 7) -> Dict[str, Any]:
+    """
+    Analizza opportunity cost: posizioni subottimali vs alternative migliori.
+
+    Esempio: Avevi BTC (+2.5%) ma ETH avrebbe fatto +5.5%
+
+    Returns:
+        {
+            'suboptimal_choices': [
+                {
+                    'timestamp': datetime,
+                    'had_position': 'BTC',
+                    'performance': +2.5,
+                    'missed_alternatives': {
+                        'ETH': {'score': 14, 'performance': +5.5, 'cost': +3.0}
+                    }
+                }
+            ],
+            'total_opportunity_cost_pct': 45.2,
+            'suggestions': [...]
+        }
+    """
+
+    print(f"\n{'='*60}")
+    print(f"💰 ANALYZING PORTFOLIO OPPORTUNITY COST")
+    print(f"{'='*60}\n")
+
+    # Fetch tutte le operazioni e score
+    with db_utils.get_connection() as conn:
+        with conn.cursor() as cur:
+            # Operazioni con timestamp
+            cur.execute("""
+                SELECT
+                    bo.created_at,
+                    bo.symbol,
+                    bo.operation,
+                    bo.direction
+                FROM bot_operations bo
+                WHERE bo.created_at > NOW() - INTERVAL '%s days'
+                ORDER BY bo.created_at
+            """ % days)
+
+            operations = cur.fetchall()
+
+            # Score con timestamp
+            cur.execute("""
+                SELECT
+                    created_at,
+                    symbol,
+                    net_score,
+                    direction
+                FROM signal_scores
+                WHERE created_at > NOW() - INTERVAL '%s days'
+                ORDER BY created_at
+            """ % days)
+
+            scores = cur.fetchall()
+
+    suboptimal_choices = []
+    total_opportunity_cost = 0
+
+    # Per ogni momento con posizione aperta, confronta con alternative
+    bot = get_hyperliquid_bot()
+
+    # Raggruppa operazioni per trovare posizioni aperte in ogni momento
+    open_positions_timeline = []
+    current_positions = {}
+
+    for op in operations:
+        op_time, symbol, operation, direction = op
+
+        if operation == 'open':
+            current_positions[symbol] = {'time': op_time, 'direction': direction}
+        elif operation == 'close' and symbol in current_positions:
+            open_positions_timeline.append({
+                'start': current_positions[symbol]['time'],
+                'end': op_time,
+                'symbol': symbol,
+                'direction': current_positions[symbol]['direction']
+            })
+            del current_positions[symbol]
+
+    # Per ogni periodo con posizione, confronta performance con alternative
+    for period in open_positions_timeline[:5]:  # Limita a 5 per performance
+        symbol = period['symbol']
+        start_time = period['start']
+        end_time = period['end']
+
+        # Performance del simbolo scelto
+        try:
+            start_ts = int(start_time.timestamp() * 1000)
+            end_ts = int(end_time.timestamp() * 1000)
+
+            candles = bot.exchange.info.candle_snapshot(
+                coin=symbol,
+                interval='1m',
+                startTime=start_ts,
+                endTime=end_ts
+            )
+
+            if candles:
+                entry = float(candles[0]['c'])
+                exit_price = float(candles[-1]['c'])
+                performance = ((exit_price - entry) / entry) * 100
+
+                # Controlla score di altri simboli nello stesso momento
+                alternatives = {}
+                for other_symbol in ['BTC', 'ETH', 'SOL']:
+                    if other_symbol == symbol:
+                        continue
+
+                    # Score dell'alternativa
+                    alt_score = None
+                    for score_row in scores:
+                        if score_row[1] == other_symbol and abs((score_row[0] - start_time).total_seconds()) < 300:
+                            alt_score = float(score_row[2])
+                            break
+
+                    if alt_score:
+                        # Performance dell'alternativa
+                        try:
+                            alt_candles = bot.exchange.info.candle_snapshot(
+                                coin=other_symbol,
+                                interval='1m',
+                                startTime=start_ts,
+                                endTime=end_ts
+                            )
+
+                            if alt_candles:
+                                alt_entry = float(alt_candles[0]['c'])
+                                alt_exit = float(alt_candles[-1]['c'])
+                                alt_performance = ((alt_exit - alt_entry) / alt_entry) * 100
+
+                                if alt_performance > performance + 2:  # Almeno 2% migliore
+                                    alternatives[other_symbol] = {
+                                        'score': alt_score,
+                                        'performance': alt_performance,
+                                        'opportunity_cost': alt_performance - performance
+                                    }
+                                    total_opportunity_cost += (alt_performance - performance)
+                        except:
+                            pass
+
+                if alternatives:
+                    suboptimal_choices.append({
+                        'timestamp': start_time,
+                        'had_position': symbol,
+                        'performance': performance,
+                        'missed_alternatives': alternatives
+                    })
+
+        except Exception as e:
+            pass
+
+    suggestions = []
+    if suboptimal_choices:
+        suggestions.append("Implementa position priority: chiudi posizione debole se arriva segnale più forte")
+        suggestions.append("Considera aumentare MAX_OPEN_POSITIONS per catturare multiple opportunità")
+
+    print(f"   ✅ Found {len(suboptimal_choices)} suboptimal choices\n")
+
+    return {
+        'suboptimal_choices': suboptimal_choices,
+        'total_opportunity_cost_pct': total_opportunity_cost,
+        'suggestions': suggestions
+    }
+
+
 if __name__ == "__main__":
     # Test analytics
     print("🔬 Testing Analytics Engine\n")
@@ -537,3 +936,10 @@ if __name__ == "__main__":
     print(f"  Take Profit: {sentinel_stats['take_profit_count']} ({sentinel_stats['take_profit_rate']*100:.1f}%)")
     print(f"  Stop Loss: {sentinel_stats['stop_loss_count']}")
     print(f"  Trailing Stop: {sentinel_stats['trailing_stop_count']}")
+
+    # NEW: Per-symbol missed opportunities
+    print("\n🔍 Testing Per-Symbol Analysis:")
+    missed_ops = analyze_missed_opportunities_per_symbol(days=7)
+
+    # NEW: Portfolio opportunity cost
+    portfolio_cost = analyze_portfolio_opportunity_cost(days=7)

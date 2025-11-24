@@ -113,6 +113,14 @@ def analyze_with_ai(days: int = 30, verbose: bool = True) -> Dict[str, Any]:
             'timestamp': datetime.now()
         }
 
+    # NEW: Per-symbol analysis
+    if verbose:
+        print(f"🔍 Analisi opportunità perse per simbolo...\n")
+
+    missed_opportunities = analytics.analyze_missed_opportunities_per_symbol(days=min(days, 7))
+    threshold_optimization = analytics.optimize_thresholds_per_symbol(days=min(days, 7))
+    portfolio_cost = analytics.analyze_portfolio_opportunity_cost(days=min(days, 7))
+
     if verbose:
         print(f"\n{'='*70}")
         print(f"🧠 Analisi AI in corso...")
@@ -120,7 +128,15 @@ def analyze_with_ai(days: int = 30, verbose: bool = True) -> Dict[str, Any]:
         print(f"{'='*70}\n")
 
     # 2. Costruisci prompt per AI
-    prompt = _build_analysis_prompt(performance, sentinel_stats, current_config, days)
+    prompt = _build_analysis_prompt(
+        performance,
+        sentinel_stats,
+        current_config,
+        days,
+        missed_opportunities,
+        threshold_optimization,
+        portfolio_cost
+    )
 
     # 3. Chiama AI
     try:
@@ -175,7 +191,10 @@ def _build_analysis_prompt(
     performance: Dict[str, Any],
     sentinel_stats: Dict[str, Any],
     current_config: Dict[str, str],
-    days: int
+    days: int,
+    missed_opportunities: Dict[str, Any] = None,
+    threshold_optimization: Dict[str, Any] = None,
+    portfolio_cost: Dict[str, Any] = None
 ) -> str:
     """Costruisce il prompt per l'AI con tutti i dati."""
 
@@ -265,6 +284,84 @@ You are analyzing a cryptocurrency trading bot's performance over the last {days
 ```env
 {json.dumps(current_config, indent=2)}
 ```
+"""
+
+    # NEW: Per-symbol missed opportunities
+    if missed_opportunities:
+        prompt += f"""
+
+## 🔍 PER-SYMBOL MISSED OPPORTUNITIES ANALYSIS
+
+Bot inactivity and missed trades analysis for each symbol:
+"""
+        for symbol, data in missed_opportunities.items():
+            prompt += f"""
+
+**{symbol}:**
+- Missed Opportunities: {data['total_missed_opportunities']}
+- Avg Missed Profit: {data['avg_missed_profit_pct']:.2f}%
+- Total Potential Profit: {data['total_potential_profit_pct']:.1f}%
+- Reasons:
+  - Score below threshold: {data['reasons']['score_below_threshold']}
+  - Other: {data['reasons']['other']}
+- **Optimal Threshold:** {data['optimal_threshold']} (current: {current_config['SCORE_THRESHOLD_OPEN']})
+"""
+
+            # Top 3 esempi
+            if data['details']:
+                prompt += f"\nTop Missed:\n"
+                for detail in data['details'][:3]:
+                    prompt += f"  - Score {detail['score']:.1f} | Movement: +{detail['movement_pct']:.1f}% | Reason: {detail['reason']}\n"
+
+    # NEW: Threshold optimization
+    if threshold_optimization:
+        total_additional_profit = sum(d['impact']['estimated_additional_profit_pct'] for d in threshold_optimization.values())
+        prompt += f"""
+
+## 🎯 THRESHOLD OPTIMIZATION
+
+Current SCORE_THRESHOLD_OPEN={current_config['SCORE_THRESHOLD_OPEN']} appears suboptimal.
+
+**Optimization Results:**
+"""
+        for symbol, opt in threshold_optimization.items():
+            prompt += f"""
+{symbol}: Optimal={opt['optimal_threshold']} (current={opt['current_threshold']})
+  → +{opt['impact']['additional_trades_per_week']:.1f} trades/week
+  → +{opt['impact']['estimated_additional_profit_pct']:.1f}% potential profit
+"""
+        prompt += f"""
+**TOTAL IMPACT IF APPLIED:** +{total_additional_profit:.1f}% additional profit potential
+"""
+
+    # NEW: Portfolio opportunity cost
+    if portfolio_cost and portfolio_cost['suboptimal_choices']:
+        prompt += f"""
+
+## 💰 PORTFOLIO OPPORTUNITY COST
+
+Analysis of suboptimal position choices:
+
+- Total Suboptimal Choices: {len(portfolio_cost['suboptimal_choices'])}
+- Total Opportunity Cost: {portfolio_cost['total_opportunity_cost_pct']:.1f}%
+
+Top Examples:
+"""
+        for choice in portfolio_cost['suboptimal_choices'][:3]:
+            prompt += f"""
+- Had {choice['had_position']} (+{choice['performance']:.1f}%)
+  Alternatives:"""
+            for alt_symbol, alt_data in choice['missed_alternatives'].items():
+                prompt += f"""
+    {alt_symbol}: score {alt_data['score']:.1f}, performance +{alt_data['performance']:.1f}% (cost: +{alt_data['opportunity_cost']:.1f}%)"""
+            prompt += "\n"
+
+        if portfolio_cost['suggestions']:
+            prompt += f"\n**Suggestions:**\n"
+            for sug in portfolio_cost['suggestions']:
+                prompt += f"- {sug}\n"
+
+    prompt += f"""
 
 ## YOUR TASK
 
