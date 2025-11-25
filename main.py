@@ -145,14 +145,71 @@ try:
         # Se c'è già una posizione, gestiscila (HOLD o CLOSE)
         # Se NON c'è posizione e il segnale è forte, considera OPEN
         # Con MICRO_GAIN: apri anche se score è tra HOLD e OPEN threshold
+        is_micro_gain_candidate = False
         if not has_position:
             min_threshold = SCORE_THRESHOLD_HOLD if MICRO_GAIN_ENABLED else SCORE_THRESHOLD_OPEN
             if abs(net_score) < min_threshold:
                 print(f"   ⏭️  Skip {ticker}: no position e score {net_score:.1f} sotto soglia {min_threshold}")
                 continue
-            # Log se siamo in range MICRO_GAIN
+            # Marca come candidato MICRO_GAIN
             if MICRO_GAIN_ENABLED and abs(net_score) < SCORE_THRESHOLD_OPEN:
+                is_micro_gain_candidate = True
                 print(f"   🎯 {ticker}: score {net_score:.1f} in range MICRO_GAIN ({SCORE_THRESHOLD_HOLD}-{SCORE_THRESHOLD_OPEN})")
+
+        # === MICRO_GAIN: Forza OPEN senza chiedere all'AI ===
+        if is_micro_gain_candidate:
+            micro_direction = "long" if net_score > 0 else "short"
+            print(f"   🎯 MICRO_GAIN AUTO-OPEN: {ticker} {micro_direction.upper()} (score={net_score:.1f})")
+
+            out = {
+                "operation": "open",
+                "symbol": ticker,
+                "direction": micro_direction,
+                "reason": f"MICRO_GAIN auto-open: score {net_score:.1f} in range [{SCORE_THRESHOLD_HOLD}-{SCORE_THRESHOLD_OPEN}]",
+                "target_portion_of_balance": 0.3,  # 30% del balance per MICRO_GAIN
+                "leverage": 5,
+                "trading_mode": "MICRO_GAIN",
+                "opening_score": net_score,
+                "micro_gain_target": MICRO_GAIN_TARGET_PERCENT
+            }
+
+            print(f"[EXEC] MICRO_GAIN: Apertura {micro_direction.upper()} su {ticker}...")
+            bot.execute_signal(out)
+            actions_taken.append(out)
+
+            # Crea tracking per MICRO_GAIN
+            try:
+                current_status = bot.get_account_status()
+                for pos in current_status.get("open_positions", []):
+                    if pos.get("symbol") == ticker:
+                        db_utils.upsert_position_tracking(
+                            symbol=pos["symbol"],
+                            direction=pos["side"],
+                            entry_price=pos["entry_price"],
+                            current_price=pos["mark_price"],
+                            trailing_active=False,
+                            opening_score=net_score,
+                            trading_mode="MICRO_GAIN"
+                        )
+                        print(f"[TRACKING] 🎯 MICRO_GAIN tracking creato per {ticker} @ {pos['entry_price']}")
+                        if ticker not in open_symbols:
+                            open_symbols.append(ticker)
+                        break
+            except Exception as e:
+                print(f"[TRACKING] ⚠️ Errore creazione tracking MICRO_GAIN: {e}")
+
+            # Notifica e salva
+            tg.notify_trading_decision(out)
+            op_id = db_utils.log_bot_operation(
+                out,
+                system_prompt="MICRO_GAIN auto-open",
+                indicators=[ind for ind in indicators_json if ind.get('ticker') == ticker],
+                news_text=news_txt,
+                sentiment=sentiment_json,
+                forecasts=forecasts_json
+            )
+            print(f"   💾 Operazione MICRO_GAIN {ticker} salvata con id={op_id}")
+            continue  # Passa al prossimo ticker
 
         # Costruisci prompt specifico per questo simbolo
         with open('system_prompt_single.txt', 'r') as f:
