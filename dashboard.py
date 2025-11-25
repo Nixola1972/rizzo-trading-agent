@@ -1703,14 +1703,14 @@ with tab6:
                             cfg_name = st.text_input("Name", "Current (.env)", key=f"name_{i}")
                             cfg_rsi_ob = st.number_input("RSI Overbought Weight", 5.0, 25.0, current_config.weight_rsi_overbought, key=f"rsi_ob_{i}")
                             cfg_rsi_os = st.number_input("RSI Oversold Weight", 5.0, 25.0, current_config.weight_rsi_oversold, key=f"rsi_os_{i}")
-                            cfg_threshold = st.number_input("Score Threshold Open", 8.0, 25.0, current_config.score_threshold_open, key=f"thresh_{i}")
-                            cfg_tp = st.number_input("Take Profit %", 2.0, 15.0, current_config.take_profit_pct, key=f"tp_{i}")
-                            cfg_sl = st.number_input("Stop Loss %", 5.0, 20.0, current_config.stop_loss_pct, key=f"sl_{i}")
+                            cfg_threshold = st.number_input("Score Threshold Open", 3.0, 30.0, current_config.score_threshold_open, key=f"thresh_{i}")
+                            cfg_tp = st.number_input("Take Profit %", 1.0, 20.0, current_config.take_profit_pct, key=f"tp_{i}")
+                            cfg_sl = st.number_input("Stop Loss %", 3.0, 25.0, current_config.stop_loss_pct, key=f"sl_{i}")
                         else:
                             cfg_name = st.text_input("Name", f"Config {i+1}", key=f"name_{i}")
                             cfg_rsi_ob = st.number_input("RSI Overbought Weight", 5.0, 25.0, 15.0, key=f"rsi_ob_{i}")
                             cfg_rsi_os = st.number_input("RSI Oversold Weight", 5.0, 25.0, 15.0, key=f"rsi_os_{i}")
-                            cfg_threshold = st.number_input("Score Threshold Open", 8.0, 25.0, 15.0, key=f"thresh_{i}")
+                            cfg_threshold = st.number_input("Score Threshold Open", 3.0, 30.0, 15.0, key=f"thresh_{i}")
                             cfg_tp = st.number_input("Take Profit %", 2.0, 15.0, 5.0, key=f"tp_{i}")
                             cfg_sl = st.number_input("Stop Loss %", 5.0, 20.0, 10.0, key=f"sl_{i}")
 
