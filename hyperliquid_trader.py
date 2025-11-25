@@ -317,26 +317,34 @@ class HyperLiquidTrader:
 
                     print(f"  🎯 MICRO_GAIN: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%)")
 
-                    # Piazza Take Profit order con trigger
+                    # Piazza Take Profit limit order (non trigger)
+                    # Usa un limit order semplice che si attiva quando il prezzo raggiunge il target
                     tp_order = self.exchange.order(
                         symbol,
                         not is_buy,  # Direzione opposta per chiudere
                         position_size,
-                        target_price,
-                        {
-                            "trigger": {
-                                "triggerPx": target_price,
-                                "isMarket": True,
-                                "tpsl": "tp"
-                            }
-                        },
+                        target_price,  # Prezzo limite
+                        {"limit": {"tif": "Gtc"}},  # Good till cancelled
                         reduce_only=True
                     )
 
+                    print(f"  📋 TP order response: {tp_order}")
+
                     if tp_order.get("status") == "ok":
-                        print(f"  ✅ TP order piazzato con successo")
-                        res["tp_order"] = tp_order
-                        res["tp_price"] = target_price
+                        response_data = tp_order.get("response", {})
+                        if response_data.get("type") == "order":
+                            order_data = response_data.get("data", {})
+                            statuses = order_data.get("statuses", [])
+                            if statuses and statuses[0].get("resting"):
+                                print(f"  ✅ TP limit order piazzato: OID={statuses[0]['resting']['oid']}")
+                                res["tp_order"] = tp_order
+                                res["tp_price"] = target_price
+                            else:
+                                print(f"  ⚠️ TP order status inatteso: {statuses}")
+                                res["tp_order_error"] = statuses
+                        else:
+                            print(f"  ⚠️ TP order response type inatteso: {response_data}")
+                            res["tp_order_error"] = response_data
                     else:
                         print(f"  ⚠️ Errore TP order: {tp_order}")
                         res["tp_order_error"] = tp_order
