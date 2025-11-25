@@ -1066,10 +1066,21 @@ def upsert_position_tracking(
     entry_price: float,
     current_price: float,
     trailing_active: bool = False,
+    opening_score: float = None,
+    trading_mode: str = "NORMAL",
 ) -> Dict[str, Any]:
     """
     Crea o aggiorna il tracking di una posizione.
     Aggiorna peak_price se il prezzo corrente è migliore (più alto per LONG, più basso per SHORT).
+
+    Args:
+        symbol: Simbolo della posizione
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        current_price: Prezzo corrente
+        trailing_active: Se il trailing stop è attivo
+        opening_score: Score al momento dell'apertura (per determinare trading_mode)
+        trading_mode: 'MICRO_GAIN' o 'NORMAL'
 
     Returns: dict con i dati aggiornati del tracking
     """
@@ -1078,7 +1089,7 @@ def upsert_position_tracking(
         with conn.cursor() as cur:
             # Controlla se esiste già
             cur.execute(
-                "SELECT peak_price, direction FROM position_tracking WHERE symbol = %s",
+                "SELECT peak_price, direction, opening_score, trading_mode FROM position_tracking WHERE symbol = %s",
                 (symbol,),
             )
             existing = cur.fetchone()
@@ -1086,6 +1097,9 @@ def upsert_position_tracking(
             if existing:
                 old_peak = float(existing[0])
                 old_direction = existing[1]
+                # Mantieni opening_score e trading_mode originali se non specificati
+                existing_opening_score = existing[2]
+                existing_trading_mode = existing[3]
 
                 # Calcola nuovo peak_price
                 if direction.lower() == 'long':
@@ -1095,7 +1109,7 @@ def upsert_position_tracking(
                     # Per SHORT, peak è il minimo
                     new_peak = min(old_peak, current_price)
 
-                # Update
+                # Update (non sovrascrive opening_score e trading_mode se già esistono)
                 cur.execute(
                     """
                     UPDATE position_tracking
@@ -1105,19 +1119,19 @@ def upsert_position_tracking(
                         updated_at = NOW(),
                         direction = %s
                     WHERE symbol = %s
-                    RETURNING symbol, direction, entry_price, peak_price, trailing_active;
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode;
                     """,
                     (new_peak, trailing_active, current_price, direction, symbol),
                 )
             else:
-                # Insert nuovo
+                # Insert nuovo con opening_score e trading_mode
                 cur.execute(
                     """
-                    INSERT INTO position_tracking (symbol, direction, entry_price, peak_price, trailing_active, last_checked_price)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    RETURNING symbol, direction, entry_price, peak_price, trailing_active;
+                    INSERT INTO position_tracking (symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, opening_score, trading_mode)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode;
                     """,
-                    (symbol, direction, entry_price, current_price, trailing_active, current_price),
+                    (symbol, direction, entry_price, current_price, trailing_active, current_price, opening_score, trading_mode),
                 )
 
             row = cur.fetchone()
@@ -1129,6 +1143,8 @@ def upsert_position_tracking(
         "entry_price": float(row[2]),
         "peak_price": float(row[3]),
         "trailing_active": row[4],
+        "opening_score": float(row[5]) if row[5] else None,
+        "trading_mode": row[6] or "NORMAL",
     }
 
 

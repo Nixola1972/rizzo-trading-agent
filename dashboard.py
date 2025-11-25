@@ -693,7 +693,9 @@ with tab3:
                 COUNT(*) as checks_24h,
                 COUNT(action_taken) as actions_24h,
                 COUNT(CASE WHEN action_taken = 'CLOSE_STOP_LOSS' THEN 1 END) as stop_loss_count,
-                COUNT(CASE WHEN action_taken = 'CLOSE_TRAILING_STOP' THEN 1 END) as trailing_stop_count
+                COUNT(CASE WHEN action_taken = 'CLOSE_TRAILING_STOP' THEN 1 END) as trailing_stop_count,
+                COUNT(CASE WHEN action_taken = 'CLOSE_MICRO_GAIN_REVERSAL' THEN 1 END) as micro_gain_reversal_count,
+                COUNT(CASE WHEN action_taken = 'CLOSE_TAKE_PROFIT' THEN 1 END) as take_profit_count
             FROM sentinel_logs
             WHERE created_at > NOW() - INTERVAL '24 hours'
         """)
@@ -703,6 +705,7 @@ with tab3:
         activation_pct = os.getenv('TRAILING_STOP_ACTIVATION_PERCENT', '3')
         stop_loss_pct = os.getenv('INITIAL_STOP_LOSS_PERCENT', '10')
         sentinel_enabled = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
+        micro_gain_enabled = os.getenv('MICRO_GAIN_ENABLED', 'false').lower() == 'true'
 
         col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
 
@@ -732,6 +735,9 @@ with tab3:
             st.caption(f"Trailing: {trailing_pct}%")
             st.caption(f"Activation: {activation_pct}%")
             st.caption(f"Stop Loss: {stop_loss_pct}%")
+            if micro_gain_enabled:
+                micro_target = os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.15')
+                st.caption(f"🎯 MICRO: {micro_target}%")
 
     except Exception as e:
         st.warning(f"⚠️ Sentinel status non disponibile: {e}")
@@ -760,9 +766,10 @@ with tab3:
         if not open_positions.empty:
             st.success(f"🎯 {len(open_positions)} posizioni aperte")
 
-            # Carica tracking per tutte le posizioni
+            # Carica tracking per tutte le posizioni (include trading_mode e opening_score)
             tracking_data = query_db("""
-                SELECT symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, updated_at
+                SELECT symbol, direction, entry_price, peak_price, trailing_active,
+                       last_checked_price, updated_at, opening_score, trading_mode
                 FROM position_tracking
             """)
             tracking_dict = {row['symbol']: row for _, row in tracking_data.iterrows()} if not tracking_data.empty else {}
@@ -775,8 +782,12 @@ with tab3:
                 # Ottieni tracking per questa posizione
                 symbol_tracking = tracking_dict.get(pos['symbol'])
 
+                # Determina trading_mode per il titolo
+                trading_mode = symbol_tracking.get('trading_mode', 'NORMAL') if symbol_tracking else 'NORMAL'
+                mode_badge = "🎯 MICRO" if trading_mode == "MICRO_GAIN" else ""
+
                 with st.expander(
-                    f"{pnl_icon} {pos['symbol']} {pos['side'].upper()} - P&L: ${pnl:,.2f}",
+                    f"{pnl_icon} {pos['symbol']} {pos['side'].upper()} {mode_badge} - P&L: ${pnl:,.2f}",
                     expanded=True
                 ):
                     col_pos1, col_pos2, col_pos3, col_pos4 = st.columns(4)
@@ -798,53 +809,95 @@ with tab3:
                         st.metric("Side", pos['side'].upper())
                         st.caption(f"Updated: {pos['last_update']}")
 
-                    # === TRAILING STOP MONITOR ===
+                    # === POSITION MONITOR (MICRO_GAIN o TRAILING STOP) ===
                     if symbol_tracking is not None:
                         st.markdown("---")
-                        st.markdown("**🛡️ Trailing Stop Monitor**")
 
-                        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+                        # Mostra sezione diversa in base al trading_mode
+                        if trading_mode == "MICRO_GAIN":
+                            st.markdown("**🎯 MICRO-GAIN Monitor**")
 
-                        peak_price = float(symbol_tracking['peak_price'])
-                        trailing_active = symbol_tracking['trailing_active']
-                        current_price = float(pos['mark_price'])
+                            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 
-                        # Calcola distanza dal peak
-                        if pos['side'].lower() == 'long':
-                            peak_dist = ((current_price - peak_price) / peak_price) * 100
-                        else:
-                            peak_dist = ((peak_price - current_price) / peak_price) * 100
+                            opening_score = symbol_tracking.get('opening_score')
+                            micro_gain_target = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.15'))
 
-                        with col_t1:
-                            st.metric("Peak Price", f"${peak_price:,.2f}")
+                            with col_m1:
+                                st.metric("Trading Mode", "🎯 MICRO-GAIN")
 
-                        with col_t2:
-                            # Colore per distanza dal peak
-                            dist_color = "green" if peak_dist >= 0 else ("red" if peak_dist < -5 else "orange")
-                            st.metric("Dist. dal Peak", f"{peak_dist:+.2f}%")
+                            with col_m2:
+                                if opening_score:
+                                    st.metric("Opening Score", f"{float(opening_score):.1f}")
+                                else:
+                                    st.metric("Opening Score", "N/A")
 
-                        with col_t3:
-                            trailing_icon = "🟢 ATTIVO" if trailing_active else "⚪ Inattivo"
-                            st.metric("Trailing", trailing_icon)
+                            with col_m3:
+                                st.metric("Target P&L", f"+{micro_gain_target}%")
 
-                        with col_t4:
-                            # Calcola soglia stop
-                            if trailing_active:
-                                stop_trigger = f"-{trailing_pct}% dal peak"
+                            with col_m4:
+                                # Calcola P&L corrente con leva
+                                leverage_val = float(str(pos['leverage']).replace('x', '').split()[0]) if pos['leverage'] else 1
+                                if pos['side'].lower() == 'long':
+                                    current_pnl_pct = ((float(pos['mark_price']) - float(pos['entry_price'])) / float(pos['entry_price'])) * 100 * leverage_val
+                                else:
+                                    current_pnl_pct = ((float(pos['entry_price']) - float(pos['mark_price'])) / float(pos['entry_price'])) * 100 * leverage_val
+                                st.metric("P&L Attuale", f"{current_pnl_pct:+.3f}%")
+
+                            # Barra progresso verso target
+                            progress_to_target = min(100, max(0, (current_pnl_pct / micro_gain_target) * 100)) if micro_gain_target > 0 else 0
+                            if current_pnl_pct >= 0:
+                                st.progress(progress_to_target / 100, text=f"Progresso verso target: {current_pnl_pct:.3f}% / {micro_gain_target}%")
                             else:
-                                stop_trigger = f"-{stop_loss_pct}% da entry"
-                            st.metric("Stop Trigger", stop_trigger)
+                                st.warning(f"⚠️ P&L negativo: {current_pnl_pct:.3f}% - Sentinel monitora inversione")
 
-                        # Barra progresso verso stop
-                        if trailing_active:
-                            # Trailing attivo: mostra quanto manca allo stop
-                            progress = min(100, max(0, (float(trailing_pct) + peak_dist) / float(trailing_pct) * 100))
-                            st.progress(progress / 100, text=f"Margine trailing: {float(trailing_pct) + peak_dist:.2f}%")
+                            st.caption("💡 Questa posizione ha un limit order TP su Hyperliquid. La sentinel monitora per inversioni.")
+
                         else:
-                            # Stop loss: mostra quanto manca
-                            profit_pct = price_change if pos['side'].lower() == 'long' else -price_change
-                            progress = min(100, max(0, (float(stop_loss_pct) + profit_pct) / float(stop_loss_pct) * 100))
-                            st.progress(progress / 100, text=f"Margine stop loss: {float(stop_loss_pct) + profit_pct:.2f}%")
+                            # === TRAILING STOP MONITOR (modalità NORMAL) ===
+                            st.markdown("**🛡️ Trailing Stop Monitor**")
+
+                            col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+
+                            peak_price = float(symbol_tracking['peak_price'])
+                            trailing_active = symbol_tracking['trailing_active']
+                            current_price = float(pos['mark_price'])
+
+                            # Calcola distanza dal peak
+                            if pos['side'].lower() == 'long':
+                                peak_dist = ((current_price - peak_price) / peak_price) * 100
+                            else:
+                                peak_dist = ((peak_price - current_price) / peak_price) * 100
+
+                            with col_t1:
+                                st.metric("Peak Price", f"${peak_price:,.2f}")
+
+                            with col_t2:
+                                # Colore per distanza dal peak
+                                dist_color = "green" if peak_dist >= 0 else ("red" if peak_dist < -5 else "orange")
+                                st.metric("Dist. dal Peak", f"{peak_dist:+.2f}%")
+
+                            with col_t3:
+                                trailing_icon = "🟢 ATTIVO" if trailing_active else "⚪ Inattivo"
+                                st.metric("Trailing", trailing_icon)
+
+                            with col_t4:
+                                # Calcola soglia stop
+                                if trailing_active:
+                                    stop_trigger = f"-{trailing_pct}% dal peak"
+                                else:
+                                    stop_trigger = f"-{stop_loss_pct}% da entry"
+                                st.metric("Stop Trigger", stop_trigger)
+
+                            # Barra progresso verso stop
+                            if trailing_active:
+                                # Trailing attivo: mostra quanto manca allo stop
+                                progress = min(100, max(0, (float(trailing_pct) + peak_dist) / float(trailing_pct) * 100))
+                                st.progress(progress / 100, text=f"Margine trailing: {float(trailing_pct) + peak_dist:.2f}%")
+                            else:
+                                # Stop loss: mostra quanto manca
+                                profit_pct = price_change if pos['side'].lower() == 'long' else -price_change
+                                progress = min(100, max(0, (float(stop_loss_pct) + profit_pct) / float(stop_loss_pct) * 100))
+                                st.progress(progress / 100, text=f"Margine stop loss: {float(stop_loss_pct) + profit_pct:.2f}%")
                     else:
                         st.caption("⚠️ Tracking non ancora inizializzato per questa posizione")
 

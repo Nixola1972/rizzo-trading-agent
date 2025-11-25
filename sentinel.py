@@ -49,11 +49,112 @@ TESTNET = os.getenv("TESTNET", "true").lower() == "true"
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 
+# MICRO_GAIN Config
+MICRO_GAIN_ENABLED = os.getenv('MICRO_GAIN_ENABLED', 'false').lower() == 'true'
+MICRO_GAIN_REVERSAL_SCORE = float(os.getenv('MICRO_GAIN_REVERSAL_SCORE', '5'))
+
 
 def log(msg: str):
     """Log con timestamp."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}")
+
+
+def calculate_quick_score(symbol: str) -> float:
+    """
+    Calcola uno score veloce basato sugli indicatori senza chiamare AI.
+    Usato per determinare inversioni nelle posizioni MICRO_GAIN.
+
+    Returns:
+        float: Score positivo = bullish, negativo = bearish
+    """
+    try:
+        from indicators import HyperliquidIndicators
+
+        indicators = HyperliquidIndicators()
+        data = indicators.analyze_ticker(symbol)
+
+        if not data:
+            return 0.0
+
+        score = 0.0
+
+        # RSI
+        rsi = data.get('rsi_14', 50)
+        if rsi > 70:
+            score -= 10  # Overbought = bearish
+        elif rsi < 30:
+            score += 10  # Oversold = bullish
+        elif rsi > 60:
+            score -= 3
+        elif rsi < 40:
+            score += 3
+
+        # MACD
+        macd = data.get('macd', 0)
+        macd_signal = data.get('macd_signal', 0)
+        if macd > macd_signal:
+            score += 5  # Bullish crossover
+        elif macd < macd_signal:
+            score -= 5  # Bearish crossover
+
+        # EMA Trend
+        price = data.get('close', 0)
+        ema20 = data.get('ema_20', price)
+        if price > ema20:
+            score += 5  # Above EMA = bullish
+        else:
+            score -= 5  # Below EMA = bearish
+
+        return score
+
+    except Exception as e:
+        log(f"⚠️ Errore calcolo quick_score per {symbol}: {e}")
+        return 0.0
+
+
+def check_micro_gain_reversal(position: dict, tracking_data: dict) -> dict:
+    """
+    Controlla se una posizione MICRO_GAIN deve essere chiusa per inversione.
+
+    Args:
+        position: Dati posizione da Hyperliquid
+        tracking_data: Dati tracking dal DB (include trading_mode, opening_score)
+
+    Returns:
+        dict con triggered, reason, quick_score
+    """
+    result = {
+        "triggered": False,
+        "reason": "",
+        "quick_score": 0.0
+    }
+
+    if not MICRO_GAIN_ENABLED:
+        return result
+
+    trading_mode = tracking_data.get("trading_mode", "NORMAL")
+    if trading_mode != "MICRO_GAIN":
+        return result
+
+    symbol = position.get("symbol", "")
+    direction = position.get("side", "long").lower()
+
+    # Calcola quick score
+    quick_score = calculate_quick_score(symbol)
+    result["quick_score"] = quick_score
+
+    # Verifica inversione
+    # Per LONG: se quick_score è molto negativo = inversione
+    # Per SHORT: se quick_score è molto positivo = inversione
+    if direction == "long" and quick_score < -MICRO_GAIN_REVERSAL_SCORE:
+        result["triggered"] = True
+        result["reason"] = f"MICRO_GAIN REVERSAL: Score {quick_score:.1f} (soglia -{MICRO_GAIN_REVERSAL_SCORE})"
+    elif direction == "short" and quick_score > MICRO_GAIN_REVERSAL_SCORE:
+        result["triggered"] = True
+        result["reason"] = f"MICRO_GAIN REVERSAL: Score {quick_score:.1f} (soglia +{MICRO_GAIN_REVERSAL_SCORE})"
+
+    return result
 
 
 def check_take_profit(position: dict) -> dict:
@@ -255,12 +356,20 @@ def run_sentinel_check():
             # Ottieni tracking dal DB
             tracking_data = db_utils.get_position_tracking(symbol)
 
+            # Ottieni trading_mode dal tracking
+            trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+
             # === CHECK TAKE PROFIT (prima del trailing stop) ===
             tp_result = check_take_profit(pos)
             tp_triggered = tp_result.get("triggered", False)
             pnl_pct = tp_result.get("pnl_pct", 0)
 
-            # === CHECK TRAILING STOP ===
+            # === CHECK MICRO_GAIN REVERSAL ===
+            micro_gain_result = {"triggered": False, "reason": "", "quick_score": 0.0}
+            if trading_mode == "MICRO_GAIN" and tracking_data:
+                micro_gain_result = check_micro_gain_reversal(pos, tracking_data)
+
+            # === CHECK TRAILING STOP (solo per NORMAL mode) ===
             result = check_trailing_stop(pos, tracking_data)
 
             # Aggiorna tracking nel DB
@@ -284,13 +393,20 @@ def run_sentinel_check():
             close_reason = ""
             bot_triggered = False  # Traccia se il bot viene triggerato
 
+            # MICRO_GAIN reversal ha priorità per posizioni MICRO_GAIN
+            if micro_gain_result.get("triggered"):
+                should_close = True
+                close_reason = micro_gain_result['reason']
+                action_taken = "CLOSE_MICRO_GAIN_REVERSAL"
+                action_reason = close_reason
             # Take profit ha priorità
-            if tp_triggered:
+            elif tp_triggered:
                 should_close = True
                 close_reason = tp_result['reason']
                 action_taken = "CLOSE_TAKE_PROFIT"
                 action_reason = close_reason
-            elif result.get("triggered"):
+            elif result.get("triggered") and trading_mode != "MICRO_GAIN":
+                # Trailing stop solo per NORMAL mode
                 should_close = True
                 close_reason = result['reason']
                 if "STOP LOSS" in close_reason:
@@ -357,7 +473,9 @@ def run_sentinel_check():
                 if result.get("trailing_active"):
                     peak_info = f", peak_dist={profit_from_peak_pct:.2f}%"
                 tp_info = f", P&L={pnl_pct:+.2f}%" if TAKE_PROFIT_ENABLED else ""
-                log(f"   {symbol}: {direction.upper()} price_chg={profit_pct:.2f}% trailing={trailing_status}{peak_info}{tp_info}")
+                mode_info = f" [MICRO_GAIN]" if trading_mode == "MICRO_GAIN" else ""
+                quick_score_info = f", qscore={micro_gain_result.get('quick_score', 0):.1f}" if trading_mode == "MICRO_GAIN" else ""
+                log(f"   {symbol}: {direction.upper()}{mode_info} price_chg={profit_pct:.2f}% trailing={trailing_status}{peak_info}{tp_info}{quick_score_info}")
 
             # Log nel database per dashboard
             try:
@@ -390,6 +508,8 @@ def run_loop(interval: int = None):
 
     log(f"🔄 Sentinel avviato in loop (intervallo: {interval}s)")
     log(f"   Trailing: {TRAILING_STOP_PERCENT}%, Activation: {TRAILING_STOP_ACTIVATION_PERCENT}%, Stop Loss: {INITIAL_STOP_LOSS_PERCENT}%")
+    if MICRO_GAIN_ENABLED:
+        log(f"   🎯 MICRO_GAIN: enabled, reversal_score: {MICRO_GAIN_REVERSAL_SCORE}")
     if TAKE_PROFIT_ENABLED:
         log(f"   Take Profit: {TAKE_PROFIT_PERCENT}% P&L")
 

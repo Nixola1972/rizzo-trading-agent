@@ -15,6 +15,33 @@ import telegram_notifier as tg
 from dotenv import load_dotenv
 load_dotenv()
 
+# ===== MICRO-GAIN CONFIGURATION =====
+MICRO_GAIN_ENABLED = os.getenv('MICRO_GAIN_ENABLED', 'false').lower() == 'true'
+MICRO_GAIN_TARGET_PERCENT = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.15'))
+SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '15'))
+SCORE_THRESHOLD_NORMAL = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))  # Soglia per mode NORMAL
+
+def determine_trading_mode(net_score: float) -> str:
+    """
+    Determina il trading mode in base allo score.
+
+    Returns:
+        'MICRO_GAIN': Score tra HOLD e NORMAL (es. 15-20)
+        'NORMAL': Score >= NORMAL threshold
+        'HOLD': Score < HOLD threshold (non dovrebbe arrivare qui)
+    """
+    if not MICRO_GAIN_ENABLED:
+        return "NORMAL"
+
+    abs_score = abs(net_score)
+
+    if abs_score < SCORE_THRESHOLD_HOLD:
+        return "HOLD"
+    elif abs_score < SCORE_THRESHOLD_NORMAL:
+        return "MICRO_GAIN"
+    else:
+        return "NORMAL"
+
 # Parse arguments
 parser = argparse.ArgumentParser(description="Trading Bot")
 parser.add_argument("--ticker", type=str, help="Analizza solo questo ticker (es: ETH)")
@@ -171,7 +198,17 @@ try:
 
         # Esegui solo se non è HOLD
         if out.get("operation") != "hold":
-            print(f"[EXEC] Esecuzione {out.get('operation')} su {ticker}...")
+            # Determina trading mode per nuove posizioni
+            trading_mode = "NORMAL"
+            if out.get("operation") == "open":
+                trading_mode = determine_trading_mode(net_score)
+                out['trading_mode'] = trading_mode
+                out['opening_score'] = net_score
+                if trading_mode == "MICRO_GAIN":
+                    out['micro_gain_target'] = MICRO_GAIN_TARGET_PERCENT
+                    print(f"   🎯 MICRO_GAIN MODE: target +{MICRO_GAIN_TARGET_PERCENT}% P&L")
+
+            print(f"[EXEC] Esecuzione {out.get('operation')} su {ticker} (mode: {trading_mode})...")
             bot.execute_signal(out)
             actions_taken.append(out)
 
@@ -194,9 +231,12 @@ try:
                                 direction=pos["side"],
                                 entry_price=pos["entry_price"],
                                 current_price=pos["mark_price"],
-                                trailing_active=False
+                                trailing_active=False,
+                                opening_score=net_score,
+                                trading_mode=trading_mode
                             )
-                            print(f"[TRACKING] ✅ Tracking creato per {out['symbol']} @ {pos['entry_price']}")
+                            mode_emoji = "🎯" if trading_mode == "MICRO_GAIN" else "📊"
+                            print(f"[TRACKING] {mode_emoji} Tracking creato per {out['symbol']} @ {pos['entry_price']} (mode: {trading_mode}, score: {net_score:.1f})")
                             # Aggiorna open_symbols per il prossimo ciclo
                             if out["symbol"] not in open_symbols:
                                 open_symbols.append(out["symbol"])

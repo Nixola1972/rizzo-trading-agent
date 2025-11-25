@@ -260,12 +260,17 @@ class HyperLiquidTrader:
 
         is_buy = (direction == "long")
 
+        # Check if MICRO_GAIN mode
+        trading_mode = order_json.get("trading_mode", "NORMAL")
+        micro_gain_target = order_json.get("micro_gain_target", 0.15)
+
         print(
             f"\n[HyperLiquidTrader] Market {'BUY' if is_buy else 'SELL'} "
             f"{size_float} {symbol}\n"
             f"  💰 Prezzo: ${mark_px}\n"
             f"  📊 Notional: ${notional:.2f}\n"
             f"  🎯 Leva target: {leverage}x\n"
+            f"  📋 Trading mode: {trading_mode}\n"
         )
 
         res = self.exchange.market_open(
@@ -275,6 +280,72 @@ class HyperLiquidTrader:
             None,
             0.01
         )
+
+        # Se MICRO_GAIN, piazza automaticamente TP order
+        if trading_mode == "MICRO_GAIN" and res.get("status") == "ok":
+            try:
+                # Attendi un attimo per assicurarsi che la posizione sia registrata
+                import time
+                time.sleep(1)
+
+                # Ottieni il prezzo di entrata effettivo
+                user_state = self.info.user_state(self.account_address)
+                entry_price = None
+                position_size = None
+
+                for p in user_state.get("assetPositions", []):
+                    if isinstance(p, dict) and "position" in p:
+                        pos = p["position"]
+                        if pos.get("coin") == symbol:
+                            entry_price = float(pos.get("entryPx", 0))
+                            position_size = abs(float(pos.get("szi", 0)))
+                            break
+
+                if entry_price and position_size:
+                    # Calcola prezzo target basato su P&L con leva
+                    # micro_gain_target è già in % P&L (con leva inclusa)
+                    # price_change = pnl_target / leverage
+                    price_change_pct = micro_gain_target / leverage
+
+                    if is_buy:  # LONG
+                        target_price = entry_price * (1 + price_change_pct / 100)
+                    else:  # SHORT
+                        target_price = entry_price * (1 - price_change_pct / 100)
+
+                    # Arrotonda il prezzo target
+                    target_price = round(target_price, 2)
+
+                    print(f"  🎯 MICRO_GAIN: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%)")
+
+                    # Piazza Take Profit order con trigger
+                    tp_order = self.exchange.order(
+                        symbol,
+                        not is_buy,  # Direzione opposta per chiudere
+                        position_size,
+                        target_price,
+                        {
+                            "trigger": {
+                                "triggerPx": target_price,
+                                "isMarket": True,
+                                "tpsl": "tp"
+                            }
+                        },
+                        reduce_only=True
+                    )
+
+                    if tp_order.get("status") == "ok":
+                        print(f"  ✅ TP order piazzato con successo")
+                        res["tp_order"] = tp_order
+                        res["tp_price"] = target_price
+                    else:
+                        print(f"  ⚠️ Errore TP order: {tp_order}")
+                        res["tp_order_error"] = tp_order
+                else:
+                    print(f"  ⚠️ Non riesco a trovare entry price per TP order")
+
+            except Exception as e:
+                print(f"  ⚠️ Errore piazzamento TP order: {e}")
+                res["tp_order_error"] = str(e)
 
         return res
 
