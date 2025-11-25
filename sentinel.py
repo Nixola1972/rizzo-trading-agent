@@ -79,8 +79,23 @@ def calculate_quick_score(symbol: str) -> float:
 
         score = 0.0
 
+        # Estrai dati dalla struttura corretta (intraday contiene gli array)
+        intraday = data.get('intraday', {})
+
+        # Prendi l'ultimo valore degli array (più recente)
+        rsi_array = intraday.get('rsi_14', [50])
+        rsi = rsi_array[-1] if rsi_array else 50
+
+        macd_array = intraday.get('macd', [0])
+        macd = macd_array[-1] if macd_array else 0
+
+        ema_array = intraday.get('ema_20', [0])
+        ema20 = ema_array[-1] if ema_array else 0
+
+        prices_array = intraday.get('mid_prices', [0])
+        price = prices_array[-1] if prices_array else 0
+
         # RSI
-        rsi = data.get('rsi_14', 50)
         if rsi > 70:
             score -= 10  # Overbought = bearish
         elif rsi < 30:
@@ -90,21 +105,24 @@ def calculate_quick_score(symbol: str) -> float:
         elif rsi < 40:
             score += 3
 
-        # MACD
-        macd = data.get('macd', 0)
-        macd_signal = data.get('macd_signal', 0)
-        if macd > macd_signal:
-            score += 5  # Bullish crossover
-        elif macd < macd_signal:
-            score -= 5  # Bearish crossover
+        # MACD trend (usando gli ultimi 2 valori per capire la direzione)
+        if len(macd_array) >= 2:
+            macd_prev = macd_array[-2]
+            if macd > macd_prev:
+                score += 5  # MACD rising = bullish
+            elif macd < macd_prev:
+                score -= 5  # MACD falling = bearish
+        elif macd > 0:
+            score += 3
+        elif macd < 0:
+            score -= 3
 
         # EMA Trend
-        price = data.get('close', 0)
-        ema20 = data.get('ema_20', price)
-        if price > ema20:
-            score += 5  # Above EMA = bullish
-        else:
-            score -= 5  # Below EMA = bearish
+        if price > 0 and ema20 > 0:
+            if price > ema20:
+                score += 5  # Above EMA = bullish
+            else:
+                score -= 5  # Below EMA = bearish
 
         return score
 
