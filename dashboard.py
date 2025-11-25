@@ -783,7 +783,7 @@ with tab3:
                 symbol_tracking = tracking_dict.get(pos['symbol'])
 
                 # Determina trading_mode per il titolo
-                trading_mode = symbol_tracking.get('trading_mode', 'NORMAL') if symbol_tracking else 'NORMAL'
+                trading_mode = symbol_tracking.get('trading_mode', 'NORMAL') if symbol_tracking is not None else 'NORMAL'
                 mode_badge = "🎯 MICRO" if trading_mode == "MICRO_GAIN" else ""
 
                 with st.expander(
