@@ -53,6 +53,22 @@ WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 MICRO_GAIN_ENABLED = os.getenv('MICRO_GAIN_ENABLED', 'false').lower() == 'true'
 MICRO_GAIN_REVERSAL_SCORE = float(os.getenv('MICRO_GAIN_REVERSAL_SCORE', '5'))
 
+# MICRO_GAIN Auto-Open Config (Sentinel gestisce apertura)
+MICRO_GAIN_AUTO_OPEN = os.getenv('MICRO_GAIN_AUTO_OPEN', 'false').lower() == 'true'
+MICRO_GAIN_TARGET_PERCENT = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.8'))  # TP target
+MICRO_GAIN_STOP_LOSS_PERCENT = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0'))  # SL iniziale
+MICRO_GAIN_BREAKEVEN_TRIGGER = float(os.getenv('MICRO_GAIN_BREAKEVEN_TRIGGER', '2.0'))  # Quando spostare SL a profit
+MICRO_GAIN_BREAKEVEN_LOCK = float(os.getenv('MICRO_GAIN_BREAKEVEN_LOCK', '1.0'))  # Lock in profit quando trigger
+MICRO_GAIN_COOLDOWN_SECONDS = int(os.getenv('MICRO_GAIN_COOLDOWN_SECONDS', '300'))  # 5 min cooldown
+MICRO_GAIN_MAX_POSITIONS = int(os.getenv('MICRO_GAIN_MAX_POSITIONS', '3'))  # Max posizioni MICRO_GAIN
+SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '10'))
+SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))
+MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
+MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # 30% balance per posizione
+
+# Cooldown tracking (in-memory)
+_last_close_time = {}  # symbol -> timestamp
+
 
 def log(msg: str):
     """Log con timestamp."""
@@ -173,6 +189,298 @@ def check_micro_gain_reversal(position: dict, tracking_data: dict) -> dict:
         result["reason"] = f"MICRO_GAIN REVERSAL: Score {quick_score:.1f} (soglia +{MICRO_GAIN_REVERSAL_SCORE})"
 
     return result
+
+
+def is_in_cooldown(symbol: str) -> bool:
+    """Verifica se il simbolo è in cooldown dopo una chiusura recente."""
+    global _last_close_time
+    if symbol not in _last_close_time:
+        return False
+
+    elapsed = time.time() - _last_close_time[symbol]
+    return elapsed < MICRO_GAIN_COOLDOWN_SECONDS
+
+
+def set_cooldown(symbol: str):
+    """Imposta il cooldown per un simbolo."""
+    global _last_close_time
+    _last_close_time[symbol] = time.time()
+    log(f"   ⏱️ Cooldown attivato per {symbol} ({MICRO_GAIN_COOLDOWN_SECONDS}s)")
+
+
+def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
+    """
+    Apre una posizione MICRO_GAIN con TP e SL orders su Hyperliquid.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo (BTC, ETH, SOL)
+        direction: 'long' o 'short'
+        score: Score che ha generato il segnale
+
+    Returns:
+        dict con risultato operazione
+    """
+    import db_utils
+    import telegram_notifier as tg
+
+    log(f"🎯 MICRO_GAIN AUTO-OPEN: {symbol} {direction.upper()} (score={score:.1f})")
+
+    try:
+        # Prepara ordine
+        order_json = {
+            "operation": "open",
+            "symbol": symbol,
+            "direction": direction,
+            "reason": f"MICRO_GAIN sentinel auto-open: score {score:.1f}",
+            "target_portion_of_balance": MICRO_GAIN_PORTION,
+            "leverage": MICRO_GAIN_LEVERAGE,
+            "trading_mode": "MICRO_GAIN",
+            "opening_score": score,
+            "micro_gain_target": MICRO_GAIN_TARGET_PERCENT
+        }
+
+        # Esegui ordine
+        result = bot.execute_signal(order_json)
+
+        if result.get("success") or result.get("status") == "executed":
+            # Ottieni entry price dalla posizione
+            account_status = bot.get_account_status()
+            entry_price = 0
+            position_size = 0
+
+            for pos in account_status.get("open_positions", []):
+                if pos.get("symbol") == symbol:
+                    entry_price = float(pos.get("entry_price", 0))
+                    position_size = float(pos.get("size", 0))
+                    break
+
+            if entry_price > 0:
+                # Crea tracking
+                db_utils.upsert_position_tracking(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    current_price=entry_price,
+                    trailing_active=False,
+                    opening_score=score,
+                    trading_mode="MICRO_GAIN"
+                )
+
+                # Piazza SL order su Hyperliquid
+                place_micro_gain_sl_order(bot, symbol, direction, entry_price, position_size)
+
+                # Notifica Telegram
+                if SENTINEL_TELEGRAM_NOTIFY:
+                    try:
+                        tg.send_telegram_message(
+                            f"🎯 <b>MICRO_GAIN OPEN</b>\n\n"
+                            f"<b>Symbol:</b> {symbol}\n"
+                            f"<b>Direction:</b> {direction.upper()}\n"
+                            f"<b>Entry:</b> ${entry_price:.2f}\n"
+                            f"<b>Score:</b> {score:.1f}\n"
+                            f"<b>TP Target:</b> +{MICRO_GAIN_TARGET_PERCENT}%\n"
+                            f"<b>SL:</b> -{MICRO_GAIN_STOP_LOSS_PERCENT}%"
+                        )
+                    except Exception as e:
+                        log(f"   ⚠️ Errore Telegram: {e}")
+
+                log(f"   ✅ Posizione MICRO_GAIN aperta: {symbol} {direction.upper()} @ ${entry_price:.2f}")
+                return {"success": True, "entry_price": entry_price}
+            else:
+                log(f"   ⚠️ Posizione aperta ma entry price non trovato")
+                return {"success": False, "error": "Entry price not found"}
+        else:
+            log(f"   ⚠️ Errore apertura: {result}")
+            return {"success": False, "error": str(result)}
+
+    except Exception as e:
+        log(f"   ❌ Errore apertura MICRO_GAIN: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float, size: float):
+    """
+    Piazza un ordine SL limit su Hyperliquid per MICRO_GAIN.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        size: Size della posizione
+    """
+    try:
+        # Calcola prezzo SL
+        price_change_pct = MICRO_GAIN_STOP_LOSS_PERCENT / MICRO_GAIN_LEVERAGE
+
+        if direction == "long":
+            sl_price = entry_price * (1 - price_change_pct / 100)
+        else:
+            sl_price = entry_price * (1 + price_change_pct / 100)
+
+        # Arrotonda al tick size
+        sl_price = bot._round_to_tick(sl_price, symbol)
+
+        log(f"   🛡️ Piazzo SL order @ ${sl_price:.2f} (target loss: -{MICRO_GAIN_STOP_LOSS_PERCENT}%)")
+
+        # Piazza ordine SL (direzione opposta per chiudere)
+        is_buy = direction == "short"  # Se short, compra per chiudere
+
+        sl_order = bot.exchange.order(
+            symbol,
+            is_buy,
+            size,
+            sl_price,
+            {"limit": {"tif": "Gtc"}},
+            reduce_only=True
+        )
+
+        if sl_order.get("status") == "ok":
+            response_data = sl_order.get("response", {})
+            if response_data.get("type") == "order":
+                statuses = response_data.get("data", {}).get("statuses", [])
+                if statuses and statuses[0].get("resting"):
+                    log(f"   ✅ SL order piazzato: OID={statuses[0]['resting']['oid']}")
+                    return True
+
+        log(f"   ⚠️ SL order response: {sl_order}")
+        return False
+
+    except Exception as e:
+        log(f"   ❌ Errore piazzamento SL: {e}")
+        return False
+
+
+def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float,
+                                current_price: float, size: float):
+    """
+    Aggiorna l'ordine SL per MICRO_GAIN implementando trailing lock-in.
+
+    Logica:
+    - Se P&L >= BREAKEVEN_TRIGGER, sposta SL a BREAKEVEN_LOCK profit
+    - Questo "blocca" un minimo di profitto
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        current_price: Prezzo corrente
+        size: Size della posizione
+
+    Returns:
+        bool: True se SL è stato aggiornato
+    """
+    try:
+        # Calcola P&L corrente
+        if direction == "long":
+            price_change_pct = ((current_price - entry_price) / entry_price) * 100
+        else:
+            price_change_pct = ((entry_price - current_price) / entry_price) * 100
+
+        pnl_pct = price_change_pct * MICRO_GAIN_LEVERAGE
+
+        # Se P&L >= trigger, sposta SL a lock-in profit
+        if pnl_pct >= MICRO_GAIN_BREAKEVEN_TRIGGER:
+            # Calcola nuovo prezzo SL (lock in profit)
+            lock_price_change = MICRO_GAIN_BREAKEVEN_LOCK / MICRO_GAIN_LEVERAGE
+
+            if direction == "long":
+                new_sl_price = entry_price * (1 + lock_price_change / 100)
+            else:
+                new_sl_price = entry_price * (1 - lock_price_change / 100)
+
+            new_sl_price = bot._round_to_tick(new_sl_price, symbol)
+
+            log(f"   📈 P&L {pnl_pct:.2f}% >= {MICRO_GAIN_BREAKEVEN_TRIGGER}%")
+            log(f"   🔒 Sposto SL a +{MICRO_GAIN_BREAKEVEN_LOCK}% (lock-in profit) @ ${new_sl_price:.2f}")
+
+            # Cancella ordini esistenti per questo simbolo
+            try:
+                open_orders = bot.info.open_orders(bot.account_address)
+                for order in open_orders:
+                    if order.get("coin") == symbol:
+                        # Questo è l'ordine SL esistente, cancellalo
+                        bot.exchange.cancel(symbol, order.get("oid"))
+                        log(f"   🗑️ Cancellato ordine esistente OID={order.get('oid')}")
+            except Exception as e:
+                log(f"   ⚠️ Errore cancellazione ordini: {e}")
+
+            # Piazza nuovo SL
+            is_buy = direction == "short"
+
+            sl_order = bot.exchange.order(
+                symbol,
+                is_buy,
+                size,
+                new_sl_price,
+                {"limit": {"tif": "Gtc"}},
+                reduce_only=True
+            )
+
+            if sl_order.get("status") == "ok":
+                log(f"   ✅ Nuovo SL piazzato @ ${new_sl_price:.2f}")
+                return True
+            else:
+                log(f"   ⚠️ Errore nuovo SL: {sl_order}")
+
+        return False
+
+    except Exception as e:
+        log(f"   ❌ Errore update SL: {e}")
+        return False
+
+
+def check_and_open_micro_gain(bot, existing_symbols: list):
+    """
+    Controlla se aprire nuove posizioni MICRO_GAIN.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        existing_symbols: Lista simboli con posizioni già aperte
+    """
+    if not MICRO_GAIN_AUTO_OPEN:
+        return
+
+    symbols_to_check = ['BTC', 'ETH', 'SOL']
+
+    # Conta posizioni MICRO_GAIN esistenti
+    micro_gain_count = len(existing_symbols)
+
+    for symbol in symbols_to_check:
+        # Skip se già abbiamo posizione
+        if symbol in existing_symbols:
+            continue
+
+        # Skip se in cooldown
+        if is_in_cooldown(symbol):
+            remaining = MICRO_GAIN_COOLDOWN_SECONDS - (time.time() - _last_close_time.get(symbol, 0))
+            log(f"   ⏱️ {symbol} in cooldown ({remaining:.0f}s rimanenti)")
+            continue
+
+        # Skip se abbiamo raggiunto max posizioni
+        if micro_gain_count >= MICRO_GAIN_MAX_POSITIONS:
+            log(f"   ⚠️ Max posizioni MICRO_GAIN raggiunte ({MICRO_GAIN_MAX_POSITIONS})")
+            break
+
+        # Calcola score
+        score = calculate_quick_score(symbol)
+        abs_score = abs(score)
+
+        log(f"   📊 {symbol} quick_score: {score:.1f}")
+
+        # Check se score è in range MICRO_GAIN (10-20)
+        if SCORE_THRESHOLD_HOLD <= abs_score < SCORE_THRESHOLD_OPEN:
+            direction = "long" if score > 0 else "short"
+
+            result = open_micro_gain_position(bot, symbol, direction, score)
+
+            if result.get("success"):
+                micro_gain_count += 1
+                existing_symbols.append(symbol)
 
 
 def check_take_profit(position: dict) -> dict:
@@ -356,11 +664,23 @@ def run_sentinel_check():
         account_status = bot.get_account_status()
         positions = account_status.get("open_positions", [])
 
+        # Lista simboli con posizioni aperte
+        existing_symbols = [p.get("symbol") for p in positions]
+
         if not positions:
             log("Nessuna posizione aperta")
+            # === CHECK MICRO_GAIN AUTO-OPEN ===
+            if MICRO_GAIN_AUTO_OPEN:
+                log("🔍 Controllo opportunità MICRO_GAIN...")
+                check_and_open_micro_gain(bot, existing_symbols)
             return
 
         log(f"Controllo {len(positions)} posizioni...")
+
+        # === CHECK MICRO_GAIN AUTO-OPEN (se abbiamo meno di MAX posizioni) ===
+        if MICRO_GAIN_AUTO_OPEN and len(positions) < MICRO_GAIN_MAX_POSITIONS:
+            log(f"🔍 Controllo opportunità MICRO_GAIN ({len(positions)}/{MICRO_GAIN_MAX_POSITIONS} posizioni)...")
+            check_and_open_micro_gain(bot, existing_symbols)
 
         for pos in positions:
             symbol = pos.get("symbol", "")
@@ -386,6 +706,13 @@ def run_sentinel_check():
             micro_gain_result = {"triggered": False, "reason": "", "quick_score": 0.0}
             if trading_mode == "MICRO_GAIN" and tracking_data:
                 micro_gain_result = check_micro_gain_reversal(pos, tracking_data)
+
+                # === UPDATE MICRO_GAIN TRAILING SL (lock-in profit) ===
+                position_size = float(pos.get("size", 0))
+                if position_size > 0:
+                    update_micro_gain_sl_order(
+                        bot, symbol, direction, entry_price, mark_price, position_size
+                    )
 
             # === CHECK TRAILING STOP (solo per NORMAL mode) ===
             result = check_trailing_stop(pos, tracking_data)
@@ -444,6 +771,20 @@ def run_sentinel_check():
 
                     # Elimina tracking
                     db_utils.delete_position_tracking(symbol)
+
+                    # Attiva cooldown per MICRO_GAIN auto-open
+                    if MICRO_GAIN_AUTO_OPEN:
+                        set_cooldown(symbol)
+
+                    # Cancella ordini TP/SL rimasti per questo simbolo
+                    try:
+                        open_orders = bot.info.open_orders(bot.account_address)
+                        for order in open_orders:
+                            if order.get("coin") == symbol:
+                                bot.exchange.cancel(symbol, order.get("oid"))
+                                log(f"   🗑️ Cancellato ordine residuo OID={order.get('oid')}")
+                    except Exception as e:
+                        log(f"   ⚠️ Errore cancellazione ordini residui: {e}")
 
                     # Notifica Telegram
                     if SENTINEL_TELEGRAM_NOTIFY:
@@ -528,6 +869,11 @@ def run_loop(interval: int = None):
     log(f"   Trailing: {TRAILING_STOP_PERCENT}%, Activation: {TRAILING_STOP_ACTIVATION_PERCENT}%, Stop Loss: {INITIAL_STOP_LOSS_PERCENT}%")
     if MICRO_GAIN_ENABLED:
         log(f"   🎯 MICRO_GAIN: enabled, reversal_score: {MICRO_GAIN_REVERSAL_SCORE}")
+    if MICRO_GAIN_AUTO_OPEN:
+        log(f"   🚀 MICRO_GAIN AUTO-OPEN: enabled")
+        log(f"      TP: +{MICRO_GAIN_TARGET_PERCENT}%, SL: -{MICRO_GAIN_STOP_LOSS_PERCENT}%")
+        log(f"      Breakeven: trigger={MICRO_GAIN_BREAKEVEN_TRIGGER}% → lock={MICRO_GAIN_BREAKEVEN_LOCK}%")
+        log(f"      Cooldown: {MICRO_GAIN_COOLDOWN_SECONDS}s, Max positions: {MICRO_GAIN_MAX_POSITIONS}")
     if TAKE_PROFIT_ENABLED:
         log(f"   Take Profit: {TAKE_PROFIT_PERCENT}% P&L")
 
