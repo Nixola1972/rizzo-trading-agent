@@ -1631,14 +1631,36 @@ with tab5:
         st.exception(e)
 
 with tab6:
-    st.subheader("🔬 Backtesting & Weight Optimization")
+    st.subheader("🔬 Backtesting e Ottimizzazione Pesi")
 
     st.markdown("""
-    ### Test Different Weight Configurations on Historical Data
+    ### Testa Diverse Configurazioni sui Dati Storici
 
-    This module allows you to backtest different weight configurations on historical data
-    to find optimal parameters before applying them to live trading.
+    Questo modulo ti permette di testare diverse configurazioni di pesi sui dati storici
+    per trovare i parametri ottimali **prima** di applicarli al trading reale.
     """)
+
+    # Info box con spiegazione parametri
+    with st.expander("ℹ️ Guida ai Parametri - Clicca per espandere", expanded=False):
+        st.markdown("""
+        ### 📊 Parametri di Configurazione
+
+        | Parametro | Descrizione | Consigliato |
+        |-----------|-------------|-------------|
+        | **RSI Overbought Weight** | Peso del segnale quando RSI > 70 (ipercomprato → SHORT) | 12-15 |
+        | **RSI Oversold Weight** | Peso del segnale quando RSI < 30 (ipervenduto → LONG) | 12-15 |
+        | **Score Threshold Open** | Punteggio minimo per aprire. Alto = meno trade ma più selettivi | 5-15 |
+        | **Take Profit %** | % di profitto a cui chiudere automaticamente | 3-6% |
+        | **Stop Loss %** | % di perdita massima accettabile | 8-12% |
+
+        ### 📈 Metriche di Performance
+
+        | Metrica | Significato | Valori Ideali |
+        |---------|-------------|---------------|
+        | **Win Rate** | % di trade chiusi in profitto | > 50% buono, > 60% ottimo |
+        | **Profit Factor** | Profitti totali / Perdite totali | > 1.5 buono, > 2 ottimo |
+        | **Total P&L** | Profitto/perdita totale nel periodo | Positivo! |
+        """)
 
     try:
         from backtester import Backtester, WeightsConfig, BacktestResult
@@ -1646,95 +1668,125 @@ with tab6:
 
         # Configuration Section
         st.markdown("---")
-        st.subheader("⚙️ Backtest Configuration")
+        st.subheader("⚙️ Configurazione Backtest")
 
         col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
 
         with col_cfg1:
             bt_symbols = st.multiselect(
-                "📊 Symbols",
+                "📊 Simboli da Testare",
                 ["BTC", "ETH", "SOL"],
-                default=["BTC", "ETH"],
-                help="Select symbols to include in the backtest"
+                default=["BTC", "ETH", "SOL"],
+                help="Seleziona le crypto da includere. Consigliato: tutte e 3"
             )
 
         with col_cfg2:
             bt_days = st.selectbox(
-                "📅 Period (Days)",
+                "📅 Periodo (Giorni)",
                 [7, 14, 30, 60],
                 index=2,
-                help="Days of historical data (max 60 for 15m data)"
+                help="Giorni di dati storici. Consigliato: 30 giorni"
             )
 
         with col_cfg3:
             bt_interval = st.selectbox(
-                "⏱️ Candle Interval",
+                "⏱️ Intervallo Candele",
                 ["15m", "1h", "4h", "1d"],
-                index=1,
-                help="Candle interval for analysis"
+                index=0,  # Default: 15m come il bot
+                help="Intervallo candele. Consigliato: 15m (stesso del bot)"
             )
+            st.caption("⭐ **15m** = stesso intervallo del bot")
 
         # Operation Mode
         st.markdown("---")
         mode = st.radio(
-            "🔧 Operation Mode",
-            ["Compare Custom Configs", "Auto-Optimize Weights"],
-            horizontal=True
+            "🔧 Modalità Operativa",
+            ["Confronta Configurazioni", "Ottimizzazione Automatica"],
+            horizontal=True,
+            help="Confronta: manuale | Ottimizzazione: il sistema trova i valori migliori"
         )
 
-        if mode == "Compare Custom Configs":
-            st.markdown("### 📋 Configure Weight Configurations to Compare")
+        if mode == "Confronta Configurazioni":
+            st.markdown("### 📋 Configura i Pesi da Confrontare")
+            st.info("💡 **Tip:** Config 1 = valori attuali .env | Config 2 = conservativa | Config 3 = aggressiva")
 
             # Current config from .env
-            current_config = WeightsConfig.from_env("Current (.env)")
+            current_config = WeightsConfig.from_env("Attuale (.env)")
 
             # Allow user to define configs
-            num_configs = st.slider("Number of configurations to test", 2, 6, 3)
+            num_configs = st.slider("Numero configurazioni da testare", 2, 6, 3,
+                                   help="Quante configurazioni vuoi confrontare? Consigliato: 3")
 
             configs = []
             config_expanders = st.columns(min(num_configs, 3))
 
+            # Valori consigliati
+            REC = {'rsi': 15.0, 'thresh': 10.0, 'tp': 5.0, 'sl': 10.0}
+
             for i in range(num_configs):
                 col_idx = i % 3
                 with config_expanders[col_idx]:
-                    with st.expander(f"Config {i+1}", expanded=(i < 2)):
-                        if i == 0:
-                            st.caption("Current .env config")
-                            cfg_name = st.text_input("Name", "Current (.env)", key=f"name_{i}")
-                            cfg_rsi_ob = st.number_input("RSI Overbought Weight", 5.0, 25.0, current_config.weight_rsi_overbought, key=f"rsi_ob_{i}")
-                            cfg_rsi_os = st.number_input("RSI Oversold Weight", 5.0, 25.0, current_config.weight_rsi_oversold, key=f"rsi_os_{i}")
-                            cfg_threshold = st.number_input("Score Threshold Open", 3.0, 30.0, current_config.score_threshold_open, key=f"thresh_{i}")
-                            cfg_tp = st.number_input("Take Profit %", 1.0, 20.0, current_config.take_profit_pct, key=f"tp_{i}")
-                            cfg_sl = st.number_input("Stop Loss %", 3.0, 25.0, current_config.stop_loss_pct, key=f"sl_{i}")
-                        else:
-                            cfg_name = st.text_input("Name", f"Config {i+1}", key=f"name_{i}")
-                            cfg_rsi_ob = st.number_input("RSI Overbought Weight", 5.0, 25.0, 15.0, key=f"rsi_ob_{i}")
-                            cfg_rsi_os = st.number_input("RSI Oversold Weight", 5.0, 25.0, 15.0, key=f"rsi_os_{i}")
-                            cfg_threshold = st.number_input("Score Threshold Open", 3.0, 30.0, 15.0, key=f"thresh_{i}")
-                            cfg_tp = st.number_input("Take Profit %", 2.0, 15.0, 5.0, key=f"tp_{i}")
-                            cfg_sl = st.number_input("Stop Loss %", 5.0, 20.0, 10.0, key=f"sl_{i}")
+                    if i == 0:
+                        with st.expander(f"⚙️ Config 1 - Attuale", expanded=True):
+                            st.caption("🔵 Valori attuali dal tuo .env")
+                            cfg_name = st.text_input("Nome", "Attuale (.env)", key=f"name_{i}")
+                            cfg_rsi_ob = st.number_input(f"Peso RSI Overbought (📌 Cons: {REC['rsi']})", 5.0, 25.0, current_config.weight_rsi_overbought, key=f"rsi_ob_{i}",
+                                                        help="Peso segnale SHORT quando RSI > 70")
+                            cfg_rsi_os = st.number_input(f"Peso RSI Oversold (📌 Cons: {REC['rsi']})", 5.0, 25.0, current_config.weight_rsi_oversold, key=f"rsi_os_{i}",
+                                                        help="Peso segnale LONG quando RSI < 30")
+                            cfg_threshold = st.number_input(f"Soglia Apertura (📌 Cons: {REC['thresh']})", 3.0, 30.0, current_config.score_threshold_open, key=f"thresh_{i}",
+                                                           help="Score minimo per aprire posizione")
+                            cfg_tp = st.number_input(f"Take Profit % (📌 Cons: {REC['tp']}%)", 1.0, 20.0, current_config.take_profit_pct, key=f"tp_{i}")
+                            cfg_sl = st.number_input(f"Stop Loss % (📌 Cons: {REC['sl']}%)", 3.0, 25.0, current_config.stop_loss_pct, key=f"sl_{i}")
+                    elif i == 1:
+                        with st.expander(f"⚙️ Config 2 - Conservativa", expanded=True):
+                            st.caption("🟢 Meno trade, più selettivi, meno rischio")
+                            cfg_name = st.text_input("Nome", "Conservativa", key=f"name_{i}")
+                            cfg_rsi_ob = st.number_input("Peso RSI Overbought", 5.0, 25.0, 18.0, key=f"rsi_ob_{i}")
+                            cfg_rsi_os = st.number_input("Peso RSI Oversold", 5.0, 25.0, 18.0, key=f"rsi_os_{i}")
+                            cfg_threshold = st.number_input("Soglia Apertura", 3.0, 30.0, 18.0, key=f"thresh_{i}")
+                            cfg_tp = st.number_input("Take Profit %", 1.0, 20.0, 4.0, key=f"tp_{i}")
+                            cfg_sl = st.number_input("Stop Loss %", 3.0, 25.0, 8.0, key=f"sl_{i}")
+                    elif i == 2:
+                        with st.expander(f"⚙️ Config 3 - Aggressiva", expanded=True):
+                            st.caption("🔴 Più trade, più rischio, potenziale maggiore")
+                            cfg_name = st.text_input("Nome", "Aggressiva", key=f"name_{i}")
+                            cfg_rsi_ob = st.number_input("Peso RSI Overbought", 5.0, 25.0, 12.0, key=f"rsi_ob_{i}")
+                            cfg_rsi_os = st.number_input("Peso RSI Oversold", 5.0, 25.0, 12.0, key=f"rsi_os_{i}")
+                            cfg_threshold = st.number_input("Soglia Apertura", 3.0, 30.0, 8.0, key=f"thresh_{i}")
+                            cfg_tp = st.number_input("Take Profit %", 1.0, 20.0, 6.0, key=f"tp_{i}")
+                            cfg_sl = st.number_input("Stop Loss %", 3.0, 25.0, 12.0, key=f"sl_{i}")
+                    else:
+                        with st.expander(f"⚙️ Config {i+1} - Personalizzata", expanded=False):
+                            st.caption("✏️ Personalizza i valori")
+                            cfg_name = st.text_input("Nome", f"Custom {i+1}", key=f"name_{i}")
+                            cfg_rsi_ob = st.number_input("Peso RSI Overbought", 5.0, 25.0, 15.0, key=f"rsi_ob_{i}")
+                            cfg_rsi_os = st.number_input("Peso RSI Oversold", 5.0, 25.0, 15.0, key=f"rsi_os_{i}")
+                            cfg_threshold = st.number_input("Soglia Apertura", 3.0, 30.0, 12.0, key=f"thresh_{i}")
+                            cfg_tp = st.number_input("Take Profit %", 1.0, 20.0, 5.0, key=f"tp_{i}")
+                            cfg_sl = st.number_input("Stop Loss %", 3.0, 25.0, 10.0, key=f"sl_{i}")
 
-                        configs.append(WeightsConfig(
-                            name=cfg_name,
-                            weight_rsi_overbought=cfg_rsi_ob,
-                            weight_rsi_oversold=cfg_rsi_os,
-                            score_threshold_open=cfg_threshold,
-                            take_profit_pct=cfg_tp,
-                            stop_loss_pct=cfg_sl
-                        ))
+                    configs.append(WeightsConfig(
+                        name=cfg_name,
+                        weight_rsi_overbought=cfg_rsi_ob,
+                        weight_rsi_oversold=cfg_rsi_os,
+                        score_threshold_open=cfg_threshold,
+                        take_profit_pct=cfg_tp,
+                        stop_loss_pct=cfg_sl
+                    ))
 
-            if st.button("🚀 Run Backtest Comparison", type="primary", use_container_width=True):
-                with st.spinner(f"⏳ Downloading {bt_days} days of {bt_interval} data..."):
+            if st.button("🚀 Avvia Backtest", type="primary", use_container_width=True):
+                with st.spinner(f"⏳ Scaricamento {bt_days} giorni di dati {bt_interval}..."):
                     bt = Backtester(symbols=bt_symbols, days=bt_days, interval=bt_interval)
 
                     if bt.download_data(verbose=False):
-                        st.success(f"✅ Downloaded data for {len(bt.data)} symbols")
+                        st.success(f"✅ Scaricati dati per {len(bt.data)} simboli")
 
                         results = []
                         progress_bar = st.progress(0)
 
                         for i, config in enumerate(configs):
-                            with st.spinner(f"Testing {config.name}..."):
+                            with st.spinner(f"Test {config.name}..."):
                                 result = bt.run(config)
                                 results.append(result)
                             progress_bar.progress((i + 1) / len(configs))
@@ -1746,21 +1798,21 @@ with tab6:
 
                         # Display Results
                         st.markdown("---")
-                        st.subheader("📊 Backtest Results")
+                        st.subheader("📊 Risultati Backtest")
 
                         # Summary table
                         summary_data = []
                         for i, r in enumerate(results):
                             medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else ""
                             summary_data.append({
-                                "Rank": f"{medal} {i+1}",
-                                "Config": r.config.name,
-                                "Trades": r.total_trades,
+                                "Pos.": f"{medal} {i+1}",
+                                "Configurazione": r.config.name,
+                                "Trade": r.total_trades,
                                 "Win Rate": f"{r.win_rate*100:.1f}%",
                                 "Profit Factor": f"{r.profit_factor:.2f}",
-                                "Total P&L": f"{r.total_pnl_pct:+.2f}%",
-                                "Avg Win": f"{r.avg_win_pct:+.2f}%",
-                                "Avg Loss": f"{r.avg_loss_pct:.2f}%"
+                                "P&L Totale": f"{r.total_pnl_pct:+.2f}%",
+                                "Media Win": f"{r.avg_win_pct:+.2f}%",
+                                "Media Loss": f"{r.avg_loss_pct:.2f}%"
                             })
 
                         df_results = pd.DataFrame(summary_data)
@@ -1769,104 +1821,115 @@ with tab6:
                         # Best config details
                         best = results[0]
                         st.markdown("---")
-                        st.subheader(f"🏆 Best Configuration: {best.config.name}")
+                        st.subheader(f"🏆 Migliore: {best.config.name}")
 
                         col_best1, col_best2, col_best3, col_best4 = st.columns(4)
 
                         with col_best1:
-                            st.metric("Profit Factor", f"{best.profit_factor:.2f}")
+                            st.metric("Profit Factor", f"{best.profit_factor:.2f}", help=">1.5 buono, >2 ottimo")
                             st.metric("Win Rate", f"{best.win_rate*100:.1f}%")
 
                         with col_best2:
-                            st.metric("Total Trades", best.total_trades)
-                            st.metric("Total P&L", f"{best.total_pnl_pct:+.2f}%")
+                            st.metric("Trade Totali", best.total_trades)
+                            st.metric("P&L Totale", f"{best.total_pnl_pct:+.2f}%")
 
                         with col_best3:
-                            st.metric("Avg Win", f"{best.avg_win_pct:+.2f}%")
-                            st.metric("Max Win", f"{best.max_win_pct:+.2f}%")
+                            st.metric("Media Vincita", f"{best.avg_win_pct:+.2f}%")
+                            st.metric("Max Vincita", f"{best.max_win_pct:+.2f}%")
 
                         with col_best4:
-                            st.metric("Avg Loss", f"{best.avg_loss_pct:.2f}%")
-                            st.metric("Max Loss", f"{best.max_loss_pct:.2f}%")
+                            st.metric("Media Perdita", f"{best.avg_loss_pct:.2f}%")
+                            st.metric("Max Perdita", f"{best.max_loss_pct:.2f}%")
 
                         # Exit reasons chart
                         if best.exit_reasons:
-                            st.markdown("#### 📊 Exit Reasons Distribution")
+                            st.markdown("#### 📊 Come sono stati chiusi i trade")
+                            exit_labels = {
+                                'take_profit': 'Take Profit ✅',
+                                'stop_loss': 'Stop Loss ❌',
+                                'trailing_stop': 'Trailing Stop 🔄',
+                                'signal_reversal': 'Inversione Segnale ↩️',
+                                'end_of_data': 'Fine Dati 📊'
+                            }
                             exit_df = pd.DataFrame([
-                                {"Reason": k, "Count": v} for k, v in best.exit_reasons.items()
+                                {"Motivo": exit_labels.get(k, k), "Numero": v} for k, v in best.exit_reasons.items()
                             ])
-                            fig = px.pie(exit_df, values='Count', names='Reason',
-                                        title="How trades were closed")
+                            fig = px.pie(exit_df, values='Numero', names='Motivo',
+                                        title="Distribuzione chiusure")
                             st.plotly_chart(fig, use_container_width=True)
 
                         # Suggested .env values
                         st.markdown("---")
-                        st.subheader("📝 Suggested .env Values")
+                        st.subheader("📝 Valori Suggeriti per .env")
+                        st.info("💡 Copia questi valori nel tuo file .env per applicare questa configurazione")
 
-                        env_code = f"""
-# Best configuration: {best.config.name}
+                        env_code = f"""# Configurazione migliore: {best.config.name}
+# Testata su {bt_days} giorni, candele {bt_interval}
+# Performance: PF={best.profit_factor:.2f}, WR={best.win_rate*100:.1f}%
+
 WEIGHT_RSI_OVERBOUGHT={best.config.weight_rsi_overbought}
 WEIGHT_RSI_OVERSOLD={best.config.weight_rsi_oversold}
 SCORE_THRESHOLD_OPEN={best.config.score_threshold_open}
 TAKE_PROFIT_PERCENT={best.config.take_profit_pct}
 INITIAL_STOP_LOSS_PERCENT={best.config.stop_loss_pct}
-TRAILING_STOP_PERCENT={best.config.trailing_stop_pct}
-"""
+TRAILING_STOP_PERCENT={best.config.trailing_stop_pct}"""
                         st.code(env_code, language="bash")
 
                         # Download report
                         report = bt.generate_report(results)
                         st.download_button(
-                            label="📥 Download Full Report",
+                            label="📥 Scarica Report Completo",
                             data=report,
                             file_name=f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
                             mime="text/markdown"
                         )
 
                     else:
-                        st.error("❌ Failed to download historical data. Check your internet connection.")
+                        st.error("❌ Errore download dati storici. Controlla la connessione internet.")
 
         else:  # Auto-Optimize
-            st.markdown("### 🧬 Automatic Weight Optimization")
+            st.markdown("### 🧬 Ottimizzazione Automatica dei Pesi")
 
             st.info("""
-            The optimizer will test many weight combinations and find the best parameters.
-            This may take several minutes depending on the number of iterations.
+            🤖 **Il sistema testerà automaticamente molte combinazioni di pesi** e troverà i parametri ottimali.
+            Può richiedere alcuni minuti a seconda del numero di iterazioni.
             """)
 
             col_opt1, col_opt2 = st.columns(2)
 
             with col_opt1:
                 opt_method = st.selectbox(
-                    "Optimization Method",
+                    "Metodo di Ottimizzazione",
                     ["random", "grid", "genetic"],
                     format_func=lambda x: {
-                        "random": "🎲 Random Search (Fast, Good)",
-                        "grid": "📊 Grid Search (Thorough, Slow)",
-                        "genetic": "🧬 Genetic Algorithm (Best, Medium)"
-                    }[x]
+                        "random": "🎲 Ricerca Casuale (Veloce, Buono)",
+                        "grid": "📊 Ricerca Griglia (Completa, Lenta)",
+                        "genetic": "🧬 Algoritmo Genetico (Migliore, Media)"
+                    }[x],
+                    help="Random consigliato per iniziare"
                 )
 
             with col_opt2:
                 if opt_method == "random":
-                    iterations = st.slider("Iterations", 20, 200, 50)
+                    iterations = st.slider("Iterazioni", 20, 200, 50, help="Più iterazioni = migliori risultati")
                 elif opt_method == "grid":
-                    st.caption("Grid search iterations are determined by parameter ranges")
+                    st.caption("📌 Iterazioni determinate dai range parametri")
                     iterations = None
                 else:
-                    pop_size = st.slider("Population Size", 20, 100, 30)
-                    generations = st.slider("Generations", 5, 30, 10)
+                    pop_size = st.slider("Dimensione Popolazione", 20, 100, 30)
+                    generations = st.slider("Generazioni", 5, 30, 10)
 
-            if st.button("🚀 Start Optimization", type="primary", use_container_width=True):
-                with st.spinner(f"⏳ Downloading {bt_days} days of {bt_interval} data..."):
+            if st.button("🚀 Avvia Ottimizzazione", type="primary", use_container_width=True):
+                with st.spinner(f"⏳ Scaricamento {bt_days} giorni di dati {bt_interval}..."):
                     bt = Backtester(symbols=bt_symbols, days=bt_days, interval=bt_interval)
 
                     if bt.download_data(verbose=False):
-                        st.success(f"✅ Downloaded data for {len(bt.data)} symbols")
+                        st.success(f"✅ Scaricati dati per {len(bt.data)} simboli")
 
                         optimizer = WeightOptimizer(bt)
 
-                        with st.spinner(f"🔄 Running {opt_method} optimization..."):
+                        method_names = {"random": "ricerca casuale", "grid": "ricerca griglia", "genetic": "algoritmo genetico"}
+                        with st.spinner(f"🔄 Ottimizzazione con {method_names[opt_method]}..."):
                             if opt_method == "random":
                                 opt_result = optimizer.random_search(n_iterations=iterations, verbose=False)
                             elif opt_method == "grid":
@@ -1880,13 +1943,13 @@ TRAILING_STOP_PERCENT={best.config.trailing_stop_pct}
 
                         # Display Results
                         st.markdown("---")
-                        st.subheader("🏆 Optimization Results")
+                        st.subheader("🏆 Risultati Ottimizzazione")
 
                         st.success(f"""
-                        ✅ Optimization complete!
-                        - Method: {opt_result.method}
-                        - Iterations: {opt_result.iterations}
-                        - Duration: {opt_result.duration_seconds:.1f}s
+                        ✅ **Ottimizzazione completata!**
+                        - Metodo: {method_names[opt_method]}
+                        - Iterazioni testate: {opt_result.iterations}
+                        - Durata: {opt_result.duration_seconds:.1f} secondi
                         """)
 
                         best = opt_result.best_result
@@ -1905,87 +1968,91 @@ TRAILING_STOP_PERCENT={best.config.trailing_stop_pct}
 
                         # Best weights
                         st.markdown("---")
-                        st.subheader("📝 Optimized Weights")
+                        st.subheader("📝 Pesi Ottimizzati")
 
                         col_w1, col_w2 = st.columns(2)
 
                         with col_w1:
-                            st.markdown("**Bearish Weights:**")
-                            st.write(f"- RSI Overbought: {cfg.weight_rsi_overbought}")
-                            st.write(f"- Fear & Greed Fear: {cfg.weight_fear_greed_fear}")
-                            st.write(f"- Trend Bearish: {cfg.weight_trend_bearish}")
-                            st.write(f"- Forecast Negative: {cfg.weight_forecast_negative}")
+                            st.markdown("**🔴 Pesi Bearish (segnali SHORT):**")
+                            st.write(f"- RSI Overbought: **{cfg.weight_rsi_overbought}**")
+                            st.write(f"- Fear & Greed Paura: {cfg.weight_fear_greed_fear}")
+                            st.write(f"- Trend Ribassista: {cfg.weight_trend_bearish}")
+                            st.write(f"- Forecast Negativo: {cfg.weight_forecast_negative}")
 
                         with col_w2:
-                            st.markdown("**Bullish Weights:**")
-                            st.write(f"- RSI Oversold: {cfg.weight_rsi_oversold}")
-                            st.write(f"- Fear & Greed Greed: {cfg.weight_fear_greed_greed}")
-                            st.write(f"- Trend Bullish: {cfg.weight_trend_bullish}")
-                            st.write(f"- Forecast Positive: {cfg.weight_forecast_positive}")
+                            st.markdown("**🟢 Pesi Bullish (segnali LONG):**")
+                            st.write(f"- RSI Oversold: **{cfg.weight_rsi_oversold}**")
+                            st.write(f"- Fear & Greed Avidità: {cfg.weight_fear_greed_greed}")
+                            st.write(f"- Trend Rialzista: {cfg.weight_trend_bullish}")
+                            st.write(f"- Forecast Positivo: {cfg.weight_forecast_positive}")
 
-                        st.markdown("**Thresholds & Trading:**")
-                        st.write(f"- Score Threshold Open: {cfg.score_threshold_open}")
-                        st.write(f"- Take Profit: {cfg.take_profit_pct}%")
-                        st.write(f"- Stop Loss: {cfg.stop_loss_pct}%")
-                        st.write(f"- Trailing Stop: {cfg.trailing_stop_pct}%")
+                        st.markdown("**⚙️ Soglie e Trading:**")
+                        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+                        with col_t1:
+                            st.metric("Soglia Apertura", cfg.score_threshold_open)
+                        with col_t2:
+                            st.metric("Take Profit", f"{cfg.take_profit_pct}%")
+                        with col_t3:
+                            st.metric("Stop Loss", f"{cfg.stop_loss_pct}%")
+                        with col_t4:
+                            st.metric("Trailing Stop", f"{cfg.trailing_stop_pct}%")
 
                         # .env format
                         st.markdown("---")
-                        st.subheader("📋 Copy to .env")
+                        st.subheader("📋 Copia nel .env")
+                        st.info("💡 Copia questi valori nel tuo file .env per applicare i pesi ottimizzati")
 
-                        env_code = f"""
-# Optimized by {opt_result.method} on {datetime.now().strftime('%Y-%m-%d')}
-# Performance: PF={best.profit_factor:.2f}, WR={best.win_rate*100:.1f}%
+                        env_code = f"""# Ottimizzato con {method_names[opt_method]} il {datetime.now().strftime('%Y-%m-%d')}
+# Performance: PF={best.profit_factor:.2f}, WR={best.win_rate*100:.1f}%, P&L={best.total_pnl_pct:+.2f}%
 
-# BEARISH weights
+# Pesi BEARISH (segnali SHORT)
 WEIGHT_FEAR_GREED_FEAR={cfg.weight_fear_greed_fear}
 WEIGHT_RSI_OVERBOUGHT={cfg.weight_rsi_overbought}
 WEIGHT_TREND_BEARISH={cfg.weight_trend_bearish}
 WEIGHT_FORECAST_NEGATIVE={cfg.weight_forecast_negative}
 WEIGHT_MACD_NEGATIVE={cfg.weight_macd_negative}
 
-# BULLISH weights
+# Pesi BULLISH (segnali LONG)
 WEIGHT_FEAR_GREED_GREED={cfg.weight_fear_greed_greed}
 WEIGHT_RSI_OVERSOLD={cfg.weight_rsi_oversold}
 WEIGHT_TREND_BULLISH={cfg.weight_trend_bullish}
 WEIGHT_FORECAST_POSITIVE={cfg.weight_forecast_positive}
 WEIGHT_MACD_POSITIVE={cfg.weight_macd_positive}
 
-# Thresholds
+# Soglie decisionali
 SCORE_THRESHOLD_OPEN={cfg.score_threshold_open}
 SCORE_THRESHOLD_STRONG={cfg.score_threshold_strong}
 
-# Trading params
+# Parametri trading
 TAKE_PROFIT_PERCENT={cfg.take_profit_pct}
 INITIAL_STOP_LOSS_PERCENT={cfg.stop_loss_pct}
 TRAILING_STOP_PERCENT={cfg.trailing_stop_pct}
-TRAILING_STOP_ACTIVATION_PERCENT={cfg.trailing_activation_pct}
-"""
+TRAILING_STOP_ACTIVATION_PERCENT={cfg.trailing_activation_pct}"""
                         st.code(env_code, language="bash")
 
                         # Download report
                         report = optimizer.generate_report(opt_result)
                         st.download_button(
-                            label="📥 Download Optimization Report",
+                            label="📥 Scarica Report Ottimizzazione",
                             data=report,
                             file_name=f"optimization_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
                             mime="text/markdown"
                         )
 
                     else:
-                        st.error("❌ Failed to download historical data. Check your internet connection.")
+                        st.error("❌ Errore download dati storici. Controlla la connessione internet.")
 
     except ImportError as e:
-        st.error(f"❌ Backtesting modules not found: {e}")
+        st.error(f"❌ Moduli backtesting non trovati: {e}")
         st.info("""
-        Make sure the following files exist:
+        Assicurati che questi file esistano:
         - backtester.py
         - weight_optimizer.py
 
-        Also ensure yfinance is installed: `pip install yfinance`
+        E che yfinance sia installato: `pip install yfinance`
         """)
     except Exception as e:
-        st.error(f"❌ Unexpected error: {e}")
+        st.error(f"❌ Errore inaspettato: {e}")
         st.exception(e)
 
 with tab7:
