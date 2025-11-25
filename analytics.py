@@ -480,7 +480,7 @@ def get_performance_summary(days: int = 30, use_database_only: bool = True) -> D
 
     if not trades:
         return {
-            'error': 'No trades found in the selected period',
+            'error': 'Nessun trade chiuso trovato negli ultimi {} giorni. Il sistema di analytics richiede posizioni chiuse dal sentinel per generare statistiche. Aspetta che il sentinel chiuda alcune posizioni, oppure aumenta il periodo di analisi.'.format(days),
             'total_trades': 0
         }
 
