@@ -282,6 +282,7 @@ def run_sentinel_check():
             action_reason = None
             should_close = False
             close_reason = ""
+            bot_triggered = False  # Traccia se il bot viene triggerato
 
             # Take profit ha priorità
             if tp_triggered:
@@ -331,15 +332,22 @@ def run_sentinel_check():
                         log(f"   🚀 Triggering bot per rivalutare {symbol}...")
                         try:
                             # Lancia main.py in background per questo ticker
-                            subprocess.Popen(
-                                ["python", "main.py", "--ticker", symbol, "--reason", "take_profit"],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                start_new_session=True
-                            )
-                            log(f"   ✅ Bot triggerato per {symbol}")
+                            # Usa sys.executable per usare lo stesso interprete Python
+                            log_file = f"/tmp/bot_trigger_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+                            with open(log_file, 'w') as f_out:
+                                process = subprocess.Popen(
+                                    [sys.executable, "main.py", "--ticker", symbol, "--reason", "take_profit"],
+                                    stdout=f_out,
+                                    stderr=subprocess.STDOUT,
+                                    start_new_session=True,
+                                    cwd=os.path.dirname(os.path.abspath(__file__))
+                                )
+                            log(f"   ✅ Bot triggerato per {symbol} (PID: {process.pid}, log: {log_file})")
+                            bot_triggered = True
                         except Exception as e:
                             log(f"   ⚠️ Errore trigger bot: {e}")
+                            import traceback
+                            traceback.print_exc()
 
                 except Exception as e:
                     log(f"   ❌ Errore chiusura: {e}")
@@ -364,6 +372,7 @@ def run_sentinel_check():
                     trailing_active=result.get("trailing_active", False),
                     action_taken=action_taken,
                     action_reason=action_reason,
+                    bot_triggered=bot_triggered,
                 )
             except Exception as e:
                 log(f"   ⚠️ Errore log DB: {e}")

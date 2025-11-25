@@ -240,7 +240,8 @@ CREATE TABLE IF NOT EXISTS sentinel_logs (
     profit_from_peak_pct NUMERIC(10, 4),
     trailing_active     BOOLEAN DEFAULT FALSE,
     action_taken        TEXT,
-    action_reason       TEXT
+    action_reason       TEXT,
+    bot_triggered       BOOLEAN DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_sentinel_logs_created_at
@@ -340,6 +341,10 @@ BEGIN
         ALTER COLUMN forecasts DROP NOT NULL;
     END IF;
 END$$;
+
+-- Migration for sentinel_logs bot_triggered column
+ALTER TABLE sentinel_logs
+    ADD COLUMN IF NOT EXISTS bot_triggered BOOLEAN DEFAULT FALSE;
 """
 
 
@@ -1163,6 +1168,7 @@ def log_sentinel_check(
     trailing_active: bool = False,
     action_taken: str = None,
     action_reason: str = None,
+    bot_triggered: bool = False,
 ) -> int:
     """Logga un controllo sentinel nel database.
 
@@ -1175,8 +1181,9 @@ def log_sentinel_check(
     - profit_pct: percentuale di profitto dall'entry
     - profit_from_peak_pct: percentuale dal peak (negativo = sceso dal peak)
     - trailing_active: se il trailing stop è attivo
-    - action_taken: azione intrapresa (CLOSE_STOP_LOSS, CLOSE_TRAILING_STOP, None)
+    - action_taken: azione intrapresa (CLOSE_STOP_LOSS, CLOSE_TRAILING_STOP, CLOSE_TAKE_PROFIT, None)
     - action_reason: motivo dell'azione
+    - bot_triggered: se il bot principale è stato triggerato per rivalutare
 
     Restituisce l'ID del record creato.
     """
@@ -1188,9 +1195,9 @@ def log_sentinel_check(
                 INSERT INTO sentinel_logs (
                     symbol, direction, entry_price, current_price, peak_price,
                     profit_pct, profit_from_peak_pct, trailing_active,
-                    action_taken, action_reason
+                    action_taken, action_reason, bot_triggered
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id;
                 """,
                 (
@@ -1204,6 +1211,7 @@ def log_sentinel_check(
                     trailing_active,
                     action_taken,
                     action_reason,
+                    bot_triggered,
                 ),
             )
             log_id = cur.fetchone()[0]
@@ -1227,7 +1235,7 @@ def get_sentinel_logs(symbol: str = None, limit: int = 50) -> List[Dict[str, Any
                     """
                     SELECT id, created_at, symbol, direction, entry_price, current_price,
                            peak_price, profit_pct, profit_from_peak_pct, trailing_active,
-                           action_taken, action_reason
+                           action_taken, action_reason, COALESCE(bot_triggered, FALSE)
                     FROM sentinel_logs
                     WHERE symbol = %s
                     ORDER BY created_at DESC
@@ -1240,7 +1248,7 @@ def get_sentinel_logs(symbol: str = None, limit: int = 50) -> List[Dict[str, Any
                     """
                     SELECT id, created_at, symbol, direction, entry_price, current_price,
                            peak_price, profit_pct, profit_from_peak_pct, trailing_active,
-                           action_taken, action_reason
+                           action_taken, action_reason, COALESCE(bot_triggered, FALSE)
                     FROM sentinel_logs
                     ORDER BY created_at DESC
                     LIMIT %s;
@@ -1263,6 +1271,7 @@ def get_sentinel_logs(symbol: str = None, limit: int = 50) -> List[Dict[str, Any
             "trailing_active": row[9],
             "action_taken": row[10],
             "action_reason": row[11],
+            "bot_triggered": row[12],
         }
         for row in rows
     ]
@@ -1289,7 +1298,9 @@ def get_sentinel_status() -> Dict[str, Any]:
                     COUNT(*) as total_checks,
                     COUNT(action_taken) as total_actions,
                     COUNT(CASE WHEN action_taken = 'CLOSE_STOP_LOSS' THEN 1 END) as stop_loss_count,
-                    COUNT(CASE WHEN action_taken = 'CLOSE_TRAILING_STOP' THEN 1 END) as trailing_stop_count
+                    COUNT(CASE WHEN action_taken = 'CLOSE_TRAILING_STOP' THEN 1 END) as trailing_stop_count,
+                    COUNT(CASE WHEN action_taken = 'CLOSE_TAKE_PROFIT' THEN 1 END) as take_profit_count,
+                    COUNT(CASE WHEN bot_triggered = TRUE THEN 1 END) as bot_triggered_count
                 FROM sentinel_logs
                 WHERE created_at > NOW() - INTERVAL '24 hours';
                 """
@@ -1302,6 +1313,8 @@ def get_sentinel_status() -> Dict[str, Any]:
         "actions_24h": stats_row[1] if stats_row else 0,
         "stop_loss_24h": stats_row[2] if stats_row else 0,
         "trailing_stop_24h": stats_row[3] if stats_row else 0,
+        "take_profit_24h": stats_row[4] if stats_row else 0,
+        "bot_triggered_24h": stats_row[5] if stats_row else 0,
     }
 
 
