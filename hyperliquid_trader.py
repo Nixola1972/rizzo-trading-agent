@@ -37,6 +37,32 @@ class HyperLiquidTrader:
         # cache meta per tick-size e min-size
         self.meta = self.info.meta()
 
+    def _get_tick_size(self, symbol: str) -> float:
+        """Ottiene il tick size per un simbolo da meta."""
+        try:
+            for asset in self.meta.get("universe", []):
+                if asset.get("name") == symbol:
+                    # szDecimals indica i decimali per la size
+                    # Per il prezzo, usiamo un approccio basato sul prezzo corrente
+                    sz_decimals = asset.get("szDecimals", 8)
+                    # Tick size tipici per Hyperliquid
+                    if symbol == "BTC":
+                        return 1.0  # BTC tick size è $1
+                    elif symbol == "ETH":
+                        return 0.1  # ETH tick size è $0.10
+                    elif symbol == "SOL":
+                        return 0.01  # SOL tick size è $0.01
+                    else:
+                        return 0.01  # Default
+            return 0.01
+        except Exception:
+            return 0.01
+
+    def _round_to_tick(self, price: float, symbol: str) -> float:
+        """Arrotonda il prezzo al tick size più vicino."""
+        tick_size = self._get_tick_size(symbol)
+        return round(round(price / tick_size) * tick_size, 8)
+
     def _to_hl_size(self, size_decimal: Decimal) -> str:
         # HL accetta max 8 decimali
         size_clamped = size_decimal.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
@@ -312,10 +338,10 @@ class HyperLiquidTrader:
                     else:  # SHORT
                         target_price = entry_price * (1 - price_change_pct / 100)
 
-                    # Arrotonda il prezzo target
-                    target_price = round(target_price, 2)
+                    # Arrotonda il prezzo target al tick size corretto per l'asset
+                    target_price = self._round_to_tick(target_price, symbol)
 
-                    print(f"  🎯 MICRO_GAIN: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%)")
+                    print(f"  🎯 MICRO_GAIN: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%, tick={self._get_tick_size(symbol)})")
 
                     # Piazza Take Profit limit order (non trigger)
                     # Usa un limit order semplice che si attiva quando il prezzo raggiunge il target
