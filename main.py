@@ -144,9 +144,15 @@ try:
 
         # Se c'è già una posizione, gestiscila (HOLD o CLOSE)
         # Se NON c'è posizione e il segnale è forte, considera OPEN
-        if not has_position and abs(net_score) < SCORE_THRESHOLD_OPEN:
-            print(f"   ⏭️  Skip {ticker}: no position e score {net_score:.1f} sotto soglia {SCORE_THRESHOLD_OPEN}")
-            continue
+        # Con MICRO_GAIN: apri anche se score è tra HOLD e OPEN threshold
+        if not has_position:
+            min_threshold = SCORE_THRESHOLD_HOLD if MICRO_GAIN_ENABLED else SCORE_THRESHOLD_OPEN
+            if abs(net_score) < min_threshold:
+                print(f"   ⏭️  Skip {ticker}: no position e score {net_score:.1f} sotto soglia {min_threshold}")
+                continue
+            # Log se siamo in range MICRO_GAIN
+            if MICRO_GAIN_ENABLED and abs(net_score) < SCORE_THRESHOLD_OPEN:
+                print(f"   🎯 {ticker}: score {net_score:.1f} in range MICRO_GAIN ({SCORE_THRESHOLD_HOLD}-{SCORE_THRESHOLD_OPEN})")
 
         # Costruisci prompt specifico per questo simbolo
         with open('system_prompt_single.txt', 'r') as f:

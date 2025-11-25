@@ -69,10 +69,10 @@ def calculate_quick_score(symbol: str) -> float:
         float: Score positivo = bullish, negativo = bearish
     """
     try:
-        from indicators import HyperliquidIndicators
+        from indicators import CryptoTechnicalAnalysisHL
 
-        indicators = HyperliquidIndicators()
-        data = indicators.analyze_ticker(symbol)
+        analyzer = CryptoTechnicalAnalysisHL(testnet=TESTNET)
+        data = analyzer.get_complete_analysis(symbol)
 
         if not data:
             return 0.0
