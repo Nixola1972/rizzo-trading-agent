@@ -222,11 +222,26 @@ CREATE TABLE IF NOT EXISTS position_tracking (
     entry_price         NUMERIC(30, 10) NOT NULL,
     peak_price          NUMERIC(30, 10) NOT NULL,
     trailing_active     BOOLEAN DEFAULT FALSE,
-    last_checked_price  NUMERIC(30, 10)
+    last_checked_price  NUMERIC(30, 10),
+    opening_score       NUMERIC(10, 2),
+    trading_mode        TEXT DEFAULT 'NORMAL'
 );
 
 CREATE INDEX IF NOT EXISTS idx_position_tracking_symbol
     ON position_tracking(symbol);
+
+-- Migration: aggiungi colonne se non esistono (per DB esistenti)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='position_tracking' AND column_name='opening_score') THEN
+        ALTER TABLE position_tracking ADD COLUMN opening_score NUMERIC(10, 2);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='position_tracking' AND column_name='trading_mode') THEN
+        ALTER TABLE position_tracking ADD COLUMN trading_mode TEXT DEFAULT 'NORMAL';
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS sentinel_logs (
     id                  BIGSERIAL PRIMARY KEY,
@@ -1021,7 +1036,8 @@ def get_position_tracking(symbol: str) -> Optional[Dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, updated_at
+                SELECT symbol, direction, entry_price, peak_price, trailing_active,
+                       last_checked_price, updated_at, opening_score, trading_mode, created_at
                 FROM position_tracking
                 WHERE symbol = %s;
                 """,
@@ -1038,6 +1054,9 @@ def get_position_tracking(symbol: str) -> Optional[Dict[str, Any]]:
                 "trailing_active": row[4],
                 "last_checked_price": float(row[5]) if row[5] else None,
                 "updated_at": row[6],
+                "opening_score": float(row[7]) if row[7] else None,
+                "trading_mode": row[8] or "NORMAL",
+                "created_at": row[9],
             }
 
 
