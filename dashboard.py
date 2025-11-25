@@ -772,7 +772,7 @@ with tab3:
                        last_checked_price, updated_at, opening_score, trading_mode
                 FROM position_tracking
             """)
-            tracking_dict = {row['symbol']: row for _, row in tracking_data.iterrows()} if not tracking_data.empty else {}
+            tracking_dict = {row['symbol']: row.to_dict() for _, row in tracking_data.iterrows()} if not tracking_data.empty else {}
 
             for idx, pos in open_positions.iterrows():
                 pnl = float(pos['pnl_usd']) if pd.notna(pos['pnl_usd']) else 0
