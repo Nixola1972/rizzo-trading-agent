@@ -123,13 +123,25 @@ def get_smoothed_score(symbol: str, raw_score: float) -> float:
 def calculate_quick_score(symbol: str) -> float:
     """
     Calcola uno score veloce basato sugli indicatori senza chiamare AI.
-    Usato per determinare inversioni nelle posizioni MICRO_GAIN.
+    Usa lo stesso sistema di pesi e intensità di signal_scorer.py.
+
+    Pesi (da signal_scorer):
+    - RSI: peso 15 (overbought/oversold)
+    - Trend (EMA+MACD): peso 10
+    - MACD solo: peso 5
 
     Returns:
         float: Score positivo = bullish, negativo = bearish
+               Range tipico: -30 a +30
     """
     try:
         from indicators import CryptoTechnicalAnalysisHL
+        from signal_scorer import (
+            WEIGHT_RSI_OVERBOUGHT, WEIGHT_RSI_OVERSOLD,
+            WEIGHT_TREND_BULLISH, WEIGHT_TREND_BEARISH,
+            WEIGHT_MACD_POSITIVE, WEIGHT_MACD_NEGATIVE,
+            RSI_OVERBOUGHT_THRESHOLD, RSI_OVERSOLD_THRESHOLD
+        )
 
         analyzer = CryptoTechnicalAnalysisHL(testnet=TESTNET)
         data = analyzer.get_complete_analysis(symbol)
@@ -137,7 +149,8 @@ def calculate_quick_score(symbol: str) -> float:
         if not data:
             return 0.0
 
-        score = 0.0
+        score_bullish = 0.0
+        score_bearish = 0.0
 
         # Estrai dati dalla struttura corretta (intraday contiene gli array)
         intraday = data.get('intraday', {})
@@ -155,41 +168,72 @@ def calculate_quick_score(symbol: str) -> float:
         prices_array = intraday.get('mid_prices', [0])
         price = prices_array[-1] if prices_array else 0
 
-        # RSI
-        if rsi > 70:
-            score -= 10  # Overbought = bearish
-        elif rsi < 30:
-            score += 10  # Oversold = bullish
-        elif rsi > 60:
-            score -= 3
-        elif rsi < 40:
-            score += 3
+        # ============================================
+        # 1. RSI con intensità (peso 15)
+        # ============================================
+        if rsi > RSI_OVERBOUGHT_THRESHOLD:
+            # Overbought → Bearish
+            intensity = min((rsi - RSI_OVERBOUGHT_THRESHOLD) / (100 - RSI_OVERBOUGHT_THRESHOLD), 1.0)
+            score_bearish += WEIGHT_RSI_OVERBOUGHT * intensity
+        elif rsi < RSI_OVERSOLD_THRESHOLD:
+            # Oversold → Bullish
+            intensity = min((RSI_OVERSOLD_THRESHOLD - rsi) / RSI_OVERSOLD_THRESHOLD, 1.0)
+            score_bullish += WEIGHT_RSI_OVERSOLD * intensity
+        else:
+            # RSI nella zona neutra (30-70): contributo proporzionale
+            # RSI 50 = neutrale, RSI 60 = leggermente bearish, RSI 40 = leggermente bullish
+            if rsi > 55:
+                intensity = (rsi - 50) / 20  # 0-1 per range 50-70
+                score_bearish += WEIGHT_RSI_OVERBOUGHT * intensity * 0.3  # 30% del peso
+            elif rsi < 45:
+                intensity = (50 - rsi) / 20  # 0-1 per range 30-50
+                score_bullish += WEIGHT_RSI_OVERSOLD * intensity * 0.3
 
-        # MACD trend (usando gli ultimi 2 valori per capire la direzione)
+        # ============================================
+        # 2. TREND (Price vs EMA20 + MACD) - peso 10
+        # ============================================
+        price_above_ema = price > ema20 if price > 0 and ema20 > 0 else False
+        macd_positive = macd > 0
+
+        if not price_above_ema and not macd_positive:
+            # Prezzo sotto EMA20 E MACD negativo → Forte bearish
+            score_bearish += WEIGHT_TREND_BEARISH
+        elif price_above_ema and macd_positive:
+            # Prezzo sopra EMA20 E MACD positivo → Forte bullish
+            score_bullish += WEIGHT_TREND_BULLISH
+        else:
+            # Segnali misti → contributo parziale dal MACD
+            if macd > 0:
+                score_bullish += WEIGHT_MACD_POSITIVE * 0.5
+            elif macd < 0:
+                score_bearish += WEIGHT_MACD_NEGATIVE * 0.5
+
+        # ============================================
+        # 3. MACD Momentum (trend direction) - peso aggiuntivo
+        # ============================================
         if len(macd_array) >= 2:
             macd_prev = macd_array[-2]
-            if macd > macd_prev:
-                score += 5  # MACD rising = bullish
-            elif macd < macd_prev:
-                score -= 5  # MACD falling = bearish
-        elif macd > 0:
-            score += 3
-        elif macd < 0:
-            score -= 3
+            macd_change = macd - macd_prev
+            if macd_change > 0:
+                # MACD rising = bullish momentum
+                score_bullish += WEIGHT_MACD_POSITIVE * 0.5
+            elif macd_change < 0:
+                # MACD falling = bearish momentum
+                score_bearish += WEIGHT_MACD_NEGATIVE * 0.5
 
-        # EMA Trend
-        if price > 0 and ema20 > 0:
-            if price > ema20:
-                score += 5  # Above EMA = bullish
-            else:
-                score -= 5  # Below EMA = bearish
+        # ============================================
+        # CALCOLO NET SCORE
+        # ============================================
+        net_score = score_bullish - score_bearish
 
         # Applica smoothing per ridurre volatilità
-        smoothed_score = get_smoothed_score(symbol, score)
+        smoothed_score = get_smoothed_score(symbol, net_score)
         return smoothed_score
 
     except Exception as e:
         log(f"⚠️ Errore calcolo quick_score per {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
         return 0.0
 
 
