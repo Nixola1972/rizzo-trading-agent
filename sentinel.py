@@ -72,11 +72,52 @@ _current_sl_level = {}  # symbol -> current SL % level
 # Cooldown tracking (in-memory)
 _last_close_time = {}  # symbol -> timestamp
 
+# Score smoothing (in-memory) - tiene traccia degli ultimi N scores
+SCORE_SMOOTHING_SAMPLES = int(os.getenv('SCORE_SMOOTHING_SAMPLES', '3'))  # Media ultimi 3 scores
+_score_history = {}  # symbol -> list of recent scores
+
 
 def log(msg: str):
     """Log con timestamp."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}")
+
+
+def get_smoothed_score(symbol: str, raw_score: float) -> float:
+    """
+    Calcola uno score mediato sugli ultimi N campioni.
+    Riduce la volatilità causata da indicatori binari (MACD, EMA).
+
+    Args:
+        symbol: Simbolo
+        raw_score: Score appena calcolato
+
+    Returns:
+        float: Score mediato
+    """
+    global _score_history
+
+    if symbol not in _score_history:
+        _score_history[symbol] = []
+
+    # Aggiungi nuovo score alla history
+    _score_history[symbol].append(raw_score)
+
+    # Mantieni solo gli ultimi N campioni
+    if len(_score_history[symbol]) > SCORE_SMOOTHING_SAMPLES:
+        _score_history[symbol] = _score_history[symbol][-SCORE_SMOOTHING_SAMPLES:]
+
+    # Calcola media
+    if len(_score_history[symbol]) == 0:
+        return raw_score
+
+    avg_score = sum(_score_history[symbol]) / len(_score_history[symbol])
+
+    # Log per debug
+    if len(_score_history[symbol]) > 1:
+        log(f"      📊 {symbol} scores: {[f'{s:.0f}' for s in _score_history[symbol]]} → avg={avg_score:.1f}")
+
+    return avg_score
 
 
 def calculate_quick_score(symbol: str) -> float:
@@ -143,7 +184,9 @@ def calculate_quick_score(symbol: str) -> float:
             else:
                 score -= 5  # Below EMA = bearish
 
-        return score
+        # Applica smoothing per ridurre volatilità
+        smoothed_score = get_smoothed_score(symbol, score)
+        return smoothed_score
 
     except Exception as e:
         log(f"⚠️ Errore calcolo quick_score per {symbol}: {e}")
@@ -897,6 +940,7 @@ def run_loop(interval: int = None):
         log(f"      TP: +{MICRO_GAIN_TARGET_PERCENT}%, SL iniziale: -{MICRO_GAIN_STOP_LOSS_PERCENT}%")
         log(f"      Trailing: attivazione={MICRO_GAIN_TRAILING_ACTIVATION}%, gap={MICRO_GAIN_TRAILING_GAP}%")
         log(f"      Cooldown: {MICRO_GAIN_COOLDOWN_SECONDS}s, Max positions: {MICRO_GAIN_MAX_POSITIONS}")
+        log(f"      Score smoothing: {SCORE_SMOOTHING_SAMPLES} samples, Leverage: {MICRO_GAIN_LEVERAGE}x")
     if TAKE_PROFIT_ENABLED:
         log(f"   Take Profit: {TAKE_PROFIT_PERCENT}% P&L")
 
