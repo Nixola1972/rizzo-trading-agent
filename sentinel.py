@@ -55,16 +55,19 @@ MICRO_GAIN_REVERSAL_SCORE = float(os.getenv('MICRO_GAIN_REVERSAL_SCORE', '5'))
 
 # MICRO_GAIN Auto-Open Config (Sentinel gestisce apertura)
 MICRO_GAIN_AUTO_OPEN = os.getenv('MICRO_GAIN_AUTO_OPEN', 'false').lower() == 'true'
-MICRO_GAIN_TARGET_PERCENT = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.8'))  # TP target
-MICRO_GAIN_STOP_LOSS_PERCENT = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0'))  # SL iniziale
-MICRO_GAIN_BREAKEVEN_TRIGGER = float(os.getenv('MICRO_GAIN_BREAKEVEN_TRIGGER', '2.0'))  # Quando spostare SL a profit
-MICRO_GAIN_BREAKEVEN_LOCK = float(os.getenv('MICRO_GAIN_BREAKEVEN_LOCK', '1.0'))  # Lock in profit quando trigger
-MICRO_GAIN_COOLDOWN_SECONDS = int(os.getenv('MICRO_GAIN_COOLDOWN_SECONDS', '300'))  # 5 min cooldown
-MICRO_GAIN_MAX_POSITIONS = int(os.getenv('MICRO_GAIN_MAX_POSITIONS', '3'))  # Max posizioni MICRO_GAIN
+MICRO_GAIN_TARGET_PERCENT = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '3.0'))  # TP: chiudi quando guadagni questo %
+MICRO_GAIN_STOP_LOSS_PERCENT = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0'))  # SL iniziale: perdi max questo %
+MICRO_GAIN_TRAILING_GAP = float(os.getenv('MICRO_GAIN_TRAILING_GAP', '0.5'))  # SL segue P&L con questo gap
+MICRO_GAIN_TRAILING_ACTIVATION = float(os.getenv('MICRO_GAIN_TRAILING_ACTIVATION', '0.5'))  # Trailing parte quando P&L >= questo
+MICRO_GAIN_COOLDOWN_SECONDS = int(os.getenv('MICRO_GAIN_COOLDOWN_SECONDS', '300'))  # Attesa dopo chiusura
+MICRO_GAIN_MAX_POSITIONS = int(os.getenv('MICRO_GAIN_MAX_POSITIONS', '3'))  # Max posizioni contemporanee
 SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '10'))
 SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))
 MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
-MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # 30% balance per posizione
+MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # % balance per posizione
+
+# Tracking SL corrente per ogni simbolo (in-memory)
+_current_sl_level = {}  # symbol -> current SL % level
 
 # Cooldown tracking (in-memory)
 _last_close_time = {}  # symbol -> timestamp
@@ -270,6 +273,9 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                 # Piazza SL order su Hyperliquid
                 place_micro_gain_sl_order(bot, symbol, direction, entry_price, position_size)
 
+                # Inizializza SL level per trailing
+                _current_sl_level[symbol] = -MICRO_GAIN_STOP_LOSS_PERCENT
+
                 # Notifica Telegram
                 if SENTINEL_TELEGRAM_NOTIFY:
                     try:
@@ -357,11 +363,12 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
 def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float,
                                 current_price: float, size: float):
     """
-    Aggiorna l'ordine SL per MICRO_GAIN implementando trailing lock-in.
+    Aggiorna l'ordine SL per MICRO_GAIN implementando trailing continuo.
 
     Logica:
-    - Se P&L >= BREAKEVEN_TRIGGER, sposta SL a BREAKEVEN_LOCK profit
-    - Questo "blocca" un minimo di profitto
+    - Se P&L >= TRAILING_ACTIVATION, inizia il trailing
+    - SL segue il P&L mantenendo un gap di TRAILING_GAP
+    - SL non scende mai, solo sale (protegge profitti)
 
     Args:
         bot: HyperLiquidTrader instance
@@ -374,6 +381,8 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
     Returns:
         bool: True se SL è stato aggiornato
     """
+    global _current_sl_level
+
     try:
         # Calcola P&L corrente
         if direction == "long":
@@ -383,49 +392,59 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
 
         pnl_pct = price_change_pct * MICRO_GAIN_LEVERAGE
 
-        # Se P&L >= trigger, sposta SL a lock-in profit
-        if pnl_pct >= MICRO_GAIN_BREAKEVEN_TRIGGER:
-            # Calcola nuovo prezzo SL (lock in profit)
-            lock_price_change = MICRO_GAIN_BREAKEVEN_LOCK / MICRO_GAIN_LEVERAGE
+        # SL corrente (iniziale = -STOP_LOSS_PERCENT)
+        current_sl = _current_sl_level.get(symbol, -MICRO_GAIN_STOP_LOSS_PERCENT)
 
-            if direction == "long":
-                new_sl_price = entry_price * (1 + lock_price_change / 100)
+        # Se P&L >= activation, calcola nuovo SL
+        if pnl_pct >= MICRO_GAIN_TRAILING_ACTIVATION:
+            # Nuovo SL = P&L corrente - gap
+            new_sl_level = pnl_pct - MICRO_GAIN_TRAILING_GAP
+
+            # SL non scende mai! Solo sale
+            if new_sl_level > current_sl:
+                # Calcola prezzo SL
+                sl_price_change = new_sl_level / MICRO_GAIN_LEVERAGE
+
+                if direction == "long":
+                    new_sl_price = entry_price * (1 + sl_price_change / 100)
+                else:
+                    new_sl_price = entry_price * (1 - sl_price_change / 100)
+
+                new_sl_price = bot._round_to_tick(new_sl_price, symbol)
+
+                log(f"   📈 P&L: {pnl_pct:+.2f}% | SL attuale: {current_sl:+.2f}% → nuovo: {new_sl_level:+.2f}%")
+
+                # Cancella ordini SL esistenti
+                try:
+                    open_orders = bot.info.open_orders(bot.account_address)
+                    for order in open_orders:
+                        if order.get("coin") == symbol:
+                            bot.exchange.cancel(symbol, order.get("oid"))
+                            log(f"   🗑️ Cancellato SL precedente")
+                except Exception as e:
+                    log(f"   ⚠️ Errore cancellazione: {e}")
+
+                # Piazza nuovo SL
+                is_buy = direction == "short"
+
+                sl_order = bot.exchange.order(
+                    symbol,
+                    is_buy,
+                    size,
+                    new_sl_price,
+                    {"limit": {"tif": "Gtc"}},
+                    reduce_only=True
+                )
+
+                if sl_order.get("status") == "ok":
+                    _current_sl_level[symbol] = new_sl_level
+                    log(f"   🔒 Trailing SL spostato @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
+                    return True
+                else:
+                    log(f"   ⚠️ Errore SL: {sl_order}")
             else:
-                new_sl_price = entry_price * (1 - lock_price_change / 100)
-
-            new_sl_price = bot._round_to_tick(new_sl_price, symbol)
-
-            log(f"   📈 P&L {pnl_pct:.2f}% >= {MICRO_GAIN_BREAKEVEN_TRIGGER}%")
-            log(f"   🔒 Sposto SL a +{MICRO_GAIN_BREAKEVEN_LOCK}% (lock-in profit) @ ${new_sl_price:.2f}")
-
-            # Cancella ordini esistenti per questo simbolo
-            try:
-                open_orders = bot.info.open_orders(bot.account_address)
-                for order in open_orders:
-                    if order.get("coin") == symbol:
-                        # Questo è l'ordine SL esistente, cancellalo
-                        bot.exchange.cancel(symbol, order.get("oid"))
-                        log(f"   🗑️ Cancellato ordine esistente OID={order.get('oid')}")
-            except Exception as e:
-                log(f"   ⚠️ Errore cancellazione ordini: {e}")
-
-            # Piazza nuovo SL
-            is_buy = direction == "short"
-
-            sl_order = bot.exchange.order(
-                symbol,
-                is_buy,
-                size,
-                new_sl_price,
-                {"limit": {"tif": "Gtc"}},
-                reduce_only=True
-            )
-
-            if sl_order.get("status") == "ok":
-                log(f"   ✅ Nuovo SL piazzato @ ${new_sl_price:.2f}")
-                return True
-            else:
-                log(f"   ⚠️ Errore nuovo SL: {sl_order}")
+                # SL già al livello corretto o superiore
+                pass
 
         return False
 
@@ -776,6 +795,10 @@ def run_sentinel_check():
                     if MICRO_GAIN_AUTO_OPEN:
                         set_cooldown(symbol)
 
+                    # Reset SL level per questo simbolo
+                    if symbol in _current_sl_level:
+                        del _current_sl_level[symbol]
+
                     # Cancella ordini TP/SL rimasti per questo simbolo
                     try:
                         open_orders = bot.info.open_orders(bot.account_address)
@@ -871,8 +894,8 @@ def run_loop(interval: int = None):
         log(f"   🎯 MICRO_GAIN: enabled, reversal_score: {MICRO_GAIN_REVERSAL_SCORE}")
     if MICRO_GAIN_AUTO_OPEN:
         log(f"   🚀 MICRO_GAIN AUTO-OPEN: enabled")
-        log(f"      TP: +{MICRO_GAIN_TARGET_PERCENT}%, SL: -{MICRO_GAIN_STOP_LOSS_PERCENT}%")
-        log(f"      Breakeven: trigger={MICRO_GAIN_BREAKEVEN_TRIGGER}% → lock={MICRO_GAIN_BREAKEVEN_LOCK}%")
+        log(f"      TP: +{MICRO_GAIN_TARGET_PERCENT}%, SL iniziale: -{MICRO_GAIN_STOP_LOSS_PERCENT}%")
+        log(f"      Trailing: attivazione={MICRO_GAIN_TRAILING_ACTIVATION}%, gap={MICRO_GAIN_TRAILING_GAP}%")
         log(f"      Cooldown: {MICRO_GAIN_COOLDOWN_SECONDS}s, Max positions: {MICRO_GAIN_MAX_POSITIONS}")
     if TAKE_PROFIT_ENABLED:
         log(f"   Take Profit: {TAKE_PROFIT_PERCENT}% P&L")
