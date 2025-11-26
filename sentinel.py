@@ -66,6 +66,13 @@ SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))
 MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
 MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # % balance per posizione
 
+# NORMAL Mode Trailing Config (gestito dal sentinel come MICRO_GAIN)
+# Stesso meccanismo ma con parametri più ampi
+NORMAL_TRAILING_ENABLED = os.getenv('NORMAL_TRAILING_ENABLED', 'true').lower() == 'true'
+NORMAL_STOP_LOSS_PERCENT = float(os.getenv('NORMAL_STOP_LOSS_PERCENT', '5.0'))  # SL iniziale (P&L %)
+NORMAL_TRAILING_ACTIVATION = float(os.getenv('NORMAL_TRAILING_ACTIVATION', '2.0'))  # Trailing parte a +2% P&L
+NORMAL_TRAILING_GAP = float(os.getenv('NORMAL_TRAILING_GAP', '1.5'))  # SL segue P&L con gap 1.5%
+
 # Tracking SL corrente per ogni simbolo (in-memory)
 _current_sl_level = {}  # symbol -> current SL % level
 
@@ -122,13 +129,15 @@ def get_smoothed_score(symbol: str, raw_score: float) -> float:
 
 def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
     """
-    Calcola uno score veloce basato sugli indicatori senza chiamare AI.
-    Usa lo stesso sistema di pesi e intensità di signal_scorer.py.
+    Calcola lo score COMPLETO usando signal_scorer.py + sentiment cache.
 
-    Pesi (da signal_scorer):
+    Usa gli stessi pesi e logica di main.py per garantire coerenza:
     - RSI: peso 15 (overbought/oversold)
     - Trend (EMA+MACD): peso 10
     - MACD solo: peso 5
+    - Fear & Greed: peso 8 (da cache DB)
+    - Volume: peso 4
+    - Forecast: skip (non disponibile nel sentinel)
 
     Args:
         symbol: Simbolo da analizzare
@@ -136,16 +145,12 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
 
     Returns:
         float: Score positivo = bullish, negativo = bearish
-               Range tipico: -30 a +30
+               Range tipico: -40 a +40 (con F&G incluso)
     """
     try:
         from indicators import CryptoTechnicalAnalysisHL
-        from signal_scorer import (
-            WEIGHT_RSI_OVERBOUGHT, WEIGHT_RSI_OVERSOLD,
-            WEIGHT_TREND_BULLISH, WEIGHT_TREND_BEARISH,
-            WEIGHT_MACD_POSITIVE, WEIGHT_MACD_NEGATIVE,
-            RSI_OVERBOUGHT_THRESHOLD, RSI_OVERSOLD_THRESHOLD
-        )
+        from signal_scorer import calculate_signal_score
+        import db_utils
 
         analyzer = CryptoTechnicalAnalysisHL(testnet=TESTNET)
         data = analyzer.get_complete_analysis(symbol)
@@ -154,10 +159,6 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
             if verbose:
                 log(f"      ❌ {symbol}: Nessun dato ricevuto")
             return 0.0
-
-        score_bullish = 0.0
-        score_bearish = 0.0
-        details = []  # Per logging dettagliato
 
         # Estrai dati dalla struttura corretta (intraday contiene gli array)
         intraday = data.get('intraday', {})
@@ -175,104 +176,63 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
         prices_array = intraday.get('mid_prices', [0])
         price = prices_array[-1] if prices_array else 0
 
+        # Estrai volume dal data structure
+        volume_str = data.get('volume', '')
+        volume_bid = 0.0
+        volume_ask = 0.0
+        if isinstance(volume_str, str) and "Bid Vol" in volume_str:
+            try:
+                parts = volume_str.replace("Bid Vol:", "").split("Ask Vol:")
+                bid_str = parts[0].strip().strip(",")
+                ask_str = parts[1].strip()
+                volume_bid = float(bid_str)
+                volume_ask = float(ask_str)
+            except Exception:
+                pass
+
+        # Leggi Fear & Greed dalla cache (aggiornata da main.py ogni 15 min)
+        fear_greed = 50  # Default neutral
+        fg_source = "default"
+        try:
+            cached_sentiment = db_utils.get_cached_sentiment(max_age_minutes=60)
+            if cached_sentiment and cached_sentiment.get('valore') is not None:
+                fear_greed = cached_sentiment['valore']
+                fg_source = f"cache ({cached_sentiment.get('classificazione', 'N/A')})"
+        except Exception as e:
+            if verbose:
+                log(f"      ⚠️ Errore lettura sentiment cache: {e}")
+
         if verbose:
             log(f"      📈 {symbol} Indicatori: RSI={rsi:.1f}, MACD={macd:.4f}, Price=${price:.2f}, EMA20=${ema20:.2f}")
+            log(f"      📈 {symbol} F&G={fear_greed} ({fg_source}), Vol Bid={volume_bid:.1f}, Ask={volume_ask:.1f}")
 
-        # ============================================
-        # 1. RSI con intensità (peso 15)
-        # ============================================
-        rsi_contribution = 0.0
-        rsi_direction = "NEUTRAL"
-        if rsi > RSI_OVERBOUGHT_THRESHOLD:
-            # Overbought → Bearish
-            intensity = min((rsi - RSI_OVERBOUGHT_THRESHOLD) / (100 - RSI_OVERBOUGHT_THRESHOLD), 1.0)
-            rsi_contribution = WEIGHT_RSI_OVERBOUGHT * intensity
-            score_bearish += rsi_contribution
-            rsi_direction = "BEARISH"
-            details.append(f"RSI={rsi:.0f}>70 → -{rsi_contribution:.1f}")
-        elif rsi < RSI_OVERSOLD_THRESHOLD:
-            # Oversold → Bullish
-            intensity = min((RSI_OVERSOLD_THRESHOLD - rsi) / RSI_OVERSOLD_THRESHOLD, 1.0)
-            rsi_contribution = WEIGHT_RSI_OVERSOLD * intensity
-            score_bullish += rsi_contribution
-            rsi_direction = "BULLISH"
-            details.append(f"RSI={rsi:.0f}<30 → +{rsi_contribution:.1f}")
-        else:
-            # RSI nella zona neutra (30-70): contributo proporzionale
-            if rsi > 55:
-                intensity = (rsi - 50) / 20
-                rsi_contribution = WEIGHT_RSI_OVERBOUGHT * intensity * 0.3
-                score_bearish += rsi_contribution
-                rsi_direction = "bearish"
-                details.append(f"RSI={rsi:.0f}(55-70) → -{rsi_contribution:.1f}")
-            elif rsi < 45:
-                intensity = (50 - rsi) / 20
-                rsi_contribution = WEIGHT_RSI_OVERSOLD * intensity * 0.3
-                score_bullish += rsi_contribution
-                rsi_direction = "bullish"
-                details.append(f"RSI={rsi:.0f}(30-45) → +{rsi_contribution:.1f}")
-            else:
-                details.append(f"RSI={rsi:.0f}(neutral) → 0")
+        # Usa calculate_signal_score per calcolo COMPLETO
+        # Forecast = 0 perché Prophet non è disponibile nel sentinel
+        score_result = calculate_signal_score(
+            price=price,
+            ema20=ema20,
+            rsi=rsi,
+            macd=macd,
+            fear_greed=fear_greed,
+            forecast_change_pct=0.0,  # Skip forecast nel sentinel
+            volume_bid=volume_bid,
+            volume_ask=volume_ask
+        )
 
-        # ============================================
-        # 2. TREND (Price vs EMA20 + MACD) - peso 10
-        # ============================================
-        price_above_ema = price > ema20 if price > 0 and ema20 > 0 else False
-        macd_positive = macd > 0
-        trend_contribution = 0.0
-        trend_direction = "NEUTRAL"
-
-        if not price_above_ema and not macd_positive:
-            # Prezzo sotto EMA20 E MACD negativo → Forte bearish
-            trend_contribution = WEIGHT_TREND_BEARISH
-            score_bearish += trend_contribution
-            trend_direction = "BEARISH"
-            details.append(f"Trend(P<EMA & MACD<0) → -{trend_contribution:.1f}")
-        elif price_above_ema and macd_positive:
-            # Prezzo sopra EMA20 E MACD positivo → Forte bullish
-            trend_contribution = WEIGHT_TREND_BULLISH
-            score_bullish += trend_contribution
-            trend_direction = "BULLISH"
-            details.append(f"Trend(P>EMA & MACD>0) → +{trend_contribution:.1f}")
-        else:
-            # Segnali misti → contributo parziale dal MACD
-            if macd > 0:
-                trend_contribution = WEIGHT_MACD_POSITIVE * 0.5
-                score_bullish += trend_contribution
-                trend_direction = "bullish"
-                details.append(f"Trend(misto,MACD>0) → +{trend_contribution:.1f}")
-            elif macd < 0:
-                trend_contribution = WEIGHT_MACD_NEGATIVE * 0.5
-                score_bearish += trend_contribution
-                trend_direction = "bearish"
-                details.append(f"Trend(misto,MACD<0) → -{trend_contribution:.1f}")
-
-        # ============================================
-        # 3. MACD Momentum (trend direction) - peso aggiuntivo
-        # ============================================
-        momentum_contribution = 0.0
-        if len(macd_array) >= 2:
-            macd_prev = macd_array[-2]
-            macd_change = macd - macd_prev
-            if macd_change > 0:
-                # MACD rising = bullish momentum
-                momentum_contribution = WEIGHT_MACD_POSITIVE * 0.5
-                score_bullish += momentum_contribution
-                details.append(f"MACD↑ → +{momentum_contribution:.1f}")
-            elif macd_change < 0:
-                # MACD falling = bearish momentum
-                momentum_contribution = WEIGHT_MACD_NEGATIVE * 0.5
-                score_bearish += momentum_contribution
-                details.append(f"MACD↓ → -{momentum_contribution:.1f}")
-
-        # ============================================
-        # CALCOLO NET SCORE
-        # ============================================
-        net_score = score_bullish - score_bearish
+        net_score = score_result.get('net_score', 0.0)
 
         if verbose:
-            log(f"      📊 {symbol} Calcolo: bull={score_bullish:.1f} bear={score_bearish:.1f} | {' | '.join(details)}")
-            log(f"      📊 {symbol} Net Score (raw): {net_score:+.1f}")
+            # Log dettagliato dei segnali che hanno contribuito
+            active_signals = [s for s in score_result.get('signals', []) if s.get('contribution', 0) > 0]
+            signal_details = []
+            for s in active_signals:
+                dir_sign = "+" if s.get('direction') == 'BULLISH' else "-"
+                signal_details.append(f"{s.get('indicator')}={dir_sign}{s.get('contribution'):.1f}")
+
+            log(f"      📊 {symbol} Score: bull={score_result.get('score_bullish'):.1f} bear={score_result.get('score_bearish'):.1f}")
+            if signal_details:
+                log(f"      📊 {symbol} Signals: {' | '.join(signal_details)}")
+            log(f"      📊 {symbol} Net Score (raw): {net_score:+.1f} → {score_result.get('direction')}")
 
         # Applica smoothing per ridurre volatilità
         smoothed_score = get_smoothed_score(symbol, net_score)
@@ -588,6 +548,159 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
         return False
 
 
+def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
+                           current_price: float, size: float, leverage: float):
+    """
+    Aggiorna l'ordine SL per posizioni NORMAL implementando trailing continuo.
+
+    Stessa logica di MICRO_GAIN ma con parametri NORMAL (più ampi):
+    - Se P&L >= NORMAL_TRAILING_ACTIVATION, inizia il trailing
+    - SL segue il P&L mantenendo un gap di NORMAL_TRAILING_GAP
+    - SL non scende mai, solo sale (protegge profitti)
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        current_price: Prezzo corrente
+        size: Size della posizione
+        leverage: Leva usata
+
+    Returns:
+        bool: True se SL è stato aggiornato
+    """
+    global _current_sl_level
+
+    if not NORMAL_TRAILING_ENABLED:
+        return False
+
+    try:
+        # Calcola P&L corrente
+        if direction == "long":
+            price_change_pct = ((current_price - entry_price) / entry_price) * 100
+        else:
+            price_change_pct = ((entry_price - current_price) / entry_price) * 100
+
+        pnl_pct = price_change_pct * leverage
+
+        # SL corrente (iniziale = -NORMAL_STOP_LOSS_PERCENT)
+        sl_key = f"{symbol}_NORMAL"  # Usa key diversa da MICRO_GAIN
+        current_sl = _current_sl_level.get(sl_key, -NORMAL_STOP_LOSS_PERCENT)
+
+        # Se P&L >= activation, calcola nuovo SL
+        if pnl_pct >= NORMAL_TRAILING_ACTIVATION:
+            # Nuovo SL = P&L corrente - gap
+            new_sl_level = pnl_pct - NORMAL_TRAILING_GAP
+
+            # SL non scende mai! Solo sale
+            if new_sl_level > current_sl:
+                # Calcola prezzo SL
+                sl_price_change = new_sl_level / leverage
+
+                if direction == "long":
+                    new_sl_price = entry_price * (1 + sl_price_change / 100)
+                else:
+                    new_sl_price = entry_price * (1 - sl_price_change / 100)
+
+                new_sl_price = bot._round_to_tick(new_sl_price, symbol)
+
+                log(f"   📈 NORMAL P&L: {pnl_pct:+.2f}% | SL: {current_sl:+.2f}% → {new_sl_level:+.2f}%")
+
+                # Cancella ordini SL esistenti
+                try:
+                    open_orders = bot.info.open_orders(bot.account_address)
+                    for order in open_orders:
+                        if order.get("coin") == symbol:
+                            bot.exchange.cancel(symbol, order.get("oid"))
+                            log(f"   🗑️ Cancellato SL precedente")
+                except Exception as e:
+                    log(f"   ⚠️ Errore cancellazione: {e}")
+
+                # Piazza nuovo SL
+                is_buy = direction == "short"
+
+                sl_order = bot.exchange.order(
+                    symbol,
+                    is_buy,
+                    size,
+                    new_sl_price,
+                    {"limit": {"tif": "Gtc"}},
+                    reduce_only=True
+                )
+
+                if sl_order.get("status") == "ok":
+                    _current_sl_level[sl_key] = new_sl_level
+                    log(f"   🔒 NORMAL Trailing SL @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
+                    return True
+                else:
+                    log(f"   ⚠️ Errore SL: {sl_order}")
+
+        return False
+
+    except Exception as e:
+        log(f"   ❌ Errore update NORMAL SL: {e}")
+        return False
+
+
+def place_normal_initial_sl(bot, symbol: str, direction: str, entry_price: float, size: float, leverage: float):
+    """
+    Piazza l'ordine SL iniziale per posizioni NORMAL se non esiste.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        size: Size della posizione
+        leverage: Leva usata
+    """
+    if not NORMAL_TRAILING_ENABLED:
+        return False
+
+    sl_key = f"{symbol}_NORMAL"
+
+    # Se già esiste SL level, non ricreare
+    if sl_key in _current_sl_level:
+        return False
+
+    try:
+        # Calcola prezzo SL iniziale
+        price_change_pct = NORMAL_STOP_LOSS_PERCENT / leverage
+
+        if direction == "long":
+            sl_price = entry_price * (1 - price_change_pct / 100)
+        else:
+            sl_price = entry_price * (1 + price_change_pct / 100)
+
+        sl_price = bot._round_to_tick(sl_price, symbol)
+
+        log(f"   🛡️ Piazzo NORMAL SL @ ${sl_price:.2f} (loss: -{NORMAL_STOP_LOSS_PERCENT}%)")
+
+        is_buy = direction == "short"
+
+        sl_order = bot.exchange.order(
+            symbol,
+            is_buy,
+            size,
+            sl_price,
+            {"limit": {"tif": "Gtc"}},
+            reduce_only=True
+        )
+
+        if sl_order.get("status") == "ok":
+            _current_sl_level[sl_key] = -NORMAL_STOP_LOSS_PERCENT
+            log(f"   ✅ NORMAL SL order piazzato")
+            return True
+
+        log(f"   ⚠️ NORMAL SL response: {sl_order}")
+        return False
+
+    except Exception as e:
+        log(f"   ❌ Errore piazzamento NORMAL SL: {e}")
+        return False
+
+
 def check_and_open_micro_gain(bot, existing_symbols: list):
     """
     Controlla se aprire nuove posizioni MICRO_GAIN.
@@ -858,14 +971,36 @@ def run_sentinel_check():
 
             # === CHECK MICRO_GAIN REVERSAL ===
             micro_gain_result = {"triggered": False, "reason": "", "quick_score": 0.0}
+            position_size = float(pos.get("size", 0))
+
+            # Parse leverage
+            leverage_raw = pos.get("leverage", 1)
+            if isinstance(leverage_raw, str):
+                import re
+                match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+                pos_leverage = float(match.group(1)) if match else 1.0
+            else:
+                pos_leverage = float(leverage_raw)
+
             if trading_mode == "MICRO_GAIN" and tracking_data:
                 micro_gain_result = check_micro_gain_reversal(pos, tracking_data)
 
                 # === UPDATE MICRO_GAIN TRAILING SL (lock-in profit) ===
-                position_size = float(pos.get("size", 0))
                 if position_size > 0:
                     update_micro_gain_sl_order(
                         bot, symbol, direction, entry_price, mark_price, position_size
+                    )
+
+            elif trading_mode == "NORMAL" and NORMAL_TRAILING_ENABLED:
+                # === UPDATE NORMAL TRAILING SL (same mechanism, different params) ===
+                if position_size > 0:
+                    # Prima piazza SL iniziale se non esiste
+                    place_normal_initial_sl(
+                        bot, symbol, direction, entry_price, position_size, pos_leverage
+                    )
+                    # Poi aggiorna se in profitto
+                    update_normal_sl_order(
+                        bot, symbol, direction, entry_price, mark_price, position_size, pos_leverage
                     )
 
             # === CHECK TRAILING STOP (solo per NORMAL mode) ===
@@ -930,9 +1065,12 @@ def run_sentinel_check():
                     if MICRO_GAIN_AUTO_OPEN:
                         set_cooldown(symbol)
 
-                    # Reset SL level per questo simbolo
+                    # Reset SL level per questo simbolo (both MICRO_GAIN and NORMAL keys)
                     if symbol in _current_sl_level:
                         del _current_sl_level[symbol]
+                    sl_key_normal = f"{symbol}_NORMAL"
+                    if sl_key_normal in _current_sl_level:
+                        del _current_sl_level[sl_key_normal]
 
                     # Cancella ordini TP/SL rimasti per questo simbolo
                     try:
@@ -1024,7 +1162,11 @@ def run_loop(interval: int = None):
     interval = interval or SENTINEL_INTERVAL
 
     log(f"🔄 Sentinel avviato in loop (intervallo: {interval}s)")
-    log(f"   Trailing: {TRAILING_STOP_PERCENT}%, Activation: {TRAILING_STOP_ACTIVATION_PERCENT}%, Stop Loss: {INITIAL_STOP_LOSS_PERCENT}%")
+    log(f"   Trailing legacy: {TRAILING_STOP_PERCENT}%, Activation: {TRAILING_STOP_ACTIVATION_PERCENT}%, Stop Loss: {INITIAL_STOP_LOSS_PERCENT}%")
+    if NORMAL_TRAILING_ENABLED:
+        log(f"   📊 NORMAL Trailing: enabled")
+        log(f"      SL iniziale: -{NORMAL_STOP_LOSS_PERCENT}%")
+        log(f"      Trailing: attivazione={NORMAL_TRAILING_ACTIVATION}%, gap={NORMAL_TRAILING_GAP}%")
     if MICRO_GAIN_ENABLED:
         log(f"   🎯 MICRO_GAIN: enabled, reversal_score: {MICRO_GAIN_REVERSAL_SCORE}")
     if MICRO_GAIN_AUTO_OPEN:

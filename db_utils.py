@@ -263,6 +263,19 @@ CREATE INDEX IF NOT EXISTS idx_sentinel_logs_created_at
     ON sentinel_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_sentinel_logs_symbol
     ON sentinel_logs(symbol);
+
+-- Cache per Fear & Greed Index (evita chiamate API ripetute dal sentinel)
+CREATE TABLE IF NOT EXISTS sentiment_cache (
+    id              BIGSERIAL PRIMARY KEY,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    value           INTEGER NOT NULL,
+    classification  TEXT,
+    source_timestamp BIGINT,
+    raw             JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_sentiment_cache_created_at
+    ON sentiment_cache(created_at);
 """
 
 
@@ -1351,6 +1364,104 @@ def get_sentinel_status() -> Dict[str, Any]:
         "take_profit_24h": stats_row[4] if stats_row else 0,
         "bot_triggered_24h": stats_row[5] if stats_row else 0,
     }
+
+
+# ==================== SENTIMENT CACHE ====================
+
+def save_sentiment_cache(
+    value: int,
+    classification: str = None,
+    source_timestamp: int = None,
+    raw: Dict[str, Any] = None,
+) -> int:
+    """Salva il valore Fear & Greed Index nella cache.
+
+    Chiamato da main.py ogni 15 minuti quando recupera il sentiment.
+    Il sentinel leggerà da questa cache invece di chiamare l'API.
+
+    Parametri:
+    - value: valore del Fear & Greed Index (0-100)
+    - classification: classificazione (Extreme Fear, Fear, Neutral, Greed, Extreme Greed)
+    - source_timestamp: timestamp originale del dato
+    - raw: payload completo originale
+
+    Restituisce l'ID del record creato.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO sentiment_cache (value, classification, source_timestamp, raw)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (value, classification, source_timestamp, Json(raw) if raw else None),
+            )
+            cache_id = cur.fetchone()[0]
+        conn.commit()
+
+    return cache_id
+
+
+def get_cached_sentiment(max_age_minutes: int = 60) -> Optional[Dict[str, Any]]:
+    """Restituisce l'ultimo sentiment dalla cache se non troppo vecchio.
+
+    Parametri:
+    - max_age_minutes: età massima in minuti del dato (default 60)
+
+    Restituisce None se non c'è un dato abbastanza recente.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT value, classification, source_timestamp, raw, created_at
+                FROM sentiment_cache
+                WHERE created_at > NOW() - INTERVAL '%s minutes'
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (max_age_minutes,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "valore": row[0],
+        "classificazione": row[1],
+        "timestamp": row[2],
+        "raw": row[3],
+        "cached_at": row[4],
+    }
+
+
+def cleanup_old_sentiment_cache(keep_hours: int = 24) -> int:
+    """Elimina i record di sentiment cache più vecchi di N ore.
+
+    Parametri:
+    - keep_hours: mantieni solo gli ultimi N ore (default 24)
+
+    Restituisce il numero di record eliminati.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM sentiment_cache
+                WHERE created_at < NOW() - INTERVAL '%s hours'
+                RETURNING id;
+                """,
+                (keep_hours,),
+            )
+            deleted = cur.fetchall()
+        conn.commit()
+
+    return len(deleted)
 
 
 if __name__ == "__main__":

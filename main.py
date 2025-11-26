@@ -18,6 +18,8 @@ load_dotenv()
 # ===== MICRO-GAIN CONFIGURATION =====
 MICRO_GAIN_ENABLED = os.getenv('MICRO_GAIN_ENABLED', 'false').lower() == 'true'
 MICRO_GAIN_TARGET_PERCENT = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.15'))
+MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
+MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))
 SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '15'))
 SCORE_THRESHOLD_NORMAL = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))  # Soglia per mode NORMAL
 
@@ -98,6 +100,18 @@ try:
     sentiment_txt, sentiment_json  = get_sentiment()
     forecasts_txt, forecasts_json = get_crypto_forecasts()
 
+    # Salva sentiment nella cache per il sentinel
+    if sentiment_json:
+        try:
+            cache_id = db_utils.save_sentiment_cache(
+                value=sentiment_json.get('valore'),
+                classification=sentiment_json.get('classificazione'),
+                source_timestamp=sentiment_json.get('timestamp'),
+                raw=sentiment_json
+            )
+            print(f"[CACHE] Sentiment salvato in cache con id={cache_id}")
+        except Exception as e:
+            print(f"[CACHE] ⚠️ Errore salvataggio sentiment cache: {e}")
 
     msg_info=f"""<indicatori>\n{indicators_txt}\n</indicatori>\n\n
     <news>\n{news_txt}</news>\n\n
@@ -166,8 +180,8 @@ try:
                 "symbol": ticker,
                 "direction": micro_direction,
                 "reason": f"MICRO_GAIN auto-open: score {net_score:.1f} in range [{SCORE_THRESHOLD_HOLD}-{SCORE_THRESHOLD_OPEN}]",
-                "target_portion_of_balance": 0.3,  # 30% del balance per MICRO_GAIN
-                "leverage": 5,
+                "target_portion_of_balance": MICRO_GAIN_PORTION,  # From .env MICRO_GAIN_PORTION
+                "leverage": MICRO_GAIN_LEVERAGE,  # From .env MICRO_GAIN_LEVERAGE
                 "trading_mode": "MICRO_GAIN",
                 "opening_score": net_score,
                 "micro_gain_target": MICRO_GAIN_TARGET_PERCENT
