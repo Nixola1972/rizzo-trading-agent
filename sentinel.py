@@ -84,10 +84,43 @@ SCORE_SMOOTHING_SAMPLES = int(os.getenv('SCORE_SMOOTHING_SAMPLES', '3'))  # Medi
 _score_history = {}  # symbol -> list of recent scores
 
 
+# Log file configuration
+LOG_FILE_ENABLED = os.getenv('LOG_FILE_ENABLED', 'true').lower() == 'true'
+LOG_FILE_PATH = os.getenv('LOG_FILE_PATH', '/app/logs/sentinel.log')
+LOG_FILE_MAX_SIZE_MB = int(os.getenv('LOG_FILE_MAX_SIZE_MB', '10'))
+
+def ensure_log_dir():
+    """Crea la directory dei log se non esiste."""
+    log_dir = os.path.dirname(LOG_FILE_PATH)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+
+def rotate_log_if_needed():
+    """Ruota il file di log se supera la dimensione massima."""
+    if os.path.exists(LOG_FILE_PATH):
+        size_mb = os.path.getsize(LOG_FILE_PATH) / (1024 * 1024)
+        if size_mb > LOG_FILE_MAX_SIZE_MB:
+            # Rinomina il vecchio log
+            backup_path = LOG_FILE_PATH + '.old'
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            os.rename(LOG_FILE_PATH, backup_path)
+
 def log(msg: str):
-    """Log con timestamp."""
+    """Log con timestamp - scrive su console e file."""
     timestamp = datetime.now().strftime("%H:%M:%S")
+    full_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {msg}")
+
+    # Scrivi anche su file
+    if LOG_FILE_ENABLED:
+        try:
+            ensure_log_dir()
+            rotate_log_if_needed()
+            with open(LOG_FILE_PATH, 'a') as f:
+                f.write(f"[{full_timestamp}] {msg}\n")
+        except Exception as e:
+            print(f"[{timestamp}] ⚠️ Errore scrittura log file: {e}")
 
 
 def get_smoothed_score(symbol: str, raw_score: float) -> float:
