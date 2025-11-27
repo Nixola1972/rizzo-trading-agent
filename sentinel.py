@@ -1161,11 +1161,27 @@ def place_normal_initial_sl(bot, symbol: str, direction: str, entry_price: float
 
     sl_key = f"{symbol}_NORMAL"
 
-    # Se già esiste SL level, non ricreare
+    # Se già esiste SL level in memoria, non ricreare
     if sl_key in _current_sl_level:
         return False
 
     try:
+        # IMPORTANTE: Controlla se esiste già un ordine SL su Hyperliquid
+        # Questo previene duplicati quando il container viene riavviato
+        expected_side = "B" if direction == "short" else "A"
+        try:
+            open_orders = bot.info.frontend_open_orders(bot.account_address)
+            for order in open_orders:
+                if order.get("coin") == symbol and order.get("side") == expected_side:
+                    trigger_px = order.get("triggerPx")
+                    if trigger_px and trigger_px != "0.0":
+                        # SL già esiste su Hyperliquid, aggiorna solo la memoria
+                        _current_sl_level[sl_key] = -NORMAL_STOP_LOSS_PERCENT
+                        log(f"   ✅ {symbol} SL già esistente su HL (trigger=${trigger_px}), sincronizzato")
+                        return False
+        except Exception as e:
+            log(f"   ⚠️ Errore check ordini esistenti: {e}")
+
         # Calcola prezzo SL iniziale
         price_change_pct = NORMAL_STOP_LOSS_PERCENT / leverage
 
