@@ -1072,7 +1072,14 @@ def verify_sl_order_complete(bot, symbol: str, direction: str, entry_price: floa
         expected_sl_price = calculate_expected_sl_price(entry_price, direction, leverage, trading_mode)
         result["expected_price"] = expected_sl_price
 
-        open_orders = bot.info.open_orders(bot.account_address)
+        # Usa frontend_open_orders per avere tutti i dettagli (incluso triggerPx)
+        # open_orders() NON ritorna triggerPx, solo: coin, limitPx, oid, side, sz, timestamp
+        try:
+            open_orders = bot.info.frontend_open_orders(bot.account_address)
+        except AttributeError:
+            # Fallback per versioni SDK senza frontend_open_orders
+            log(f"   ⚠️ SDK senza frontend_open_orders, uso open_orders (verifica tipo non disponibile)")
+            open_orders = bot.info.open_orders(bot.account_address)
 
         for order in open_orders:
             if order.get("coin") == symbol and order.get("side") == expected_side:
@@ -1080,8 +1087,10 @@ def verify_sl_order_complete(bot, symbol: str, direction: str, entry_price: floa
                 result["order"] = order
 
                 # 1. Verifica tipo (STOP trigger)
+                # frontend_open_orders ritorna triggerPx come stringa (es. "92270.0" o "0.0")
                 trigger_px = order.get("triggerPx")
-                is_trigger = trigger_px is not None and trigger_px != ""
+                # Un ordine è TRIGGER se triggerPx esiste E NON è "0.0" o vuoto
+                is_trigger = trigger_px is not None and trigger_px != "" and trigger_px != "0.0"
                 result["is_trigger"] = is_trigger
                 if not is_trigger:
                     result["issues"].append("TIPO: ordine LIMIT invece di STOP TRIGGER")
@@ -1190,9 +1199,9 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
             result["verified"] = True
             if attempt > 0:
                 result["fixed"] = True
-                log(f"   ✅ {symbol} SL verificato completamente (corretto al tentativo {attempt + 1})")
+                log(f"   ✅ {symbol} SL STOP TRIGGER verificato (corretto al tentativo {attempt + 1})")
             else:
-                log(f"   ✅ {symbol} SL OK: trigger=${check['actual_price']:.4f}, size={check['actual_size']:.6f}")
+                log(f"   ✅ {symbol} SL STOP TRIGGER OK: trigger=${check['actual_price']:.4f}, size={check['actual_size']:.6f}")
             return result
 
         # Se l'ordine esiste ma ha problemi
