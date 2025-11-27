@@ -2466,6 +2466,83 @@ with tab9:
             for s in suggestions:
                 st.info(s)
 
+            # AI Analysis Section
+            st.markdown("---")
+            st.markdown("### 🤖 Analisi AI Approfondita")
+            st.markdown("Chiedi all'AI di analizzare i tuoi trade e suggerirti miglioramenti specifici")
+
+            col_ai1, col_ai2 = st.columns([1, 3])
+            with col_ai1:
+                ai_period = st.selectbox(
+                    "Periodo analisi",
+                    [7, 14, 30, 60, 90],
+                    index=2,
+                    format_func=lambda x: f"{x} giorni",
+                    key="ai_period"
+                )
+
+            with col_ai2:
+                st.markdown("")  # Spacing
+                analyze_button = st.button("🔍 Avvia Analisi AI", type="primary", use_container_width=True)
+
+            if analyze_button:
+                with st.spinner("🤖 AI sta analizzando i tuoi trade..."):
+                    try:
+                        # Import analyzer
+                        import trade_analyzer as ta
+
+                        # Get AI analysis
+                        analysis = ta.analyze_with_ai(ai_period)
+
+                        # Display in expander
+                        st.markdown("---")
+                        st.markdown("### 📊 Risultato Analisi AI")
+                        st.markdown(analysis)
+
+                    except ImportError:
+                        st.error("❌ Modulo trade_analyzer non trovato. Assicurati che sia installato.")
+                    except Exception as e:
+                        st.error(f"❌ Errore durante l'analisi: {str(e)}")
+
+            # Score Correlation Section
+            st.markdown("---")
+            st.markdown("### 🎯 Correlazione Score / Risultati")
+            st.markdown("Il punteggio di apertura predice i risultati?")
+
+            try:
+                import trade_analyzer as ta
+                score_corr = ta.get_score_correlation_analysis(period_days)
+
+                if score_corr and score_corr.get("by_score_range"):
+                    # Correlation interpretation
+                    corr_data = score_corr.get("correlation", {})
+                    corr_value = corr_data.get("score_vs_pnl", 0)
+                    interpretation = corr_data.get("interpretation", "N/A")
+
+                    col_corr1, col_corr2 = st.columns(2)
+                    col_corr1.metric("Correlazione Score/P&L", f"{corr_value:.3f}")
+                    col_corr2.info(interpretation)
+
+                    # Score range table
+                    st.markdown("**Performance per range di score:**")
+                    score_range_df = pd.DataFrame(score_corr["by_score_range"])
+                    if not score_range_df.empty:
+                        st.dataframe(score_range_df, use_container_width=True, hide_index=True)
+
+                    # By mode and score
+                    if score_corr.get("by_mode_and_score"):
+                        st.markdown("**Per Trading Mode e Score:**")
+                        mode_score_df = pd.DataFrame(score_corr["by_mode_and_score"])
+                        if not mode_score_df.empty:
+                            st.dataframe(mode_score_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Dati insufficienti per l'analisi correlazione")
+
+            except ImportError:
+                st.warning("Modulo trade_analyzer non disponibile")
+            except Exception as e:
+                st.warning(f"Errore analisi correlazione: {e}")
+
         else:
             st.info("Nessun dato disponibile per il periodo selezionato")
 
