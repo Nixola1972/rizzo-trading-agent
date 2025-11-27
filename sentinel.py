@@ -411,7 +411,9 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
 
 def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float, size: float):
     """
-    Piazza un ordine SL limit su Hyperliquid per MICRO_GAIN.
+    Piazza un ordine STOP LOSS trigger su Hyperliquid per MICRO_GAIN.
+
+    Usa ordine STOP (trigger) invece di LIMIT per evitare esecuzione immediata.
 
     Args:
         bot: HyperLiquidTrader instance
@@ -421,28 +423,31 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
         size: Size della posizione
     """
     try:
-        # Calcola prezzo SL
+        # Calcola prezzo SL trigger
         price_change_pct = MICRO_GAIN_STOP_LOSS_PERCENT / MICRO_GAIN_LEVERAGE
 
         if direction == "long":
-            sl_price = entry_price * (1 - price_change_pct / 100)
+            # LONG: SL sotto il prezzo di entrata
+            sl_trigger = entry_price * (1 - price_change_pct / 100)
         else:
-            sl_price = entry_price * (1 + price_change_pct / 100)
+            # SHORT: SL sopra il prezzo di entrata
+            sl_trigger = entry_price * (1 + price_change_pct / 100)
 
         # Arrotonda al tick size
-        sl_price = bot._round_to_tick(sl_price, symbol)
+        sl_trigger = bot._round_to_tick(sl_trigger, symbol)
 
-        log(f"   🛡️ Piazzo SL order @ ${sl_price:.2f} (target loss: -{MICRO_GAIN_STOP_LOSS_PERCENT}%)")
+        log(f"   🛡️ Piazzo SL STOP @ ${sl_trigger:.2f} (trigger, loss: -{MICRO_GAIN_STOP_LOSS_PERCENT}%)")
 
-        # Piazza ordine SL (direzione opposta per chiudere)
+        # Piazza ordine STOP (trigger) - direzione opposta per chiudere
         is_buy = direction == "short"  # Se short, compra per chiudere
 
+        # Usa trigger order invece di limit order
         sl_order = bot.exchange.order(
             symbol,
             is_buy,
             size,
-            sl_price,
-            {"limit": {"tif": "Gtc"}},
+            sl_trigger,  # Prezzo limite (uguale al trigger per market-like execution)
+            {"trigger": {"triggerPx": sl_trigger, "isMarket": True, "tpsl": "sl"}},
             reduce_only=True
         )
 
@@ -451,7 +456,7 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
             if response_data.get("type") == "order":
                 statuses = response_data.get("data", {}).get("statuses", [])
                 if statuses and statuses[0].get("resting"):
-                    log(f"   ✅ SL order piazzato: OID={statuses[0]['resting']['oid']}")
+                    log(f"   ✅ SL STOP piazzato: OID={statuses[0]['resting']['oid']}")
                     return True
 
         log(f"   ⚠️ SL order response: {sl_order}")
@@ -529,7 +534,7 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
                 except Exception as e:
                     log(f"   ⚠️ Errore cancellazione: {e}")
 
-                # Piazza nuovo SL
+                # Piazza nuovo SL STOP (trigger order)
                 is_buy = direction == "short"
 
                 sl_order = bot.exchange.order(
@@ -537,13 +542,13 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
                     is_buy,
                     size,
                     new_sl_price,
-                    {"limit": {"tif": "Gtc"}},
+                    {"trigger": {"triggerPx": new_sl_price, "isMarket": True, "tpsl": "sl"}},
                     reduce_only=True
                 )
 
                 if sl_order.get("status") == "ok":
                     _current_sl_level[symbol] = new_sl_level
-                    log(f"   🔒 Trailing SL spostato @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
+                    log(f"   🔒 Trailing SL STOP @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
                     return True
                 else:
                     log(f"   ⚠️ Errore SL: {sl_order}")
@@ -630,7 +635,7 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
                 except Exception as e:
                     log(f"   ⚠️ Errore cancellazione: {e}")
 
-                # Piazza nuovo SL
+                # Piazza nuovo SL STOP (trigger order)
                 is_buy = direction == "short"
 
                 sl_order = bot.exchange.order(
@@ -638,13 +643,13 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
                     is_buy,
                     size,
                     new_sl_price,
-                    {"limit": {"tif": "Gtc"}},
+                    {"trigger": {"triggerPx": new_sl_price, "isMarket": True, "tpsl": "sl"}},
                     reduce_only=True
                 )
 
                 if sl_order.get("status") == "ok":
                     _current_sl_level[sl_key] = new_sl_level
-                    log(f"   🔒 NORMAL Trailing SL @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
+                    log(f"   🔒 NORMAL Trailing SL STOP @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
                     return True
                 else:
                     log(f"   ⚠️ Errore SL: {sl_order}")
@@ -688,16 +693,17 @@ def place_normal_initial_sl(bot, symbol: str, direction: str, entry_price: float
 
         sl_price = bot._round_to_tick(sl_price, symbol)
 
-        log(f"   🛡️ Piazzo NORMAL SL @ ${sl_price:.2f} (loss: -{NORMAL_STOP_LOSS_PERCENT}%)")
+        log(f"   🛡️ Piazzo NORMAL SL STOP @ ${sl_price:.2f} (trigger, loss: -{NORMAL_STOP_LOSS_PERCENT}%)")
 
         is_buy = direction == "short"
 
+        # Usa trigger order invece di limit order
         sl_order = bot.exchange.order(
             symbol,
             is_buy,
             size,
             sl_price,
-            {"limit": {"tif": "Gtc"}},
+            {"trigger": {"triggerPx": sl_price, "isMarket": True, "tpsl": "sl"}},
             reduce_only=True
         )
 
