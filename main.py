@@ -31,6 +31,11 @@ MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))
 SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '15'))
 SCORE_THRESHOLD_NORMAL = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))  # Soglia per mode NORMAL
 
+# ===== NORMAL MODE TRAILING CONFIGURATION =====
+NORMAL_STOP_LOSS_PERCENT = float(os.getenv('NORMAL_STOP_LOSS_PERCENT', '5.0'))
+NORMAL_TRAILING_ACTIVATION = float(os.getenv('NORMAL_TRAILING_ACTIVATION', '2.0'))
+NORMAL_TRAILING_GAP = float(os.getenv('NORMAL_TRAILING_GAP', '1.5'))
+
 def determine_trading_mode(net_score: float) -> str:
     """
     Determina il trading mode in base allo score.
@@ -371,8 +376,18 @@ try:
                             # Trade Journal: registra apertura
                             if TRADE_JOURNAL_ENABLED:
                                 try:
-                                    sl_pct = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0')) if trading_mode == "MICRO_GAIN" else float(os.getenv('NORMAL_STOP_LOSS_PERCENT', '5.0'))
-                                    tp_pct = MICRO_GAIN_TARGET_PERCENT if trading_mode == "MICRO_GAIN" else None
+                                    # Parametri diversi per MICRO_GAIN vs NORMAL
+                                    if trading_mode == "MICRO_GAIN":
+                                        sl_pct = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0'))
+                                        tp_pct = MICRO_GAIN_TARGET_PERCENT
+                                        trailing_act = float(os.getenv('MICRO_GAIN_TRAILING_ACTIVATION', '0.5'))
+                                        trailing_g = float(os.getenv('MICRO_GAIN_TRAILING_GAP', '0.5'))
+                                    else:
+                                        sl_pct = NORMAL_STOP_LOSS_PERCENT
+                                        tp_pct = None
+                                        trailing_act = NORMAL_TRAILING_ACTIVATION
+                                        trailing_g = NORMAL_TRAILING_GAP
+
                                     trade_uuid = tj.open_trade(
                                         symbol=ticker,
                                         direction=pos["side"].upper(),
@@ -382,9 +397,11 @@ try:
                                         leverage=int(out.get("leverage", MICRO_GAIN_LEVERAGE if trading_mode == "MICRO_GAIN" else 1)),
                                         score=net_score,
                                         sl_percent=sl_pct,
-                                        tp_percent=tp_pct
+                                        tp_percent=tp_pct,
+                                        trailing_activation=trailing_act,
+                                        trailing_gap=trailing_g
                                     )
-                                    print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}...")
+                                    print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}... (mode: {trading_mode})")
                                 except Exception as je:
                                     print(f"[JOURNAL] ⚠️ Errore registrazione trade: {je}")
 

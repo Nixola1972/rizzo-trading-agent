@@ -753,8 +753,35 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
                 )
 
                 if sl_order.get("status") == "ok":
+                    old_sl = current_sl
                     _current_sl_level[sl_key] = new_sl_level
                     log(f"   🔒 NORMAL Trailing SL STOP @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
+
+                    # Trade Journal: log trailing per NORMAL mode
+                    if TRADE_JOURNAL_ENABLED:
+                        try:
+                            open_trade = tj.get_open_trade(symbol)
+                            if open_trade:
+                                # Log trailing activation se è il primo trailing update
+                                if old_sl <= -NORMAL_STOP_LOSS_PERCENT + 0.1:
+                                    tj.log_trailing_activated(
+                                        open_trade['trade_uuid'],
+                                        current_price, pnl_pct,
+                                        NORMAL_TRAILING_ACTIVATION
+                                    )
+                                    log(f"   📒 Trade Journal: trailing NORMAL attivato")
+                                # Log SL update
+                                tj.log_trailing_updated(
+                                    open_trade['trade_uuid'],
+                                    old_sl, new_sl_level,
+                                    current_price, current_price, pnl_pct
+                                )
+                                # Update peak
+                                tj.update_trade_peak(open_trade['trade_uuid'], current_price, pnl_pct)
+                                log(f"   📒 Trade Journal: SL NORMAL aggiornato {old_sl:+.2f}% → {new_sl_level:+.2f}%")
+                        except Exception as e:
+                            log(f"   ⚠️ Trade Journal NORMAL error: {e}")
+
                     return True
                 else:
                     log(f"   ⚠️ Errore SL: {sl_order}")
@@ -815,6 +842,17 @@ def place_normal_initial_sl(bot, symbol: str, direction: str, entry_price: float
         if sl_order.get("status") == "ok":
             _current_sl_level[sl_key] = -NORMAL_STOP_LOSS_PERCENT
             log(f"   ✅ NORMAL SL order piazzato")
+
+            # Trade Journal: registra SL placement per NORMAL mode
+            if TRADE_JOURNAL_ENABLED:
+                try:
+                    open_trade = tj.get_open_trade(symbol)
+                    if open_trade:
+                        tj.log_sl_placed(open_trade['trade_uuid'], sl_price, "STOP_TRIGGER", entry_price)
+                        log(f"   📒 Trade Journal: SL NORMAL registrato @ ${sl_price:.2f}")
+                except Exception as e:
+                    log(f"   ⚠️ Trade Journal NORMAL SL log error: {e}")
+
             return True
 
         log(f"   ⚠️ NORMAL SL response: {sl_order}")
