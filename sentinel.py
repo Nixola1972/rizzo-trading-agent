@@ -437,6 +437,17 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                 # Piazza SL order su Hyperliquid
                 sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, position_size)
 
+                # VERIFICA IMMEDIATA: controlla che l'ordine SL sia stato piazzato correttamente
+                time.sleep(0.5)  # Piccola pausa per sincronizzazione
+                sl_verification = verify_and_fix_sl_order(
+                    bot, symbol, direction, entry_price, position_size,
+                    MICRO_GAIN_LEVERAGE, "MICRO_GAIN", max_retries=2
+                )
+                if not sl_verification["verified"]:
+                    log(f"   🚨 CRITICO: Impossibile verificare SL per {symbol}!")
+                elif sl_verification["fixed"]:
+                    log(f"   🔧 SL corretto automaticamente per {symbol}")
+
                 # Trade Journal: registra SL placement
                 if TRADE_JOURNAL_ENABLED and trade_uuid and sl_price:
                     try:
@@ -812,6 +823,370 @@ def place_normal_initial_sl(bot, symbol: str, direction: str, entry_price: float
     except Exception as e:
         log(f"   ❌ Errore piazzamento NORMAL SL: {e}")
         return False
+
+
+# ============================================================================
+# ORDER VERIFICATION SYSTEM - Controllo automatico ordini SL
+# ============================================================================
+
+# Tolleranza per confronto prezzi (0.5% - per gestire arrotondamenti)
+PRICE_TOLERANCE_PERCENT = 0.5
+# Tolleranza per confronto size (1% - per gestire arrotondamenti)
+SIZE_TOLERANCE_PERCENT = 1.0
+
+
+def calculate_expected_sl_price(entry_price: float, direction: str, leverage: float,
+                                  trading_mode: str) -> float:
+    """Calcola il prezzo SL atteso per una posizione."""
+    if trading_mode == "MICRO_GAIN":
+        stop_loss_pct = MICRO_GAIN_STOP_LOSS_PERCENT
+        lev = MICRO_GAIN_LEVERAGE
+    else:
+        stop_loss_pct = NORMAL_STOP_LOSS_PERCENT
+        lev = leverage
+
+    price_change_pct = stop_loss_pct / lev
+
+    if direction == "long":
+        return entry_price * (1 - price_change_pct / 100)
+    else:
+        return entry_price * (1 + price_change_pct / 100)
+
+
+def verify_sl_order_complete(bot, symbol: str, direction: str, entry_price: float,
+                              size: float, leverage: float, trading_mode: str = "NORMAL") -> dict:
+    """
+    Verifica COMPLETA di un ordine SL: esistenza, tipo, prezzo, size, direzione.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo della posizione
+        direction: Direzione della posizione ('long' o 'short')
+        entry_price: Prezzo di entrata
+        size: Size della posizione
+        leverage: Leva usata
+        trading_mode: 'MICRO_GAIN' o 'NORMAL'
+
+    Returns:
+        dict con:
+            - exists: bool - se esiste un ordine SL
+            - is_trigger: bool - se è di tipo STOP trigger
+            - is_correct_price: bool - se il prezzo è corretto
+            - is_correct_size: bool - se la size è corretta
+            - is_correct_side: bool - se la direzione è corretta
+            - all_valid: bool - se tutto è corretto
+            - order: dict - dati ordine se esiste
+            - issues: list - lista problemi rilevati
+            - error: str - messaggio errore se c'è problema
+    """
+    result = {
+        "exists": False,
+        "is_trigger": False,
+        "is_correct_price": False,
+        "is_correct_size": False,
+        "is_correct_side": False,
+        "all_valid": False,
+        "order": None,
+        "issues": [],
+        "expected_price": 0,
+        "actual_price": 0,
+        "expected_size": size,
+        "actual_size": 0,
+        "error": None
+    }
+
+    try:
+        # Lato ordine SL: opposto alla posizione
+        expected_side = "B" if direction == "short" else "A"
+
+        # Calcola prezzo SL atteso
+        expected_sl_price = calculate_expected_sl_price(entry_price, direction, leverage, trading_mode)
+        result["expected_price"] = expected_sl_price
+
+        open_orders = bot.info.open_orders(bot.account_address)
+
+        for order in open_orders:
+            if order.get("coin") == symbol and order.get("side") == expected_side:
+                result["exists"] = True
+                result["order"] = order
+
+                # 1. Verifica tipo (STOP trigger)
+                trigger_px = order.get("triggerPx")
+                is_trigger = trigger_px is not None and trigger_px != ""
+                result["is_trigger"] = is_trigger
+                if not is_trigger:
+                    result["issues"].append("TIPO: ordine LIMIT invece di STOP TRIGGER")
+
+                # 2. Verifica prezzo trigger
+                if trigger_px:
+                    actual_price = float(trigger_px)
+                    result["actual_price"] = actual_price
+
+                    # Tolleranza sul prezzo
+                    price_diff_pct = abs(actual_price - expected_sl_price) / expected_sl_price * 100
+                    result["is_correct_price"] = price_diff_pct <= PRICE_TOLERANCE_PERCENT
+
+                    if not result["is_correct_price"]:
+                        result["issues"].append(
+                            f"PREZZO: trigger ${actual_price:.4f} vs atteso ${expected_sl_price:.4f} "
+                            f"(diff: {price_diff_pct:.2f}%)"
+                        )
+                else:
+                    result["issues"].append("PREZZO: nessun trigger price impostato")
+
+                # 3. Verifica size
+                order_size = float(order.get("sz", 0))
+                result["actual_size"] = order_size
+
+                size_diff_pct = abs(order_size - size) / size * 100 if size > 0 else 100
+                result["is_correct_size"] = size_diff_pct <= SIZE_TOLERANCE_PERCENT
+
+                if not result["is_correct_size"]:
+                    result["issues"].append(
+                        f"SIZE: {order_size:.6f} vs attesa {size:.6f} (diff: {size_diff_pct:.2f}%)"
+                    )
+
+                # 4. Verifica side (già verificato nel filtro, ma double-check)
+                actual_side = order.get("side")
+                result["is_correct_side"] = actual_side == expected_side
+
+                if not result["is_correct_side"]:
+                    result["issues"].append(
+                        f"SIDE: {actual_side} vs atteso {expected_side}"
+                    )
+
+                # Tutto valido?
+                result["all_valid"] = (
+                    result["is_trigger"] and
+                    result["is_correct_price"] and
+                    result["is_correct_size"] and
+                    result["is_correct_side"]
+                )
+
+                return result
+
+        # Nessun ordine trovato
+        result["issues"].append(f"Nessun ordine SL trovato per {symbol}")
+        return result
+
+    except Exception as e:
+        result["error"] = str(e)
+        result["issues"].append(f"Errore verifica: {e}")
+        return result
+
+
+def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float,
+                             size: float, leverage: float, trading_mode: str = "NORMAL",
+                             max_retries: int = 2) -> dict:
+    """
+    Verifica COMPLETA che l'ordine SL esista e sia corretto (tipo, prezzo, size, direzione).
+    Se manca o è sbagliato, tenta di correggerlo automaticamente.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        size: Size posizione
+        leverage: Leva usata
+        trading_mode: 'MICRO_GAIN' o 'NORMAL'
+        max_retries: Numero massimo tentativi
+
+    Returns:
+        dict con status della verifica/fix
+    """
+    import telegram_notifier as tg
+
+    result = {
+        "verified": False,
+        "was_missing": False,
+        "was_wrong_type": False,
+        "was_wrong_values": False,
+        "fixed": False,
+        "attempts": 0,
+        "issues": [],
+        "error": None
+    }
+
+    for attempt in range(max_retries + 1):
+        result["attempts"] = attempt + 1
+
+        # Verifica COMPLETA ordine esistente
+        check = verify_sl_order_complete(
+            bot, symbol, direction, entry_price, size, leverage, trading_mode
+        )
+
+        if check["all_valid"]:
+            # Ordine esiste ed è completamente corretto
+            result["verified"] = True
+            if attempt > 0:
+                result["fixed"] = True
+                log(f"   ✅ {symbol} SL verificato completamente (corretto al tentativo {attempt + 1})")
+            else:
+                log(f"   ✅ {symbol} SL OK: trigger=${check['actual_price']:.4f}, size={check['actual_size']:.6f}")
+            return result
+
+        # Se l'ordine esiste ma ha problemi
+        if check["exists"]:
+            result["issues"] = check["issues"]
+
+            if not check["is_trigger"]:
+                result["was_wrong_type"] = True
+                log(f"   ⚠️ {symbol} SL è LIMIT invece di STOP TRIGGER")
+            else:
+                result["was_wrong_values"] = True
+                for issue in check["issues"]:
+                    log(f"   ⚠️ {symbol} {issue}")
+
+            # Cancella ordine sbagliato
+            log(f"   🗑️ Cancello ordine errato per {symbol}...")
+            try:
+                bot.exchange.cancel(symbol, check["order"].get("oid"))
+                log(f"   ✅ Ordine cancellato")
+                time.sleep(0.5)
+            except Exception as e:
+                log(f"   ❌ Errore cancellazione: {e}")
+        else:
+            result["was_missing"] = True
+            log(f"   ⚠️ {symbol} SL mancante")
+
+        # Piazza nuovo ordine SL corretto
+        log(f"   🔄 Piazzo nuovo SL per {symbol} (tentativo {attempt + 1}/{max_retries + 1})...")
+
+        sl_price = None
+        if trading_mode == "MICRO_GAIN":
+            sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, size)
+        else:
+            # Per NORMAL mode
+            price_change_pct = NORMAL_STOP_LOSS_PERCENT / leverage
+            if direction == "long":
+                sl_price = entry_price * (1 - price_change_pct / 100)
+            else:
+                sl_price = entry_price * (1 + price_change_pct / 100)
+            sl_price = bot._round_to_tick(sl_price, symbol)
+
+            is_buy = direction == "short"
+            sl_order = bot.exchange.order(
+                symbol,
+                is_buy,
+                size,
+                sl_price,
+                {"trigger": {"triggerPx": sl_price, "isMarket": True, "tpsl": "sl"}},
+                reduce_only=True
+            )
+
+            if sl_order.get("status") != "ok":
+                log(f"   ❌ Errore API: {sl_order}")
+                sl_price = None
+
+        if sl_price:
+            log(f"   ✅ Nuovo SL piazzato @ ${sl_price:.4f}")
+            time.sleep(0.5)  # Pausa per sincronizzazione
+        else:
+            log(f"   ❌ Fallito piazzamento SL")
+
+    # Se arriviamo qui, tutti i tentativi sono falliti
+    issues_str = ", ".join(result["issues"]) if result["issues"] else "ordine mancante"
+    result["error"] = f"Impossibile correggere SL per {symbol} dopo {max_retries + 1} tentativi: {issues_str}"
+
+    # ALERT CRITICO - notifica immediata
+    log(f"   🚨 ALERT CRITICO: {result['error']}")
+
+    if SENTINEL_TELEGRAM_NOTIFY:
+        try:
+            issues_list = "\n".join([f"• {i}" for i in result["issues"]]) if result["issues"] else "• Ordine mancante"
+            tg.send_telegram_message(
+                f"🚨 <b>ALERT CRITICO - SL NON VALIDO</b>\n\n"
+                f"<b>Symbol:</b> {symbol}\n"
+                f"<b>Direction:</b> {direction.upper()}\n"
+                f"<b>Entry:</b> ${entry_price:.2f}\n"
+                f"<b>Size:</b> {size:.6f}\n"
+                f"<b>Mode:</b> {trading_mode}\n\n"
+                f"<b>Problemi rilevati:</b>\n{issues_list}\n\n"
+                f"⚠️ <b>POSIZIONE CON SL NON VALIDO!</b>\n"
+                f"Tentativi falliti: {result['attempts']}\n\n"
+                f"<b>Azione richiesta:</b> verifica manuale immediata"
+            )
+        except Exception as e:
+            log(f"   ⚠️ Errore invio alert Telegram: {e}")
+
+    return result
+
+
+def run_order_verification(bot, positions: list) -> dict:
+    """
+    Esegue verifica ordini per tutte le posizioni aperte.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        positions: Lista posizioni aperte
+
+    Returns:
+        dict con summary della verifica
+    """
+    import db_utils
+
+    summary = {
+        "total_positions": len(positions),
+        "verified_ok": 0,
+        "fixed": 0,
+        "failed": 0,
+        "details": []
+    }
+
+    log(f"🔍 Verifica ordini SL per {len(positions)} posizioni...")
+
+    for pos in positions:
+        symbol = pos.get("symbol", "")
+        direction = pos.get("side", "long").lower()
+        entry_price = float(pos.get("entry_price", 0))
+        size = float(pos.get("size", 0))
+
+        # Parse leverage
+        leverage_raw = pos.get("leverage", 1)
+        if isinstance(leverage_raw, str):
+            import re
+            match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+            leverage = float(match.group(1)) if match else 1.0
+        else:
+            leverage = float(leverage_raw)
+
+        # Determina trading mode
+        tracking_data = db_utils.get_position_tracking(symbol)
+        trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+
+        # Verifica e correggi se necessario
+        result = verify_and_fix_sl_order(
+            bot, symbol, direction, entry_price, size, leverage, trading_mode
+        )
+
+        detail = {
+            "symbol": symbol,
+            "trading_mode": trading_mode,
+            "verified": result["verified"],
+            "was_missing": result["was_missing"],
+            "was_wrong_type": result.get("was_wrong_type", False),
+            "was_wrong_values": result.get("was_wrong_values", False),
+            "fixed": result["fixed"],
+            "issues": result.get("issues", []),
+            "error": result["error"]
+        }
+        summary["details"].append(detail)
+
+        if result["verified"]:
+            if result["fixed"]:
+                summary["fixed"] += 1
+                # Log già fatto in verify_and_fix_sl_order
+            else:
+                summary["verified_ok"] += 1
+        else:
+            summary["failed"] += 1
+            # Log già fatto in verify_and_fix_sl_order
+
+    # Log summary
+    log(f"📋 Verifica completata: {summary['verified_ok']} OK, {summary['fixed']} corretti, {summary['failed']} FALLITI")
+
+    return summary
 
 
 def check_and_open_micro_gain(bot, existing_symbols: list):
@@ -1285,6 +1660,16 @@ def run_sentinel_check():
                 )
             except Exception as e:
                 log(f"   ⚠️ Errore log DB: {e}")
+
+        # === VERIFICA ORDINI SL ===
+        # Alla fine di ogni ciclo, verifica che tutti gli ordini SL siano corretti
+        # Se mancano o sono di tipo sbagliato, tenta di correggerli automaticamente
+        log("")
+        verification_result = run_order_verification(bot, positions)
+
+        # Se ci sono fallimenti, log aggiuntivo
+        if verification_result["failed"] > 0:
+            log(f"⚠️ ATTENZIONE: {verification_result['failed']} posizioni senza SL verificato!")
 
     except Exception as e:
         log(f"❌ Errore sentinel: {e}")
