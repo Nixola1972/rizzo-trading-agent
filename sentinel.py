@@ -79,6 +79,18 @@ MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # % balance 
 MICRO_GAIN_TRAILING_MODE = os.getenv('MICRO_GAIN_TRAILING_MODE', 'continuous')
 MICRO_GAIN_TRAILING_STEPS_STR = os.getenv('MICRO_GAIN_TRAILING_STEPS', '1:0,2:1,3:2')
 
+# ===== MICRO_PAY CONFIG =====
+# Modalità ultra-micro per score deboli (5-15) - molti trade piccoli
+# Se disabilitato, HOLD si estende fino a SCORE_THRESHOLD_HOLD
+MICRO_PAY_ENABLED = os.getenv('MICRO_PAY_ENABLED', 'false').lower() == 'true'
+MICRO_PAY_THRESHOLD = float(os.getenv('MICRO_PAY_THRESHOLD', '5'))  # Score minimo per MICRO_PAY
+MICRO_PAY_TARGET_PERCENT = float(os.getenv('MICRO_PAY_TARGET_PERCENT', '1.2'))  # TP: +1.2% P&L
+MICRO_PAY_STOP_LOSS_PERCENT = float(os.getenv('MICRO_PAY_STOP_LOSS_PERCENT', '1.2'))  # SL: -1.2% P&L
+MICRO_PAY_LEVERAGE = int(os.getenv('MICRO_PAY_LEVERAGE', '3'))
+MICRO_PAY_PORTION = float(os.getenv('MICRO_PAY_PORTION', '0.15'))  # 15% del balance
+MICRO_PAY_COOLDOWN_SECONDS = int(os.getenv('MICRO_PAY_COOLDOWN_SECONDS', '120'))  # 2 min cooldown
+MICRO_PAY_TRAILING_MODE = os.getenv('MICRO_PAY_TRAILING_MODE', 'disable')  # No trailing, TP/SL fissi
+
 # NORMAL Mode Trailing Config (gestito dal sentinel come MICRO_GAIN)
 # Stesso meccanismo ma con parametri più ampi
 NORMAL_TRAILING_ENABLED = os.getenv('NORMAL_TRAILING_ENABLED', 'true').lower() == 'true'
@@ -586,6 +598,205 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
         return None
 
 
+# ===== MICRO_PAY FUNCTIONS =====
+
+def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
+    """
+    Apre una posizione MICRO_PAY con TP e SL orders su Hyperliquid.
+
+    MICRO_PAY è per score deboli (5-15): trade veloci con piccoli guadagni.
+    Trailing disabilitato, solo TP/SL fissi.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo (BTC, ETH, SOL)
+        direction: 'long' o 'short'
+        score: Score che ha generato il segnale
+
+    Returns:
+        dict con risultato operazione
+    """
+    import db_utils
+    import telegram_notifier as tg
+
+    log(f"💵 MICRO_PAY AUTO-OPEN: {symbol} {direction.upper()} (score={score:.1f})")
+
+    try:
+        # Prepara ordine
+        order_json = {
+            "operation": "open",
+            "symbol": symbol,
+            "direction": direction,
+            "reason": f"MICRO_PAY sentinel auto-open: score {score:.1f}",
+            "target_portion_of_balance": MICRO_PAY_PORTION,
+            "leverage": MICRO_PAY_LEVERAGE,
+            "trading_mode": "MICRO_PAY",
+            "opening_score": score,
+            "micro_gain_target": MICRO_PAY_TARGET_PERCENT  # Usa lo stesso campo per compatibilità
+        }
+
+        # Esegui ordine
+        result = bot.execute_signal(order_json)
+
+        # Hyperliquid ritorna status:"ok" quando l'ordine va a buon fine
+        order_success = (
+            result.get("success") or
+            result.get("status") == "ok" or
+            result.get("status") == "executed"
+        )
+
+        if order_success:
+            # Ottieni entry price dalla posizione
+            account_status = bot.get_account_status()
+            entry_price = 0
+            position_size = 0
+
+            for pos in account_status.get("open_positions", []):
+                if pos.get("symbol") == symbol:
+                    entry_price = float(pos.get("entry_price", 0))
+                    position_size = float(pos.get("size", 0))
+                    break
+
+            if entry_price > 0:
+                # Crea tracking
+                db_utils.upsert_position_tracking(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    current_price=entry_price,
+                    trailing_active=False,
+                    opening_score=score,
+                    trading_mode="MICRO_PAY"
+                )
+
+                # Trade Journal: registra apertura trade
+                trade_uuid = None
+                if TRADE_JOURNAL_ENABLED:
+                    try:
+                        trade_uuid = tj.open_trade(
+                            symbol=symbol,
+                            direction=direction.upper(),
+                            trading_mode="MICRO_PAY",
+                            entry_price=entry_price,
+                            size=position_size,
+                            leverage=MICRO_PAY_LEVERAGE,
+                            score=score,
+                            sl_percent=MICRO_PAY_STOP_LOSS_PERCENT,
+                            tp_percent=MICRO_PAY_TARGET_PERCENT,
+                            trailing_activation=0,  # No trailing per MICRO_PAY
+                            trailing_gap=0
+                        )
+                        log(f"   📒 Trade Journal: registrato trade MICRO_PAY {trade_uuid[:8]}...")
+                    except Exception as e:
+                        log(f"   ⚠️ Trade Journal error: {e}")
+
+                # Piazza SL order su Hyperliquid
+                sl_price = place_micro_pay_sl_order(bot, symbol, direction, entry_price, position_size)
+
+                # VERIFICA IMMEDIATA: controlla che l'ordine SL sia stato piazzato correttamente
+                time.sleep(0.5)  # Piccola pausa per sincronizzazione
+                sl_verification = verify_and_fix_sl_order(
+                    bot, symbol, direction, entry_price, position_size,
+                    MICRO_PAY_LEVERAGE, "MICRO_PAY", max_retries=2
+                )
+                if not sl_verification["verified"]:
+                    log(f"   🚨 CRITICO: Impossibile verificare SL per {symbol}!")
+                elif sl_verification["fixed"]:
+                    log(f"   🔧 SL corretto automaticamente per {symbol}")
+
+                # Trade Journal: registra SL placement
+                if TRADE_JOURNAL_ENABLED and trade_uuid and sl_price:
+                    try:
+                        tj.log_sl_placed(trade_uuid, sl_price, "STOP_TRIGGER", entry_price)
+                    except Exception as e:
+                        log(f"   ⚠️ Trade Journal SL log error: {e}")
+
+                # Inizializza SL level (no trailing per MICRO_PAY)
+                _current_sl_level[f"{symbol}_MICROPAY"] = -MICRO_PAY_STOP_LOSS_PERCENT
+
+                # Notifica Telegram
+                if SENTINEL_TELEGRAM_NOTIFY:
+                    try:
+                        tg.send_telegram_message(
+                            f"💵 <b>MICRO_PAY OPEN</b>\n\n"
+                            f"<b>Symbol:</b> {symbol}\n"
+                            f"<b>Direction:</b> {direction.upper()}\n"
+                            f"<b>Entry:</b> ${entry_price:.2f}\n"
+                            f"<b>Score:</b> {score:.1f}\n"
+                            f"<b>TP Target:</b> +{MICRO_PAY_TARGET_PERCENT}%\n"
+                            f"<b>SL:</b> -{MICRO_PAY_STOP_LOSS_PERCENT}%\n"
+                            f"<i>Quick trade mode - no trailing</i>"
+                        )
+                    except Exception as e:
+                        log(f"   ⚠️ Errore Telegram: {e}")
+
+                log(f"   ✅ Posizione MICRO_PAY aperta: {symbol} {direction.upper()} @ ${entry_price:.2f}")
+                return {"success": True, "entry_price": entry_price}
+            else:
+                log(f"   ⚠️ Posizione aperta ma entry price non trovato")
+                return {"success": False, "error": "Entry price not found"}
+        else:
+            log(f"   ⚠️ Errore apertura: {result}")
+            return {"success": False, "error": str(result)}
+
+    except Exception as e:
+        log(f"   ❌ Errore apertura MICRO_PAY: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+def place_micro_pay_sl_order(bot, symbol: str, direction: str, entry_price: float, size: float):
+    """
+    Piazza un ordine STOP LOSS trigger su Hyperliquid per MICRO_PAY.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        size: Size della posizione
+    """
+    try:
+        # Calcola prezzo SL trigger
+        price_change_pct = MICRO_PAY_STOP_LOSS_PERCENT / MICRO_PAY_LEVERAGE
+
+        if direction == "long":
+            sl_trigger = entry_price * (1 - price_change_pct / 100)
+        else:
+            sl_trigger = entry_price * (1 + price_change_pct / 100)
+
+        sl_trigger = bot._round_to_tick(sl_trigger, symbol)
+
+        log(f"   🛡️ Piazzo MICRO_PAY SL STOP @ ${sl_trigger:.2f} (loss: -{MICRO_PAY_STOP_LOSS_PERCENT}%)")
+
+        is_buy = direction == "short"
+
+        sl_order = bot.exchange.order(
+            symbol,
+            is_buy,
+            size,
+            sl_trigger,
+            {"trigger": {"triggerPx": sl_trigger, "isMarket": True, "tpsl": "sl"}},
+            reduce_only=True
+        )
+
+        if sl_order.get("status") == "ok":
+            response_data = sl_order.get("response", {})
+            if response_data.get("type") == "order":
+                statuses = response_data.get("data", {}).get("statuses", [])
+                if statuses and statuses[0].get("resting"):
+                    log(f"   ✅ MICRO_PAY SL piazzato: OID={statuses[0]['resting']['oid']}")
+                    return sl_trigger
+
+        log(f"   ⚠️ SL order response: {sl_order}")
+        return None
+
+    except Exception as e:
+        log(f"   ❌ Errore piazzamento MICRO_PAY SL: {e}")
+        return None
+
+
 def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float,
                                 current_price: float, size: float):
     """
@@ -1010,6 +1221,9 @@ def calculate_expected_sl_price(entry_price: float, direction: str, leverage: fl
     if trading_mode == "MICRO_GAIN":
         stop_loss_pct = MICRO_GAIN_STOP_LOSS_PERCENT
         lev = MICRO_GAIN_LEVERAGE
+    elif trading_mode == "MICRO_PAY":
+        stop_loss_pct = MICRO_PAY_STOP_LOSS_PERCENT
+        lev = MICRO_PAY_LEVERAGE
     else:
         stop_loss_pct = NORMAL_STOP_LOSS_PERCENT
         lev = leverage
@@ -1369,7 +1583,13 @@ def run_order_verification(bot, positions: list) -> dict:
 
 def check_and_open_micro_gain(bot, existing_symbols: list):
     """
-    Controlla se aprire nuove posizioni MICRO_GAIN.
+    Controlla se aprire nuove posizioni MICRO_GAIN o MICRO_PAY.
+
+    Schema soglie:
+    - HOLD: score < MICRO_PAY_THRESHOLD (se MICRO_PAY abilitato) o < SCORE_THRESHOLD_HOLD
+    - MICRO_PAY: MICRO_PAY_THRESHOLD <= score < SCORE_THRESHOLD_HOLD (se abilitato)
+    - MICRO_GAIN: SCORE_THRESHOLD_HOLD <= score < SCORE_THRESHOLD_OPEN
+    - NORMAL: score >= SCORE_THRESHOLD_OPEN (gestito da main.py AI)
 
     Args:
         bot: HyperLiquidTrader instance
@@ -1380,23 +1600,26 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
 
     symbols_to_check = ['BTC', 'ETH', 'SOL']
 
-    # Conta posizioni MICRO_GAIN esistenti
-    micro_gain_count = len(existing_symbols)
+    # Conta posizioni esistenti
+    position_count = len(existing_symbols)
 
     for symbol in symbols_to_check:
         # Skip se già abbiamo posizione
         if symbol in existing_symbols:
             continue
 
-        # Skip se in cooldown
+        # Skip se in cooldown (usa il cooldown appropriato)
         if is_in_cooldown(symbol):
-            remaining = MICRO_GAIN_COOLDOWN_SECONDS - (time.time() - _last_close_time.get(symbol, 0))
-            log(f"   ⏱️ {symbol} in cooldown ({remaining:.0f}s rimanenti)")
-            continue
+            # Calcola remaining basato sul cooldown più lungo tra MICRO_GAIN e MICRO_PAY
+            cooldown_used = max(MICRO_GAIN_COOLDOWN_SECONDS, MICRO_PAY_COOLDOWN_SECONDS if MICRO_PAY_ENABLED else 0)
+            remaining = cooldown_used - (time.time() - _last_close_time.get(symbol, 0))
+            if remaining > 0:
+                log(f"   ⏱️ {symbol} in cooldown ({remaining:.0f}s rimanenti)")
+                continue
 
         # Skip se abbiamo raggiunto max posizioni
-        if micro_gain_count >= MICRO_GAIN_MAX_POSITIONS:
-            log(f"   ⚠️ Max posizioni MICRO_GAIN raggiunte ({MICRO_GAIN_MAX_POSITIONS})")
+        if position_count >= MICRO_GAIN_MAX_POSITIONS:
+            log(f"   ⚠️ Max posizioni raggiunte ({MICRO_GAIN_MAX_POSITIONS})")
             break
 
         # Calcola score
@@ -1405,14 +1628,27 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
 
         log(f"   📊 {symbol} quick_score: {score:.1f}")
 
-        # Check se score è in range MICRO_GAIN (10-20)
-        if SCORE_THRESHOLD_HOLD <= abs_score < SCORE_THRESHOLD_OPEN:
-            direction = "long" if score > 0 else "short"
+        direction = "long" if score > 0 else "short"
 
+        # Determina quale modalità usare basata sullo score
+        # Priority: MICRO_GAIN > MICRO_PAY (score più alto = più sicuro)
+
+        if SCORE_THRESHOLD_HOLD <= abs_score < SCORE_THRESHOLD_OPEN:
+            # === MICRO_GAIN RANGE (15-20) ===
             result = open_micro_gain_position(bot, symbol, direction, score)
 
             if result.get("success"):
-                micro_gain_count += 1
+                position_count += 1
+                existing_symbols.append(symbol)
+
+        elif MICRO_PAY_ENABLED and MICRO_PAY_THRESHOLD <= abs_score < SCORE_THRESHOLD_HOLD:
+            # === MICRO_PAY RANGE (5-15) ===
+            log(f"   💵 {symbol} in range MICRO_PAY ({MICRO_PAY_THRESHOLD}-{SCORE_THRESHOLD_HOLD})")
+
+            result = open_micro_pay_position(bot, symbol, direction, score)
+
+            if result.get("success"):
+                position_count += 1
                 existing_symbols.append(symbol)
 
 
@@ -1874,6 +2110,15 @@ def run_loop(interval: int = None):
         log(f"      Trailing: attivazione={MICRO_GAIN_TRAILING_ACTIVATION}%, gap={MICRO_GAIN_TRAILING_GAP}%")
         log(f"      Cooldown: {MICRO_GAIN_COOLDOWN_SECONDS}s, Max positions: {MICRO_GAIN_MAX_POSITIONS}")
         log(f"      Score smoothing: {SCORE_SMOOTHING_SAMPLES} samples, Leverage: {MICRO_GAIN_LEVERAGE}x")
+        log(f"      Score range: {SCORE_THRESHOLD_HOLD} - {SCORE_THRESHOLD_OPEN}")
+    if MICRO_PAY_ENABLED:
+        log(f"   💵 MICRO_PAY: enabled")
+        log(f"      TP: +{MICRO_PAY_TARGET_PERCENT}%, SL: -{MICRO_PAY_STOP_LOSS_PERCENT}%")
+        log(f"      Leverage: {MICRO_PAY_LEVERAGE}x, Portion: {MICRO_PAY_PORTION*100}%")
+        log(f"      Cooldown: {MICRO_PAY_COOLDOWN_SECONDS}s, Trailing: {MICRO_PAY_TRAILING_MODE}")
+        log(f"      Score range: {MICRO_PAY_THRESHOLD} - {SCORE_THRESHOLD_HOLD}")
+    else:
+        log(f"   💵 MICRO_PAY: disabled (HOLD extends to score {SCORE_THRESHOLD_HOLD})")
     if TAKE_PROFIT_ENABLED:
         log(f"   Take Profit: {TAKE_PROFIT_PERCENT}% P&L")
 
