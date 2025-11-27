@@ -1102,7 +1102,7 @@ def upsert_position_tracking(
         with conn.cursor() as cur:
             # Controlla se esiste già
             cur.execute(
-                "SELECT peak_price, direction, opening_score, trading_mode FROM position_tracking WHERE symbol = %s",
+                "SELECT peak_price, direction, opening_score, trading_mode, entry_price FROM position_tracking WHERE symbol = %s",
                 (symbol,),
             )
             existing = cur.fetchone()
@@ -1110,19 +1110,28 @@ def upsert_position_tracking(
             if existing:
                 old_peak = float(existing[0])
                 old_direction = existing[1]
-                # Mantieni opening_score e trading_mode originali se non specificati
                 existing_opening_score = existing[2]
                 existing_trading_mode = existing[3]
+                existing_entry_price = float(existing[4]) if existing[4] else 0
 
-                # Calcola nuovo peak_price
-                if direction.lower() == 'long':
-                    # Per LONG, peak è il massimo
-                    new_peak = max(old_peak, current_price)
+                # Se entry_price è significativamente diverso, è una NUOVA posizione
+                is_new_position = abs(entry_price - existing_entry_price) > 1.0
+
+                if is_new_position:
+                    # Nuova posizione: reset tutto
+                    new_peak = current_price
+                    final_opening_score = opening_score
+                    final_trading_mode = trading_mode
                 else:
-                    # Per SHORT, peak è il minimo
-                    new_peak = min(old_peak, current_price)
+                    # Stessa posizione: aggiorna peak, mantieni trading_mode originale
+                    if direction.lower() == 'long':
+                        new_peak = max(old_peak, current_price)
+                    else:
+                        new_peak = min(old_peak, current_price)
+                    final_opening_score = opening_score if opening_score is not None else existing_opening_score
+                    final_trading_mode = existing_trading_mode or trading_mode
 
-                # Update (non sovrascrive opening_score e trading_mode se già esistono)
+                # Update con tutti i campi
                 cur.execute(
                     """
                     UPDATE position_tracking
@@ -1130,11 +1139,15 @@ def upsert_position_tracking(
                         trailing_active = %s,
                         last_checked_price = %s,
                         updated_at = NOW(),
-                        direction = %s
+                        direction = %s,
+                        entry_price = %s,
+                        opening_score = %s,
+                        trading_mode = %s
                     WHERE symbol = %s
                     RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode;
                     """,
-                    (new_peak, trailing_active, current_price, direction, symbol),
+                    (new_peak, trailing_active, current_price, direction, entry_price,
+                     final_opening_score, final_trading_mode, symbol),
                 )
             else:
                 # Insert nuovo con opening_score e trading_mode
