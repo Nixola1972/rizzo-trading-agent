@@ -307,8 +307,8 @@ class HyperLiquidTrader:
             0.01
         )
 
-        # Se MICRO_GAIN, piazza automaticamente TP order
-        if trading_mode == "MICRO_GAIN" and res.get("status") == "ok":
+        # Se MICRO_GAIN o MICRO_PAY, piazza automaticamente TP order
+        if trading_mode in ("MICRO_GAIN", "MICRO_PAY") and res.get("status") == "ok":
             try:
                 # Attendi un attimo per assicurarsi che la posizione sia registrata
                 import time
@@ -341,7 +341,7 @@ class HyperLiquidTrader:
                     # Arrotonda il prezzo target al tick size corretto per l'asset
                     target_price = self._round_to_tick(target_price, symbol)
 
-                    print(f"  🎯 MICRO_GAIN: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%, tick={self._get_tick_size(symbol)})")
+                    print(f"  🎯 {trading_mode}: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%, tick={self._get_tick_size(symbol)})")
 
                     # Piazza Take Profit limit order (non trigger)
                     # Usa un limit order semplice che si attiva quando il prezzo raggiunge il target
