@@ -15,6 +15,14 @@ import telegram_notifier as tg
 from dotenv import load_dotenv
 load_dotenv()
 
+# Trade Journal - Import opzionale per retrocompatibilità
+try:
+    import trade_journal as tj
+    TRADE_JOURNAL_ENABLED = True
+except ImportError:
+    TRADE_JOURNAL_ENABLED = False
+    tj = None
+
 # ===== MICRO-GAIN CONFIGURATION =====
 MICRO_GAIN_ENABLED = os.getenv('MICRO_GAIN_ENABLED', 'false').lower() == 'true'
 MICRO_GAIN_TARGET_PERCENT = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.15'))
@@ -206,6 +214,25 @@ try:
                             trading_mode="MICRO_GAIN"
                         )
                         print(f"[TRACKING] 🎯 MICRO_GAIN tracking creato per {ticker} @ {pos['entry_price']}")
+
+                        # Trade Journal: registra apertura
+                        if TRADE_JOURNAL_ENABLED:
+                            try:
+                                trade_uuid = tj.open_trade(
+                                    symbol=ticker,
+                                    direction=pos["side"].upper(),
+                                    trading_mode="MICRO_GAIN",
+                                    entry_price=float(pos["entry_price"]),
+                                    size=float(pos.get("size", 0)),
+                                    leverage=MICRO_GAIN_LEVERAGE,
+                                    score=net_score,
+                                    sl_percent=float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0')),
+                                    tp_percent=MICRO_GAIN_TARGET_PERCENT
+                                )
+                                print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}...")
+                            except Exception as je:
+                                print(f"[JOURNAL] ⚠️ Errore registrazione trade: {je}")
+
                         if ticker not in open_symbols:
                             open_symbols.append(ticker)
                         break
@@ -289,6 +316,32 @@ try:
             bot.execute_signal(out)
             actions_taken.append(out)
 
+            # Trade Journal: registra chiusura PRIMA di eliminare tracking
+            if out.get("operation") == "close" and TRADE_JOURNAL_ENABLED:
+                try:
+                    open_trade = tj.get_open_trade(ticker)
+                    if open_trade:
+                        # Ottieni prezzo di chiusura
+                        current_status = bot.get_account_status()
+                        exit_price = 0
+                        for pos in current_status.get("open_positions", []):
+                            if pos.get("symbol") == ticker:
+                                exit_price = float(pos.get("mark_price", 0))
+                                break
+                        if exit_price == 0:
+                            # Posizione già chiusa, usa ultimo prezzo noto
+                            exit_price = float(open_trade.get('entry_price', 0))
+
+                        result = tj.close_trade(
+                            trade_uuid=open_trade['trade_uuid'],
+                            exit_price=exit_price,
+                            close_reason=tj.CloseReason.AI_DECISION,
+                            close_score=net_score if net_score else None
+                        )
+                        print(f"[JOURNAL] 📒 Trade chiuso: Net P&L ${result['net_pnl_usd']:.2f}")
+                except Exception as je:
+                    print(f"[JOURNAL] ⚠️ Errore chiusura trade: {je}")
+
             # Gestisci tracking
             if out.get("_delete_tracking") and out.get("symbol"):
                 try:
@@ -314,6 +367,27 @@ try:
                             )
                             mode_emoji = "🎯" if trading_mode == "MICRO_GAIN" else "📊"
                             print(f"[TRACKING] {mode_emoji} Tracking creato per {out['symbol']} @ {pos['entry_price']} (mode: {trading_mode}, score: {net_score:.1f})")
+
+                            # Trade Journal: registra apertura
+                            if TRADE_JOURNAL_ENABLED:
+                                try:
+                                    sl_pct = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0')) if trading_mode == "MICRO_GAIN" else float(os.getenv('NORMAL_STOP_LOSS_PERCENT', '5.0'))
+                                    tp_pct = MICRO_GAIN_TARGET_PERCENT if trading_mode == "MICRO_GAIN" else None
+                                    trade_uuid = tj.open_trade(
+                                        symbol=ticker,
+                                        direction=pos["side"].upper(),
+                                        trading_mode=trading_mode,
+                                        entry_price=float(pos["entry_price"]),
+                                        size=float(pos.get("size", 0)),
+                                        leverage=int(out.get("leverage", MICRO_GAIN_LEVERAGE if trading_mode == "MICRO_GAIN" else 1)),
+                                        score=net_score,
+                                        sl_percent=sl_pct,
+                                        tp_percent=tp_pct
+                                    )
+                                    print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}...")
+                                except Exception as je:
+                                    print(f"[JOURNAL] ⚠️ Errore registrazione trade: {je}")
+
                             # Aggiorna open_symbols per il prossimo ciclo
                             if out["symbol"] not in open_symbols:
                                 open_symbols.append(out["symbol"])
