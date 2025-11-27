@@ -119,7 +119,11 @@ except:
 st.markdown("---")
 
 # Tabs
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Performance", "💼 Operations", "📈 Open Positions", "🎯 AI Decisions", "🧠 AI Strategy Analysis", "🔬 Backtesting", "⚙️ Settings"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+    "📊 Performance", "💼 Operations", "📈 Open Positions", "🎯 AI Decisions",
+    "🧠 AI Strategy Analysis", "🔬 Backtesting", "⚙️ Settings",
+    "📒 Trade Journal", "💰 Profitability", "🔍 Controller"
+])
 
 with tab1:
     st.subheader("Account Balance Over Time")
@@ -2168,6 +2172,432 @@ with tab7:
             st.warning("Nessuna tabella trovata")
     except Exception as e:
         st.error(f"Errore: {e}")
+
+# =====================
+# TAB 8: Trade Journal
+# =====================
+with tab8:
+    st.subheader("📒 Trade Journal")
+    st.markdown("Storico completo di tutti i trades con dettagli eventi")
+
+    # Filtri
+    col_filter1, col_filter2, col_filter3, col_filter4 = st.columns(4)
+    with col_filter1:
+        journal_period = st.selectbox(
+            "📅 Periodo",
+            ["7 Days", "30 Days", "90 Days", "All Time"],
+            key="journal_period"
+        )
+    with col_filter2:
+        journal_symbol = st.selectbox(
+            "💱 Symbol",
+            ["All", "BTC", "ETH", "SOL"],
+            key="journal_symbol"
+        )
+    with col_filter3:
+        journal_mode = st.selectbox(
+            "📊 Mode",
+            ["All", "MICRO_GAIN", "NORMAL"],
+            key="journal_mode"
+        )
+    with col_filter4:
+        journal_result = st.selectbox(
+            "📈 Result",
+            ["All", "Profitable", "Loss"],
+            key="journal_result"
+        )
+
+    # Query trades
+    try:
+        period_days = {"7 Days": 7, "30 Days": 30, "90 Days": 90, "All Time": 9999}.get(journal_period, 30)
+
+        # Build query
+        where_clauses = ["status = 'CLOSED'", f"closed_at >= NOW() - INTERVAL '{period_days} days'"]
+        if journal_symbol != "All":
+            where_clauses.append(f"symbol = '{journal_symbol}'")
+        if journal_mode != "All":
+            where_clauses.append(f"trading_mode = '{journal_mode}'")
+        if journal_result == "Profitable":
+            where_clauses.append("profitable = true")
+        elif journal_result == "Loss":
+            where_clauses.append("profitable = false")
+
+        where_sql = " AND ".join(where_clauses)
+
+        trades_df = query_db(f"""
+            SELECT
+                trade_uuid,
+                symbol,
+                direction,
+                trading_mode,
+                opened_at,
+                closed_at,
+                duration_seconds,
+                entry_price,
+                exit_price,
+                leverage,
+                ROUND(pnl_percent::numeric, 2) as pnl_pct,
+                ROUND(pnl_usd::numeric, 2) as pnl_gross,
+                ROUND(fee_total::numeric, 2) as fees,
+                ROUND(net_pnl_usd::numeric, 2) as net_pnl,
+                close_reason,
+                profitable
+            FROM trades
+            WHERE {where_sql}
+            ORDER BY closed_at DESC
+            LIMIT 100
+        """)
+
+        if not trades_df.empty:
+            # Summary metrics
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            total_trades = len(trades_df)
+            profitable_trades = trades_df['profitable'].sum()
+            win_rate = (profitable_trades / total_trades * 100) if total_trades > 0 else 0
+            total_net_pnl = trades_df['net_pnl'].sum()
+
+            col_m1.metric("Total Trades", total_trades)
+            col_m2.metric("Win Rate", f"{win_rate:.1f}%")
+            col_m3.metric("Net P&L", f"${total_net_pnl:.2f}",
+                         delta_color="normal" if total_net_pnl >= 0 else "inverse")
+            col_m4.metric("Total Fees", f"${trades_df['fees'].sum():.2f}")
+
+            st.markdown("---")
+
+            # Trades table
+            st.dataframe(
+                trades_df[[
+                    'symbol', 'direction', 'trading_mode', 'opened_at', 'closed_at',
+                    'entry_price', 'exit_price', 'pnl_pct', 'pnl_gross', 'fees', 'net_pnl', 'close_reason'
+                ]],
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # Trade details expander
+            st.markdown("### 📋 Dettaglio Eventi Trade")
+            selected_uuid = st.selectbox(
+                "Seleziona Trade",
+                trades_df['trade_uuid'].tolist(),
+                format_func=lambda x: f"{trades_df[trades_df['trade_uuid']==x]['symbol'].values[0]} - {trades_df[trades_df['trade_uuid']==x]['opened_at'].values[0]}"
+            )
+
+            if selected_uuid:
+                events_df = query_db(f"""
+                    SELECT
+                        created_at as timestamp,
+                        event_type,
+                        description,
+                        current_price,
+                        current_pnl_percent as pnl,
+                        triggered_by
+                    FROM trade_events
+                    WHERE trade_uuid = '{selected_uuid}'
+                    ORDER BY created_at ASC
+                """)
+
+                if not events_df.empty:
+                    st.dataframe(events_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Nessun evento registrato per questo trade")
+        else:
+            st.info("Nessun trade trovato con i filtri selezionati")
+
+    except Exception as e:
+        st.warning(f"Trade Journal non ancora inizializzato o errore: {e}")
+        st.info("Esegui `python trade_journal.py` per inizializzare lo schema")
+
+# =====================
+# TAB 9: Profitability Analysis
+# =====================
+with tab9:
+    st.subheader("💰 Analisi Profittabilità")
+    st.markdown("Analisi dettagliata P&L, fees e suggerimenti ottimizzazione")
+
+    try:
+        # Period selector
+        profit_period = st.selectbox(
+            "📅 Periodo Analisi",
+            ["7 Days", "30 Days", "90 Days"],
+            key="profit_period"
+        )
+        period_days = {"7 Days": 7, "30 Days": 30, "90 Days": 90}.get(profit_period, 30)
+
+        # Summary metrics
+        summary_df = query_db(f"""
+            SELECT
+                COUNT(*) as total_trades,
+                COUNT(*) FILTER (WHERE profitable = true) as winning_trades,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                ROUND(SUM(pnl_usd)::numeric, 2) as gross_pnl,
+                ROUND(SUM(fee_total)::numeric, 2) as total_fees,
+                ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                ROUND(100.0 * SUM(fee_total) / NULLIF(ABS(SUM(pnl_usd)), 0), 1) as fees_percent,
+                COUNT(*) FILTER (WHERE pnl_usd > 0 AND net_pnl_usd <= 0) as eaten_by_fees
+            FROM trades
+            WHERE status = 'CLOSED'
+              AND closed_at >= NOW() - INTERVAL '{period_days} days'
+        """)
+
+        if not summary_df.empty and summary_df['total_trades'].iloc[0] > 0:
+            row = summary_df.iloc[0]
+
+            # Main metrics
+            st.markdown("### 📊 Riepilogo")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("P&L Lordo", f"${row['gross_pnl']:.2f}")
+            col2.metric("Fees Totali", f"${row['total_fees']:.2f}",
+                       delta=f"-{row['fees_percent']:.1f}% del lordo" if row['fees_percent'] else None,
+                       delta_color="inverse")
+            col3.metric("P&L Netto", f"${row['net_pnl']:.2f}",
+                       delta_color="normal" if row['net_pnl'] >= 0 else "inverse")
+            col4.metric("Win Rate", f"{row['win_rate']:.1f}%")
+
+            # Fees impact warning
+            if row['eaten_by_fees'] and row['eaten_by_fees'] > 0:
+                st.warning(f"⚠️ {int(row['eaten_by_fees'])} trades erano profittevoli ma le fees hanno azzerato il guadagno!")
+
+            st.markdown("---")
+
+            # Analysis by trading mode
+            st.markdown("### 📈 Per Trading Mode")
+            mode_df = query_db(f"""
+                SELECT
+                    trading_mode,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                    ROUND(SUM(pnl_usd)::numeric, 2) as gross_pnl,
+                    ROUND(SUM(fee_total)::numeric, 2) as fees,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                    ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                GROUP BY trading_mode
+            """)
+
+            if not mode_df.empty:
+                st.dataframe(mode_df, use_container_width=True, hide_index=True)
+
+            # Analysis by symbol
+            st.markdown("### 💱 Per Symbol")
+            symbol_df = query_db(f"""
+                SELECT
+                    symbol,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                    ROUND(AVG(net_pnl_usd)::numeric, 2) as avg_net_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                GROUP BY symbol
+                ORDER BY net_pnl DESC
+            """)
+
+            if not symbol_df.empty:
+                st.dataframe(symbol_df, use_container_width=True, hide_index=True)
+
+            # Analysis by score range
+            st.markdown("### 🎯 Per Score Range")
+            score_df = query_db(f"""
+                SELECT
+                    CASE
+                        WHEN ABS(open_score) BETWEEN 15 AND 18 THEN '15-18'
+                        WHEN ABS(open_score) BETWEEN 18 AND 22 THEN '18-22'
+                        WHEN ABS(open_score) > 22 THEN '22+'
+                        ELSE '<15'
+                    END as score_range,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                    ROUND(AVG(net_pnl_usd)::numeric, 2) as avg_net_pnl,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as total_net_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                  AND open_score IS NOT NULL
+                GROUP BY score_range
+                ORDER BY score_range
+            """)
+
+            if not score_df.empty:
+                st.dataframe(score_df, use_container_width=True, hide_index=True)
+
+            # P&L Chart over time
+            st.markdown("### 📈 P&L Cumulativo")
+            pnl_chart_df = query_db(f"""
+                SELECT
+                    DATE(closed_at) as date,
+                    SUM(net_pnl_usd) as daily_pnl,
+                    SUM(SUM(net_pnl_usd)) OVER (ORDER BY DATE(closed_at)) as cumulative_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                GROUP BY DATE(closed_at)
+                ORDER BY date
+            """)
+
+            if not pnl_chart_df.empty:
+                fig = px.line(pnl_chart_df, x='date', y='cumulative_pnl',
+                             title='P&L Netto Cumulativo',
+                             labels={'cumulative_pnl': 'P&L ($)', 'date': 'Data'})
+                fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Suggestions
+            st.markdown("### 💡 Suggerimenti")
+            suggestions = []
+
+            if row['fees_percent'] and float(row['fees_percent']) > 25:
+                suggestions.append(f"⚠️ Le fees sono il {row['fees_percent']:.0f}% del P&L lordo - considera di aumentare il size delle posizioni")
+
+            if row['eaten_by_fees'] and row['eaten_by_fees'] > 2:
+                suggestions.append("⚠️ Diversi trades sono stati mangiati dalle fees - alza il target profit minimo")
+
+            # Check score range performance
+            if not score_df.empty:
+                for _, srow in score_df.iterrows():
+                    if srow['win_rate'] and float(srow['win_rate']) < 45:
+                        suggestions.append(f"📊 Score {srow['score_range']} ha win rate {srow['win_rate']:.0f}% - considera di alzare la soglia")
+
+            if not suggestions:
+                suggestions.append("✅ Il sistema sta performando nella norma")
+
+            for s in suggestions:
+                st.info(s)
+
+        else:
+            st.info("Nessun dato disponibile per il periodo selezionato")
+
+    except Exception as e:
+        st.warning(f"Analisi non disponibile: {e}")
+        st.info("Esegui `python trade_journal.py` per inizializzare lo schema")
+
+# =====================
+# TAB 10: Controller/Health
+# =====================
+with tab10:
+    st.subheader("🔍 System Controller")
+    st.markdown("Monitoring sistema e verifica corretto funzionamento")
+
+    try:
+        # System Status
+        st.markdown("### 🟢 System Status")
+
+        col_status1, col_status2, col_status3 = st.columns(3)
+
+        # Check last sentinel log
+        last_sentinel = query_db("""
+            SELECT created_at, symbol, action_taken
+            FROM sentinel_logs
+            ORDER BY created_at DESC
+            LIMIT 1
+        """)
+
+        if not last_sentinel.empty:
+            last_check = last_sentinel['created_at'].iloc[0]
+            time_diff = (datetime.now() - last_check.replace(tzinfo=None)).total_seconds()
+            if time_diff < 120:
+                col_status1.metric("Sentinel", "🟢 Active", f"{int(time_diff)}s ago")
+            else:
+                col_status1.metric("Sentinel", "🟡 Delayed", f"{int(time_diff/60)}m ago")
+        else:
+            col_status1.metric("Sentinel", "⚪ No data")
+
+        # Check open positions
+        open_pos = query_db("""
+            SELECT COUNT(DISTINCT symbol) as count
+            FROM position_tracking
+        """)
+        if not open_pos.empty:
+            col_status2.metric("Open Positions", int(open_pos['count'].iloc[0]))
+
+        # Check DB connection
+        db_check = query_db("SELECT 1 as ok")
+        if not db_check.empty:
+            col_status3.metric("Database", "🟢 Connected")
+        else:
+            col_status3.metric("Database", "🔴 Error")
+
+        st.markdown("---")
+
+        # Position Tracking
+        st.markdown("### 📊 Position Tracking")
+        tracking_df = query_db("""
+            SELECT
+                symbol,
+                direction,
+                entry_price,
+                peak_price,
+                trading_mode,
+                opening_score,
+                trailing_active,
+                updated_at
+            FROM position_tracking
+            ORDER BY symbol
+        """)
+
+        if not tracking_df.empty:
+            st.dataframe(tracking_df, use_container_width=True, hide_index=True)
+
+            # Check SL orders for each position
+            st.markdown("### 🛡️ SL Orders Verification")
+            st.info("Verifica manualmente gli ordini SL con il comando:")
+            st.code("""docker exec rizzo_sentinel python -c "
+from hyperliquid_trader import HyperLiquidTrader
+import os
+from dotenv import load_dotenv
+load_dotenv()
+bot = HyperLiquidTrader(os.getenv('PRIVATE_KEY'), os.getenv('WALLET_ADDRESS'), testnet=False)
+orders = bot.info.open_orders(bot.account_address)
+for o in orders:
+    print(f'{o.get(\"coin\")} | Side: {o.get(\"side\")} | Trigger: {o.get(\"triggerPx\", \"N/A\")}')"
+""")
+        else:
+            st.info("Nessuna posizione aperta in tracking")
+
+        st.markdown("---")
+
+        # Recent Anomalies/Events
+        st.markdown("### ⚠️ Eventi Recenti")
+        events_df = query_db("""
+            SELECT
+                created_at,
+                event_type,
+                description,
+                triggered_by
+            FROM trade_events
+            WHERE event_type IN ('ANOMALY_DETECTED', 'SL_TRIGGERED', 'POSITION_CLOSED')
+            ORDER BY created_at DESC
+            LIMIT 20
+        """)
+
+        if not events_df.empty:
+            st.dataframe(events_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nessun evento critico recente")
+
+        # Sentinel Logs
+        st.markdown("### 📜 Sentinel Logs Recenti")
+        sentinel_logs = query_db("""
+            SELECT
+                created_at,
+                symbol,
+                direction,
+                profit_pct,
+                trailing_active,
+                action_taken,
+                action_reason
+            FROM sentinel_logs
+            ORDER BY created_at DESC
+            LIMIT 30
+        """)
+
+        if not sentinel_logs.empty:
+            st.dataframe(sentinel_logs, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Errore Controller: {e}")
 
 # Refresh button
 st.markdown("---")

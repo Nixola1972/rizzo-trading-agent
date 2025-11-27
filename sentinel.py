@@ -28,6 +28,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Trade Journal - Import opzionale per retrocompatibilità
+try:
+    import trade_journal as tj
+    TRADE_JOURNAL_ENABLED = True
+except ImportError:
+    TRADE_JOURNAL_ENABLED = False
+    tj = None
+
 # Configurazione
 SENTINEL_ENABLED = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
 SENTINEL_INTERVAL = int(os.getenv('SENTINEL_INTERVAL_SECONDS', '60'))
@@ -405,8 +413,36 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                     trading_mode="MICRO_GAIN"
                 )
 
+                # Trade Journal: registra apertura trade
+                trade_uuid = None
+                if TRADE_JOURNAL_ENABLED:
+                    try:
+                        trade_uuid = tj.open_trade(
+                            symbol=symbol,
+                            direction=direction.upper(),
+                            trading_mode="MICRO_GAIN",
+                            entry_price=entry_price,
+                            size=position_size,
+                            leverage=MICRO_GAIN_LEVERAGE,
+                            score=score,
+                            sl_percent=MICRO_GAIN_STOP_LOSS_PERCENT,
+                            tp_percent=MICRO_GAIN_TARGET_PERCENT,
+                            trailing_activation=MICRO_GAIN_TRAILING_ACTIVATION,
+                            trailing_gap=MICRO_GAIN_TRAILING_GAP
+                        )
+                        log(f"   📒 Trade Journal: registrato trade {trade_uuid[:8]}...")
+                    except Exception as e:
+                        log(f"   ⚠️ Trade Journal error: {e}")
+
                 # Piazza SL order su Hyperliquid
-                place_micro_gain_sl_order(bot, symbol, direction, entry_price, position_size)
+                sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, position_size)
+
+                # Trade Journal: registra SL placement
+                if TRADE_JOURNAL_ENABLED and trade_uuid and sl_price:
+                    try:
+                        tj.log_sl_placed(trade_uuid, sl_price, "STOP_TRIGGER", entry_price)
+                    except Exception as e:
+                        log(f"   ⚠️ Trade Journal SL log error: {e}")
 
                 # Inizializza SL level per trailing
                 _current_sl_level[symbol] = -MICRO_GAIN_STOP_LOSS_PERCENT
@@ -490,14 +526,14 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
                 statuses = response_data.get("data", {}).get("statuses", [])
                 if statuses and statuses[0].get("resting"):
                     log(f"   ✅ SL STOP piazzato: OID={statuses[0]['resting']['oid']}")
-                    return True
+                    return sl_trigger  # Ritorna il prezzo SL per il journal
 
         log(f"   ⚠️ SL order response: {sl_order}")
-        return False
+        return None
 
     except Exception as e:
         log(f"   ❌ Errore piazzamento SL: {e}")
-        return False
+        return None
 
 
 def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float,
@@ -580,8 +616,33 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
                 )
 
                 if sl_order.get("status") == "ok":
+                    old_sl = current_sl
                     _current_sl_level[symbol] = new_sl_level
                     log(f"   🔒 Trailing SL STOP @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
+
+                    # Trade Journal: log SL modification
+                    if TRADE_JOURNAL_ENABLED:
+                        try:
+                            open_trade = tj.get_open_trade(symbol)
+                            if open_trade:
+                                # Log trailing activation se è il primo trailing update
+                                if old_sl <= -MICRO_GAIN_STOP_LOSS_PERCENT + 0.1:
+                                    tj.log_trailing_activated(
+                                        open_trade['trade_uuid'],
+                                        current_price, pnl_pct,
+                                        MICRO_GAIN_TRAILING_ACTIVATION
+                                    )
+                                # Log SL update
+                                tj.log_trailing_updated(
+                                    open_trade['trade_uuid'],
+                                    old_sl, new_sl_level,
+                                    current_price, current_price, pnl_pct
+                                )
+                                # Update peak
+                                tj.update_trade_peak(open_trade['trade_uuid'], current_price, pnl_pct)
+                        except Exception as e:
+                            log(f"   ⚠️ Trade Journal error: {e}")
+
                     return True
                 else:
                     log(f"   ⚠️ Errore SL: {sl_order}")
@@ -1109,6 +1170,29 @@ def run_sentinel_check():
                 try:
                     close_result = bot.exchange.market_close(symbol)
                     log(f"   ✅ Posizione chiusa: {close_result}")
+
+                    # Trade Journal: registra chiusura trade
+                    if TRADE_JOURNAL_ENABLED:
+                        try:
+                            open_trade = tj.get_open_trade(symbol)
+                            if open_trade:
+                                # Mappa action_taken a close_reason del journal
+                                journal_close_reason = {
+                                    "CLOSE_TAKE_PROFIT": tj.CloseReason.TP_HIT,
+                                    "CLOSE_STOP_LOSS": tj.CloseReason.SL_HIT,
+                                    "CLOSE_TRAILING_STOP": tj.CloseReason.TRAILING_SL,
+                                    "CLOSE_MICRO_GAIN_REVERSAL": tj.CloseReason.REVERSAL
+                                }.get(action_taken, tj.CloseReason.MANUAL)
+
+                                result_close = tj.close_trade(
+                                    trade_uuid=open_trade['trade_uuid'],
+                                    exit_price=mark_price,
+                                    close_reason=journal_close_reason,
+                                    close_score=micro_gain_result.get('quick_score')
+                                )
+                                log(f"   📒 Trade Journal: chiuso trade - Net P&L: ${result_close['net_pnl_usd']:.2f}")
+                        except Exception as e:
+                            log(f"   ⚠️ Trade Journal close error: {e}")
 
                     # Elimina tracking
                     db_utils.delete_position_tracking(symbol)
