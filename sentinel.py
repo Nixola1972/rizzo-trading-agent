@@ -286,10 +286,19 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
         fear_greed = 50  # Default neutral
         fg_source = "default"
         try:
+            # Prima prova con dati freschi (ultimi 60 min)
             cached_sentiment = db_utils.get_cached_sentiment(max_age_minutes=60)
             if cached_sentiment and cached_sentiment.get('valore') is not None:
                 fear_greed = cached_sentiment['valore']
                 fg_source = f"cache ({cached_sentiment.get('classificazione', 'N/A')})"
+            else:
+                # Fallback: usa dati anche se vecchi (fino a 24 ore)
+                cached_sentiment = db_utils.get_cached_sentiment(max_age_minutes=1440)
+                if cached_sentiment and cached_sentiment.get('valore') is not None:
+                    fear_greed = cached_sentiment['valore']
+                    fg_source = f"STALE cache ({cached_sentiment.get('classificazione', 'N/A')})"
+                    if verbose:
+                        log(f"      ⚠️ {symbol} Usando F&G stale (>60 min) - AI non aggiornata?")
         except Exception as e:
             if verbose:
                 log(f"      ⚠️ Errore lettura sentiment cache: {e}")
