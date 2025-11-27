@@ -81,6 +81,29 @@ NORMAL_STOP_LOSS_PERCENT = float(os.getenv('NORMAL_STOP_LOSS_PERCENT', '5.0'))  
 NORMAL_TRAILING_ACTIVATION = float(os.getenv('NORMAL_TRAILING_ACTIVATION', '2.0'))  # Trailing parte a +2% P&L
 NORMAL_TRAILING_GAP = float(os.getenv('NORMAL_TRAILING_GAP', '1.5'))  # SL segue P&L con gap 1.5%
 
+# NORMAL Mode Trailing a Gradini (più conservativo per score alti)
+# Formato: "pnl1:sl1,pnl2:sl2,..." es. "3:0,5:2,8:5,12:8"
+# Significa: a +3% P&L -> SL=0%, a +5% P&L -> SL=+2%, etc.
+NORMAL_TRAILING_MODE = os.getenv('NORMAL_TRAILING_MODE', 'steps')  # "continuous" o "steps"
+NORMAL_TRAILING_STEPS_STR = os.getenv('NORMAL_TRAILING_STEPS', '3:0,5:2,8:5,12:8,15:10')
+
+def parse_trailing_steps(steps_str: str) -> list:
+    """Parse trailing steps from string format 'pnl:sl,pnl:sl,...' to list of tuples."""
+    steps = []
+    try:
+        for step in steps_str.split(','):
+            pnl, sl = step.strip().split(':')
+            steps.append((float(pnl), float(sl)))
+        # Ordina per P&L crescente
+        steps.sort(key=lambda x: x[0])
+    except Exception as e:
+        print(f"[SENTINEL] Errore parsing trailing steps '{steps_str}': {e}")
+        # Default steps
+        steps = [(3.0, 0.0), (5.0, 2.0), (8.0, 5.0), (12.0, 8.0), (15.0, 10.0)]
+    return steps
+
+NORMAL_TRAILING_STEPS = parse_trailing_steps(NORMAL_TRAILING_STEPS_STR)
+
 # Tracking SL corrente per ogni simbolo (in-memory)
 _current_sl_level = {}  # symbol -> current SL % level
 
@@ -668,15 +691,43 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
         return False
 
 
+def get_step_sl_level(pnl_pct: float, current_sl: float) -> float:
+    """
+    Calcola il livello SL basato sui gradini configurati.
+
+    Args:
+        pnl_pct: P&L corrente in percentuale
+        current_sl: SL corrente in percentuale
+
+    Returns:
+        Nuovo livello SL (o current_sl se non cambia)
+    """
+    new_sl = current_sl
+
+    # Trova il gradino più alto raggiunto
+    for pnl_threshold, sl_level in NORMAL_TRAILING_STEPS:
+        if pnl_pct >= pnl_threshold and sl_level > new_sl:
+            new_sl = sl_level
+
+    return new_sl
+
+
 def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
                            current_price: float, size: float, leverage: float):
     """
-    Aggiorna l'ordine SL per posizioni NORMAL implementando trailing continuo.
+    Aggiorna l'ordine SL per posizioni NORMAL.
 
-    Stessa logica di MICRO_GAIN ma con parametri NORMAL (più ampi):
-    - Se P&L >= NORMAL_TRAILING_ACTIVATION, inizia il trailing
-    - SL segue il P&L mantenendo un gap di NORMAL_TRAILING_GAP
-    - SL non scende mai, solo sale (protegge profitti)
+    Supporta due modalità (configurabile via NORMAL_TRAILING_MODE):
+
+    1. "continuous" - Trailing continuo classico:
+       - Se P&L >= NORMAL_TRAILING_ACTIVATION, inizia il trailing
+       - SL segue il P&L mantenendo un gap di NORMAL_TRAILING_GAP
+       - SL non scende mai, solo sale
+
+    2. "steps" - Trailing a gradini (più conservativo):
+       - SL si alza solo a livelli predefiniti
+       - Esempio: a +3% P&L -> SL=0%, a +5% -> SL=+2%, etc.
+       - Meno sensibile alle oscillazioni di mercato
 
     Args:
         bot: HyperLiquidTrader instance
@@ -705,86 +756,110 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
         pnl_pct = price_change_pct * leverage
 
         # SL corrente (iniziale = -NORMAL_STOP_LOSS_PERCENT)
-        sl_key = f"{symbol}_NORMAL"  # Usa key diversa da MICRO_GAIN
+        sl_key = f"{symbol}_NORMAL"
         current_sl = _current_sl_level.get(sl_key, -NORMAL_STOP_LOSS_PERCENT)
 
-        # Log stato trailing
-        log(f"   📊 {symbol} NORMAL: P&L={pnl_pct:+.2f}% | SL={current_sl:+.2f}% | Attivazione={NORMAL_TRAILING_ACTIVATION}%")
+        # Log stato trailing con indicazione modalità
+        mode_str = "STEPS" if NORMAL_TRAILING_MODE == "steps" else "CONTINUOUS"
+        log(f"   📊 {symbol} NORMAL ({mode_str}): P&L={pnl_pct:+.2f}% | SL={current_sl:+.2f}%")
 
-        # Se P&L >= activation, calcola nuovo SL
-        if pnl_pct >= NORMAL_TRAILING_ACTIVATION:
-            # Nuovo SL = P&L corrente - gap
-            new_sl_level = pnl_pct - NORMAL_TRAILING_GAP
+        # Calcola nuovo SL in base alla modalità
+        new_sl_level = None
 
-            # SL non scende mai! Solo sale
-            if new_sl_level > current_sl:
-                # Calcola prezzo SL
-                sl_price_change = new_sl_level / leverage
+        if NORMAL_TRAILING_MODE == "steps":
+            # === MODALITÀ GRADINI ===
+            # SL si alza solo quando si raggiunge un nuovo gradino
+            step_sl = get_step_sl_level(pnl_pct, current_sl)
 
-                if direction == "long":
-                    new_sl_price = entry_price * (1 + sl_price_change / 100)
-                else:
-                    new_sl_price = entry_price * (1 - sl_price_change / 100)
+            if step_sl > current_sl:
+                new_sl_level = step_sl
+                # Trova quale gradino è stato raggiunto per il log
+                step_reached = None
+                for pnl_threshold, sl_level in NORMAL_TRAILING_STEPS:
+                    if sl_level == step_sl:
+                        step_reached = pnl_threshold
+                        break
+                log(f"   📶 STEP RAGGIUNTO! P&L >= +{step_reached}% → SL sale a {new_sl_level:+.2f}%")
+        else:
+            # === MODALITÀ CONTINUA (classica) ===
+            if pnl_pct >= NORMAL_TRAILING_ACTIVATION:
+                continuous_sl = pnl_pct - NORMAL_TRAILING_GAP
+                if continuous_sl > current_sl:
+                    new_sl_level = continuous_sl
+                    log(f"   📈 TRAILING CONTINUO: P&L={pnl_pct:+.2f}% | SL: {current_sl:+.2f}% → {new_sl_level:+.2f}%")
 
-                new_sl_price = bot._round_to_tick(new_sl_price, symbol)
+        # Se c'è un nuovo SL da impostare
+        if new_sl_level is not None and new_sl_level > current_sl:
+            # Calcola prezzo SL
+            sl_price_change = new_sl_level / leverage
 
-                log(f"   📈 TRAILING ATTIVO! P&L: {pnl_pct:+.2f}% | SL: {current_sl:+.2f}% → {new_sl_level:+.2f}%")
+            if direction == "long":
+                new_sl_price = entry_price * (1 + sl_price_change / 100)
+            else:
+                new_sl_price = entry_price * (1 - sl_price_change / 100)
 
-                # Cancella ordini SL esistenti
-                try:
-                    open_orders = bot.info.open_orders(bot.account_address)
-                    for order in open_orders:
-                        if order.get("coin") == symbol:
+            new_sl_price = bot._round_to_tick(new_sl_price, symbol)
+
+            # Cancella ordini SL esistenti
+            try:
+                open_orders = bot.info.open_orders(bot.account_address)
+                for order in open_orders:
+                    if order.get("coin") == symbol:
+                        # Cancella solo ordini SL (lato opposto alla posizione)
+                        expected_side = "B" if direction == "short" else "A"
+                        if order.get("side") == expected_side:
                             bot.exchange.cancel(symbol, order.get("oid"))
                             log(f"   🗑️ Cancellato SL precedente")
-                except Exception as e:
-                    log(f"   ⚠️ Errore cancellazione: {e}")
+            except Exception as e:
+                log(f"   ⚠️ Errore cancellazione: {e}")
 
-                # Piazza nuovo SL STOP (trigger order)
-                is_buy = direction == "short"
+            # Piazza nuovo SL STOP (trigger order)
+            is_buy = direction == "short"
 
-                sl_order = bot.exchange.order(
-                    symbol,
-                    is_buy,
-                    size,
-                    new_sl_price,
-                    {"trigger": {"triggerPx": new_sl_price, "isMarket": True, "tpsl": "sl"}},
-                    reduce_only=True
-                )
+            sl_order = bot.exchange.order(
+                symbol,
+                is_buy,
+                size,
+                new_sl_price,
+                {"trigger": {"triggerPx": new_sl_price, "isMarket": True, "tpsl": "sl"}},
+                reduce_only=True
+            )
 
-                if sl_order.get("status") == "ok":
-                    old_sl = current_sl
-                    _current_sl_level[sl_key] = new_sl_level
-                    log(f"   🔒 NORMAL Trailing SL STOP @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
+            if sl_order.get("status") == "ok":
+                old_sl = current_sl
+                _current_sl_level[sl_key] = new_sl_level
+                log(f"   🔒 NORMAL SL STOP @ ${new_sl_price:.2f} ({new_sl_level:+.2f}%)")
 
-                    # Trade Journal: log trailing per NORMAL mode
-                    if TRADE_JOURNAL_ENABLED:
-                        try:
-                            open_trade = tj.get_open_trade(symbol)
-                            if open_trade:
-                                # Log trailing activation se è il primo trailing update
-                                if old_sl <= -NORMAL_STOP_LOSS_PERCENT + 0.1:
-                                    tj.log_trailing_activated(
-                                        open_trade['trade_uuid'],
-                                        current_price, pnl_pct,
-                                        NORMAL_TRAILING_ACTIVATION
-                                    )
-                                    log(f"   📒 Trade Journal: trailing NORMAL attivato")
-                                # Log SL update
-                                tj.log_trailing_updated(
+                # Trade Journal: log trailing per NORMAL mode
+                if TRADE_JOURNAL_ENABLED:
+                    try:
+                        open_trade = tj.get_open_trade(symbol)
+                        if open_trade:
+                            # Log trailing activation se è il primo trailing update
+                            if old_sl <= -NORMAL_STOP_LOSS_PERCENT + 0.1:
+                                # Per steps, usa il primo gradino come activation
+                                activation_pct = NORMAL_TRAILING_STEPS[0][0] if NORMAL_TRAILING_MODE == "steps" else NORMAL_TRAILING_ACTIVATION
+                                tj.log_trailing_activated(
                                     open_trade['trade_uuid'],
-                                    old_sl, new_sl_level,
-                                    current_price, current_price, pnl_pct
+                                    current_price, pnl_pct,
+                                    activation_pct
                                 )
-                                # Update peak
-                                tj.update_trade_peak(open_trade['trade_uuid'], current_price, pnl_pct)
-                                log(f"   📒 Trade Journal: SL NORMAL aggiornato {old_sl:+.2f}% → {new_sl_level:+.2f}%")
-                        except Exception as e:
-                            log(f"   ⚠️ Trade Journal NORMAL error: {e}")
+                                log(f"   📒 Trade Journal: trailing NORMAL attivato ({mode_str})")
+                            # Log SL update
+                            tj.log_trailing_updated(
+                                open_trade['trade_uuid'],
+                                old_sl, new_sl_level,
+                                current_price, current_price, pnl_pct
+                            )
+                            # Update peak
+                            tj.update_trade_peak(open_trade['trade_uuid'], current_price, pnl_pct)
+                            log(f"   📒 Trade Journal: SL NORMAL {old_sl:+.2f}% → {new_sl_level:+.2f}%")
+                    except Exception as e:
+                        log(f"   ⚠️ Trade Journal NORMAL error: {e}")
 
-                    return True
-                else:
-                    log(f"   ⚠️ Errore SL: {sl_order}")
+                return True
+            else:
+                log(f"   ⚠️ Errore SL: {sl_order}")
 
         return False
 
