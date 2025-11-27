@@ -341,7 +341,14 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
         # Esegui ordine
         result = bot.execute_signal(order_json)
 
-        if result.get("success") or result.get("status") == "executed":
+        # Hyperliquid ritorna status:"ok" quando l'ordine va a buon fine
+        order_success = (
+            result.get("success") or
+            result.get("status") == "ok" or
+            result.get("status") == "executed"
+        )
+
+        if order_success:
             # Ottieni entry price dalla posizione
             account_status = bot.get_account_status()
             entry_price = 0
@@ -490,6 +497,9 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
         # SL corrente (iniziale = -STOP_LOSS_PERCENT)
         current_sl = _current_sl_level.get(symbol, -MICRO_GAIN_STOP_LOSS_PERCENT)
 
+        # Log stato trailing
+        log(f"   📊 {symbol} MICRO_GAIN: P&L={pnl_pct:+.2f}% | SL={current_sl:+.2f}% | Attivazione={MICRO_GAIN_TRAILING_ACTIVATION}%")
+
         # Se P&L >= activation, calcola nuovo SL
         if pnl_pct >= MICRO_GAIN_TRAILING_ACTIVATION:
             # Nuovo SL = P&L corrente - gap
@@ -507,7 +517,7 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
 
                 new_sl_price = bot._round_to_tick(new_sl_price, symbol)
 
-                log(f"   📈 P&L: {pnl_pct:+.2f}% | SL attuale: {current_sl:+.2f}% → nuovo: {new_sl_level:+.2f}%")
+                log(f"   📈 TRAILING ATTIVO! P&L: {pnl_pct:+.2f}% | SL: {current_sl:+.2f}% → {new_sl_level:+.2f}%")
 
                 # Cancella ordini SL esistenti
                 try:
@@ -588,6 +598,9 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
         sl_key = f"{symbol}_NORMAL"  # Usa key diversa da MICRO_GAIN
         current_sl = _current_sl_level.get(sl_key, -NORMAL_STOP_LOSS_PERCENT)
 
+        # Log stato trailing
+        log(f"   📊 {symbol} NORMAL: P&L={pnl_pct:+.2f}% | SL={current_sl:+.2f}% | Attivazione={NORMAL_TRAILING_ACTIVATION}%")
+
         # Se P&L >= activation, calcola nuovo SL
         if pnl_pct >= NORMAL_TRAILING_ACTIVATION:
             # Nuovo SL = P&L corrente - gap
@@ -605,7 +618,7 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
 
                 new_sl_price = bot._round_to_tick(new_sl_price, symbol)
 
-                log(f"   📈 NORMAL P&L: {pnl_pct:+.2f}% | SL: {current_sl:+.2f}% → {new_sl_level:+.2f}%")
+                log(f"   📈 TRAILING ATTIVO! P&L: {pnl_pct:+.2f}% | SL: {current_sl:+.2f}% → {new_sl_level:+.2f}%")
 
                 # Cancella ordini SL esistenti
                 try:
