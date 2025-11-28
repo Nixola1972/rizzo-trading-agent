@@ -2274,6 +2274,294 @@ with tab8:
                 hide_index=True
             )
 
+            # ========================================
+            # GRAFICI ANALITICI DETTAGLIATI
+            # ========================================
+            st.markdown("---")
+            st.markdown("### 📊 Analisi Grafica Trades")
+
+            # ROW 1: Close Reason Analysis + Symbol Performance
+            col_graph1, col_graph2 = st.columns(2)
+
+            with col_graph1:
+                st.markdown("#### 🎯 Distribuzione Close Reason")
+                # Query per close reason
+                close_reason_df = query_db(f"""
+                    SELECT
+                        close_reason,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) as percentage,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as total_pnl,
+                        ROUND(AVG(net_pnl_usd)::numeric, 2) as avg_pnl
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND close_reason IS NOT NULL
+                    GROUP BY close_reason
+                    ORDER BY trades DESC
+                """)
+
+                if not close_reason_df.empty:
+                    # Pie chart
+                    fig_close = px.pie(
+                        close_reason_df,
+                        values='trades',
+                        names='close_reason',
+                        title='Come si chiudono i trade?',
+                        color='close_reason',
+                        color_discrete_map={
+                            'TP_HIT': '#4CAF50',
+                            'SL_HIT': '#f44336',
+                            'TRAILING_SL': '#FF9800',
+                            'REVERSAL': '#9C27B0',
+                            'AI_DECISION': '#2196F3',
+                            'MANUAL': '#607D8B'
+                        },
+                        hole=0.4
+                    )
+                    fig_close.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig_close, use_container_width=True)
+
+                    # Summary box
+                    for _, row_cr in close_reason_df.iterrows():
+                        color = 'green' if row_cr['avg_pnl'] >= 0 else 'red'
+                        st.markdown(f"**{row_cr['close_reason']}**: {row_cr['trades']} trades | P&L: <span style='color:{color}'>${row_cr['total_pnl']:.2f}</span>", unsafe_allow_html=True)
+                else:
+                    st.info("Nessun dato close_reason disponibile")
+
+            with col_graph2:
+                st.markdown("#### 💱 Performance per Symbol")
+                # Query per symbol dettagliata
+                symbol_perf_df = query_db(f"""
+                    SELECT
+                        symbol,
+                        COUNT(*) as total_trades,
+                        COUNT(*) FILTER (WHERE profitable = true) as wins,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') as sl_hits,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') / NULLIF(COUNT(*), 0), 1) as sl_hit_rate,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY symbol
+                    ORDER BY net_pnl DESC
+                """)
+
+                if not symbol_perf_df.empty:
+                    # Bar chart con P&L e win rate
+                    fig_symbol = go.Figure()
+
+                    # P&L bars
+                    colors = ['#4CAF50' if x >= 0 else '#f44336' for x in symbol_perf_df['net_pnl']]
+                    fig_symbol.add_trace(go.Bar(
+                        x=symbol_perf_df['symbol'],
+                        y=symbol_perf_df['net_pnl'],
+                        name='Net P&L ($)',
+                        marker_color=colors,
+                        text=[f"${x:.2f}" for x in symbol_perf_df['net_pnl']],
+                        textposition='outside'
+                    ))
+
+                    fig_symbol.update_layout(
+                        title='P&L Netto per Symbol',
+                        xaxis_title='Symbol',
+                        yaxis_title='Net P&L ($)',
+                        height=350
+                    )
+                    st.plotly_chart(fig_symbol, use_container_width=True)
+
+                    # Tabella dettagliata
+                    st.dataframe(
+                        symbol_perf_df[['symbol', 'total_trades', 'win_rate', 'sl_hit_rate', 'net_pnl', 'avg_duration_min']],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("Nessun dato per symbol disponibile")
+
+            # ROW 2: SL Analysis per Symbol + Duration Distribution
+            col_graph3, col_graph4 = st.columns(2)
+
+            with col_graph3:
+                st.markdown("#### 🛡️ Analisi Stop Loss per Symbol")
+                sl_analysis_df = query_db(f"""
+                    SELECT
+                        symbol,
+                        close_reason,
+                        COUNT(*) as trades,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min,
+                        ROUND(AVG(ABS(pnl_percent))::numeric, 2) as avg_pnl_pct
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND close_reason IN ('SL_HIT', 'TP_HIT', 'REVERSAL')
+                    GROUP BY symbol, close_reason
+                    ORDER BY symbol, close_reason
+                """)
+
+                if not sl_analysis_df.empty:
+                    # Grouped bar chart
+                    fig_sl = px.bar(
+                        sl_analysis_df,
+                        x='symbol',
+                        y='trades',
+                        color='close_reason',
+                        barmode='group',
+                        title='Distribuzione Close Reason per Symbol',
+                        color_discrete_map={
+                            'TP_HIT': '#4CAF50',
+                            'SL_HIT': '#f44336',
+                            'REVERSAL': '#9C27B0'
+                        }
+                    )
+                    st.plotly_chart(fig_sl, use_container_width=True)
+
+                    # Alert per symbol problematici
+                    for _, row_sl in symbol_perf_df.iterrows() if not symbol_perf_df.empty else []:
+                        if row_sl['sl_hit_rate'] and float(row_sl['sl_hit_rate']) > 55:
+                            st.warning(f"⚠️ **{row_sl['symbol']}**: SL Hit Rate {row_sl['sl_hit_rate']:.0f}% - considera SL più largo")
+                else:
+                    st.info("Dati SL non disponibili")
+
+            with col_graph4:
+                st.markdown("#### ⏱️ Distribuzione Durata Trade")
+                duration_df = query_db(f"""
+                    SELECT
+                        duration_seconds / 60.0 as duration_min,
+                        profitable,
+                        close_reason
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND duration_seconds IS NOT NULL
+                """)
+
+                if not duration_df.empty:
+                    # Histogram
+                    fig_duration = px.histogram(
+                        duration_df,
+                        x='duration_min',
+                        color='profitable',
+                        nbins=20,
+                        title='Distribuzione Durata (minuti)',
+                        color_discrete_map={True: '#4CAF50', False: '#f44336'},
+                        labels={'duration_min': 'Durata (min)', 'profitable': 'Profittevole'}
+                    )
+                    fig_duration.update_layout(
+                        xaxis_title='Durata (minuti)',
+                        yaxis_title='Numero Trade'
+                    )
+                    st.plotly_chart(fig_duration, use_container_width=True)
+
+                    # Stats
+                    avg_dur = duration_df['duration_min'].mean()
+                    avg_dur_win = duration_df[duration_df['profitable'] == True]['duration_min'].mean() if len(duration_df[duration_df['profitable'] == True]) > 0 else 0
+                    avg_dur_loss = duration_df[duration_df['profitable'] == False]['duration_min'].mean() if len(duration_df[duration_df['profitable'] == False]) > 0 else 0
+                    st.caption(f"Media: {avg_dur:.1f}min | Win: {avg_dur_win:.1f}min | Loss: {avg_dur_loss:.1f}min")
+                else:
+                    st.info("Dati durata non disponibili")
+
+            # ROW 3: Score Analysis + Mode Comparison
+            col_graph5, col_graph6 = st.columns(2)
+
+            with col_graph5:
+                st.markdown("#### 🎯 Analisi Score vs Risultato")
+                score_analysis_df = query_db(f"""
+                    SELECT
+                        CASE
+                            WHEN ABS(open_score) < 15 THEN '<15'
+                            WHEN ABS(open_score) BETWEEN 15 AND 17.99 THEN '15-18'
+                            WHEN ABS(open_score) BETWEEN 18 AND 21.99 THEN '18-22'
+                            WHEN ABS(open_score) BETWEEN 22 AND 25 THEN '22-25'
+                            ELSE '25+'
+                        END as score_range,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        ROUND(AVG(net_pnl_usd)::numeric, 3) as avg_pnl
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND open_score IS NOT NULL
+                    GROUP BY score_range
+                    ORDER BY score_range
+                """)
+
+                if not score_analysis_df.empty and len(score_analysis_df) > 0:
+                    # Bar chart win rate per score range
+                    fig_score = go.Figure()
+                    fig_score.add_trace(go.Bar(
+                        x=score_analysis_df['score_range'],
+                        y=score_analysis_df['win_rate'],
+                        name='Win Rate %',
+                        marker_color='#2196F3',
+                        text=[f"{x:.0f}%" for x in score_analysis_df['win_rate']],
+                        textposition='outside'
+                    ))
+                    fig_score.add_hline(y=50, line_dash="dash", line_color="gray", annotation_text="50%")
+                    fig_score.update_layout(
+                        title='Win Rate per Score Range',
+                        xaxis_title='Score Range',
+                        yaxis_title='Win Rate %',
+                        yaxis_range=[0, 100]
+                    )
+                    st.plotly_chart(fig_score, use_container_width=True)
+
+                    # Suggerimento
+                    low_score_wr = score_analysis_df[score_analysis_df['score_range'] == '15-18']['win_rate'].values
+                    if len(low_score_wr) > 0 and low_score_wr[0] < 45:
+                        st.warning(f"⚠️ Score 15-18 ha win rate {low_score_wr[0]:.0f}% - aumenta SCORE_THRESHOLD_OPEN a 20")
+                else:
+                    st.info("Dati score non disponibili - assicurati che open_score sia registrato")
+
+            with col_graph6:
+                st.markdown("#### 📊 Confronto Trading Mode")
+                mode_comparison_df = query_db(f"""
+                    SELECT
+                        trading_mode,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') / NULLIF(COUNT(*), 0), 1) as sl_hit_rate,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min,
+                        ROUND(SUM(fee_total)::numeric, 2) as total_fees
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY trading_mode
+                """)
+
+                if not mode_comparison_df.empty:
+                    # Comparison chart
+                    fig_mode = go.Figure()
+
+                    for metric, color in [('win_rate', '#4CAF50'), ('sl_hit_rate', '#f44336')]:
+                        fig_mode.add_trace(go.Bar(
+                            x=mode_comparison_df['trading_mode'],
+                            y=mode_comparison_df[metric],
+                            name=metric.replace('_', ' ').title(),
+                            marker_color=color,
+                            text=[f"{x:.0f}%" for x in mode_comparison_df[metric]],
+                            textposition='outside'
+                        ))
+
+                    fig_mode.update_layout(
+                        title='Win Rate vs SL Hit Rate per Mode',
+                        xaxis_title='Trading Mode',
+                        yaxis_title='Percentuale',
+                        barmode='group',
+                        yaxis_range=[0, 100]
+                    )
+                    st.plotly_chart(fig_mode, use_container_width=True)
+
+                    # Summary table
+                    st.dataframe(mode_comparison_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Dati trading mode non disponibili")
+
+            st.markdown("---")
+
             # Trade details expander
             st.markdown("### 📋 Dettaglio Eventi Trade")
             selected_uuid = st.selectbox(
