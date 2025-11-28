@@ -2560,6 +2560,282 @@ with tab8:
                 else:
                     st.info("Dati trading mode non disponibili")
 
+            # ========================================
+            # ROW 4: P&L Cumulativo per Mode + Fees Impact
+            # ========================================
+            st.markdown("---")
+            st.markdown("### 📈 Analisi Avanzata Performance")
+
+            col_graph7, col_graph8 = st.columns(2)
+
+            with col_graph7:
+                st.markdown("#### 💰 P&L Cumulativo per Trading Mode")
+                pnl_by_mode_df = query_db(f"""
+                    SELECT
+                        DATE(closed_at) as date,
+                        trading_mode,
+                        SUM(net_pnl_usd) as daily_pnl
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND trading_mode IS NOT NULL
+                    GROUP BY DATE(closed_at), trading_mode
+                    ORDER BY date, trading_mode
+                """)
+
+                if not pnl_by_mode_df.empty:
+                    # Calculate cumulative P&L per mode
+                    pnl_by_mode_df['cumulative_pnl'] = pnl_by_mode_df.groupby('trading_mode')['daily_pnl'].cumsum()
+
+                    fig_pnl_mode = px.line(
+                        pnl_by_mode_df,
+                        x='date',
+                        y='cumulative_pnl',
+                        color='trading_mode',
+                        title='P&L Cumulativo per Mode',
+                        labels={'cumulative_pnl': 'P&L ($)', 'date': 'Data', 'trading_mode': 'Mode'},
+                        color_discrete_map={
+                            'MICRO_PAY': '#2196F3',
+                            'MICRO_GAIN': '#FF9800',
+                            'NORMAL': '#4CAF50'
+                        }
+                    )
+                    fig_pnl_mode.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_pnl_mode.update_layout(height=350)
+                    st.plotly_chart(fig_pnl_mode, use_container_width=True)
+                else:
+                    st.info("Dati P&L per mode non disponibili")
+
+            with col_graph8:
+                st.markdown("#### 💸 Impatto Fees sul P&L")
+                fees_impact_df = query_db(f"""
+                    SELECT
+                        trading_mode,
+                        ROUND(SUM(pnl_usd)::numeric, 2) as gross_pnl,
+                        ROUND(SUM(fee_total)::numeric, 2) as total_fees,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(100.0 * SUM(fee_total) / NULLIF(ABS(SUM(pnl_usd)), 0), 1) as fees_pct,
+                        COUNT(*) FILTER (WHERE pnl_usd > 0 AND net_pnl_usd <= 0) as eaten_by_fees
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY trading_mode
+                """)
+
+                if not fees_impact_df.empty:
+                    # Stacked bar chart: Gross P&L vs Fees
+                    fig_fees = go.Figure()
+
+                    fig_fees.add_trace(go.Bar(
+                        x=fees_impact_df['trading_mode'],
+                        y=fees_impact_df['net_pnl'],
+                        name='Net P&L',
+                        marker_color=['#4CAF50' if x >= 0 else '#f44336' for x in fees_impact_df['net_pnl']]
+                    ))
+
+                    fig_fees.add_trace(go.Bar(
+                        x=fees_impact_df['trading_mode'],
+                        y=fees_impact_df['total_fees'],
+                        name='Fees (perdite)',
+                        marker_color='#FF9800'
+                    ))
+
+                    fig_fees.update_layout(
+                        title='Net P&L vs Fees per Mode',
+                        xaxis_title='Trading Mode',
+                        yaxis_title='USD ($)',
+                        barmode='group',
+                        height=350
+                    )
+                    st.plotly_chart(fig_fees, use_container_width=True)
+
+                    # Alert se fees troppo alte
+                    for _, row_fee in fees_impact_df.iterrows():
+                        if row_fee['fees_pct'] and float(row_fee['fees_pct']) > 50:
+                            st.error(f"🚨 **{row_fee['trading_mode']}**: Fees mangiano {row_fee['fees_pct']:.0f}% del P&L lordo!")
+                        if row_fee['eaten_by_fees'] and int(row_fee['eaten_by_fees']) > 0:
+                            st.warning(f"⚠️ **{row_fee['trading_mode']}**: {int(row_fee['eaten_by_fees'])} trade profittevoli azzerati dalle fees")
+                else:
+                    st.info("Dati fees non disponibili")
+
+            # ========================================
+            # ROW 5: Score Correlation + Symbol Comparison
+            # ========================================
+            col_graph9, col_graph10 = st.columns(2)
+
+            with col_graph9:
+                st.markdown("#### 🎯 Correlazione Score vs P&L")
+                score_scatter_df = query_db(f"""
+                    SELECT
+                        ABS(open_score) as score,
+                        net_pnl_usd as pnl,
+                        profitable,
+                        symbol,
+                        trading_mode
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND open_score IS NOT NULL
+                """)
+
+                if not score_scatter_df.empty and len(score_scatter_df) > 2:
+                    fig_scatter = px.scatter(
+                        score_scatter_df,
+                        x='score',
+                        y='pnl',
+                        color='profitable',
+                        symbol='trading_mode',
+                        title='Score di Apertura vs P&L Risultante',
+                        labels={'score': 'Score (valore assoluto)', 'pnl': 'P&L ($)', 'profitable': 'Profittevole'},
+                        color_discrete_map={True: '#4CAF50', False: '#f44336'},
+                        hover_data=['symbol', 'trading_mode']
+                    )
+                    fig_scatter.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_scatter.add_vline(x=15, line_dash="dot", line_color="orange",
+                                         annotation_text="Soglia attuale (15)")
+                    fig_scatter.add_vline(x=20, line_dash="dot", line_color="green",
+                                         annotation_text="Soglia suggerita (20)")
+                    fig_scatter.update_layout(height=400)
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+
+                    # Calcola correlazione
+                    try:
+                        correlation = score_scatter_df['score'].corr(score_scatter_df['pnl'])
+                        if correlation > 0.3:
+                            st.success(f"📈 Correlazione Score/P&L: **{correlation:.2f}** - Score più alto = risultati migliori!")
+                        elif correlation < -0.1:
+                            st.error(f"📉 Correlazione Score/P&L: **{correlation:.2f}** - Score non predice bene i risultati")
+                        else:
+                            st.info(f"📊 Correlazione Score/P&L: **{correlation:.2f}** - Debole correlazione")
+                    except:
+                        pass
+                else:
+                    st.info("Dati score insufficienti - assicurati che open_score sia registrato")
+
+            with col_graph10:
+                st.markdown("#### 🏆 BTC vs ETH vs SOL - Confronto Diretto")
+                symbol_compare_df = query_db(f"""
+                    SELECT
+                        symbol,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') / NULLIF(COUNT(*), 0), 1) as sl_rate,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'TP_HIT') / NULLIF(COUNT(*), 0), 1) as tp_rate,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(AVG(net_pnl_usd)::numeric, 3) as avg_pnl,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY symbol
+                    ORDER BY net_pnl DESC
+                """)
+
+                if not symbol_compare_df.empty:
+                    # Radar chart per confronto multi-dimensionale
+                    fig_radar = go.Figure()
+
+                    categories = ['Win Rate', 'TP Rate', '100-SL Rate', 'Avg P&L (norm)']
+
+                    for _, sym_row in symbol_compare_df.iterrows():
+                        # Normalizza avg_pnl per visualizzazione (scala 0-100)
+                        max_pnl = symbol_compare_df['avg_pnl'].abs().max()
+                        norm_pnl = 50 + (float(sym_row['avg_pnl']) / max_pnl * 50) if max_pnl > 0 else 50
+
+                        values = [
+                            float(sym_row['win_rate']) if sym_row['win_rate'] else 0,
+                            float(sym_row['tp_rate']) if sym_row['tp_rate'] else 0,
+                            100 - (float(sym_row['sl_rate']) if sym_row['sl_rate'] else 0),  # Inverti SL (meno = meglio)
+                            norm_pnl
+                        ]
+
+                        fig_radar.add_trace(go.Scatterpolar(
+                            r=values + [values[0]],  # Chiudi il poligono
+                            theta=categories + [categories[0]],
+                            name=sym_row['symbol'],
+                            fill='toself',
+                            opacity=0.6
+                        ))
+
+                    fig_radar.update_layout(
+                        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                        title='Confronto Multi-Dimensionale per Symbol',
+                        height=400
+                    )
+                    st.plotly_chart(fig_radar, use_container_width=True)
+
+                    # Tabella riassuntiva con colori
+                    st.dataframe(
+                        symbol_compare_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "win_rate": st.column_config.ProgressColumn("Win Rate %", min_value=0, max_value=100),
+                            "sl_rate": st.column_config.ProgressColumn("SL Hit %", min_value=0, max_value=100, format="%.1f%%"),
+                            "net_pnl": st.column_config.NumberColumn("Net P&L", format="$%.2f")
+                        }
+                    )
+                else:
+                    st.info("Dati symbol non disponibili")
+
+            # ========================================
+            # ALERT BOX - Problemi Critici
+            # ========================================
+            st.markdown("---")
+            st.markdown("### 🚨 Alert Automatici")
+
+            alerts = []
+
+            # Check SL hit rate globale
+            global_sl_df = query_db(f"""
+                SELECT
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') / NULLIF(COUNT(*), 0), 1) as sl_rate
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+            """)
+
+            if not global_sl_df.empty and global_sl_df['sl_rate'].iloc[0]:
+                sl_rate = float(global_sl_df['sl_rate'].iloc[0])
+                if sl_rate > 50:
+                    alerts.append(("error", f"🛑 SL Hit Rate: **{sl_rate:.0f}%** - Troppo alto! Considera di allargare lo stop loss (INITIAL_STOP_LOSS_PERCENT)"))
+                elif sl_rate > 40:
+                    alerts.append(("warning", f"⚠️ SL Hit Rate: **{sl_rate:.0f}%** - Monitorare attentamente"))
+
+            # Check fees impact globale
+            if not fees_impact_df.empty:
+                total_fees_pct = fees_impact_df['fees_pct'].mean()
+                if total_fees_pct and total_fees_pct > 40:
+                    alerts.append(("error", f"🛑 Fees Impact: **{total_fees_pct:.0f}%** medio - Riduci frequenza trade o aumenta target profit"))
+
+            # Check symbol problematici
+            if not symbol_compare_df.empty:
+                for _, sym in symbol_compare_df.iterrows():
+                    if sym['win_rate'] and float(sym['win_rate']) < 30:
+                        alerts.append(("error", f"🛑 **{sym['symbol']}**: Win rate solo **{sym['win_rate']:.0f}%** - Considera di escluderlo o modificare i parametri"))
+                    if sym['sl_rate'] and float(sym['sl_rate']) > 60:
+                        alerts.append(("warning", f"⚠️ **{sym['symbol']}**: SL Hit **{sym['sl_rate']:.0f}%** - Stop loss troppo stretto per questo asset"))
+
+            # Check score correlation
+            if not score_scatter_df.empty and len(score_scatter_df) > 5:
+                low_score_trades = score_scatter_df[score_scatter_df['score'] < 18]
+                if len(low_score_trades) > 0:
+                    low_score_wr = (low_score_trades['profitable'].sum() / len(low_score_trades)) * 100
+                    if low_score_wr < 40:
+                        alerts.append(("warning", f"⚠️ Trade con score < 18 hanno win rate **{low_score_wr:.0f}%** - Aumenta SCORE_THRESHOLD_OPEN a 20"))
+
+            # Display alerts
+            if alerts:
+                for alert_type, alert_msg in alerts:
+                    if alert_type == "error":
+                        st.error(alert_msg)
+                    elif alert_type == "warning":
+                        st.warning(alert_msg)
+                    else:
+                        st.info(alert_msg)
+            else:
+                st.success("✅ Nessun problema critico rilevato - Sistema nella norma")
+
             st.markdown("---")
 
             # Trade details expander
