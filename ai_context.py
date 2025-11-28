@@ -21,6 +21,11 @@ import statistics
 from dotenv import load_dotenv
 load_dotenv()
 
+# Testing Mode - quando abilitato, usa metriche neutre invece di quelle storiche
+TESTING_MODE = os.getenv("TESTING_MODE", "false").lower() == "true"
+if TESTING_MODE:
+    print("[AI_CONTEXT] ⚠️ TESTING_MODE attivo: metriche storiche disabilitate")
+
 # Import opzionali per retrocompatibilità
 try:
     import trade_journal as tj
@@ -221,6 +226,39 @@ def get_performance_by_conditions(symbol: str, days: int = 14) -> dict:
     Returns:
         dict con performance segmentate
     """
+    # Valori neutri per TESTING_MODE
+    neutral_result = {
+        "win_rate_by_mode": {
+            "MICRO_GAIN": 50.0,
+            "MICRO_PAY": 50.0,
+            "NORMAL": 50.0,
+        },
+        "win_rate_by_direction": {
+            "LONG": 50.0,
+            "SHORT": 50.0,
+        },
+        "avg_pnl_by_mode": {
+            "MICRO_GAIN": 0.0,
+            "MICRO_PAY": 0.0,
+            "NORMAL": 0.0,
+        },
+        "avg_duration_by_mode": {
+            "MICRO_GAIN": None,
+            "MICRO_PAY": None,
+            "NORMAL": None,
+        },
+        "consecutive_losses": 0,
+        "consecutive_wins": 0,
+        "last_trade_result": None,
+        "trades_today": 0,
+        "pnl_today": 0.0,
+        "_testing_mode": True,  # Flag per indicare che sono valori neutri
+    }
+
+    # Se TESTING_MODE attivo, ritorna valori neutri
+    if TESTING_MODE:
+        return neutral_result
+
     result = {
         "win_rate_by_mode": {
             "MICRO_GAIN": None,
@@ -353,6 +391,25 @@ def get_global_performance_stats(days: int = 7) -> dict:
     Returns:
         dict con metriche globali
     """
+    # Valori neutri per TESTING_MODE
+    neutral_result = {
+        "total_trades": 0,
+        "win_rate": 50.0,  # Neutro
+        "profit_factor": 1.0,  # Neutro (break-even)
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "largest_win": 0.0,
+        "largest_loss": 0.0,
+        "expectancy": 0.0,
+        "best_symbol": None,
+        "worst_symbol": None,
+        "_testing_mode": True,  # Flag per indicare che sono valori neutri
+    }
+
+    # Se TESTING_MODE attivo, ritorna valori neutri
+    if TESTING_MODE:
+        return neutral_result
+
     result = {
         "total_trades": 0,
         "win_rate": 0.0,
