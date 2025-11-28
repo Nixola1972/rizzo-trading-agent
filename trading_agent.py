@@ -2,9 +2,18 @@ from dotenv import load_dotenv
 import os
 import json
 import re
+import time
 from typing import Dict, List, Any, Optional
 
 load_dotenv()
+
+# ===== AI TIMING CONFIGURATION =====
+AI_CALL_INTERVAL_MINUTES = int(os.getenv('AI_CALL_INTERVAL_MINUTES', '15'))
+AI_DECISION_TIMEOUT_SECONDS = int(os.getenv('AI_DECISION_TIMEOUT_SECONDS', '60'))
+AI_MAX_RETRIES = int(os.getenv('AI_MAX_RETRIES', '2'))
+AI_RETRY_DELAY_SECONDS = int(os.getenv('AI_RETRY_DELAY_SECONDS', '5'))
+
+print(f"⏱️  AI Timing: interval={AI_CALL_INTERVAL_MINUTES}min, timeout={AI_DECISION_TIMEOUT_SECONDS}s, retries={AI_MAX_RETRIES}")
 
 # ===== CONFIGURAZIONE TRAILING STOP & POSITION PROTECTION =====
 TRAILING_STOP_ENABLED = os.getenv('TRAILING_STOP_ENABLED', 'true').lower() == 'true'
@@ -204,16 +213,19 @@ def validate_trading_decision(result, signal_scores=None):
     return result
 
 
-def call_ai_api(prompt, use_json_format=True, max_retries=2, signal_scores=None):
+def call_ai_api(prompt, use_json_format=True, max_retries=None, signal_scores=None):
     """
-    Chiama l'API AI con retry logic e gestione flessibile del JSON.
+    Chiama l'API AI con retry logic, timeout e gestione flessibile del JSON.
 
     Args:
         prompt: Il prompt da inviare
         use_json_format: Se usare response_format=json_object (solo per modelli compatibili)
-        max_retries: Numero massimo di tentativi
+        max_retries: Numero massimo di tentativi (default da AI_MAX_RETRIES)
         signal_scores: Dizionario con score calcolati per ogni symbol (per validazione)
     """
+    if max_retries is None:
+        max_retries = AI_MAX_RETRIES
+
     for attempt in range(max_retries + 1):
         try:
             # Prepara parametri chiamata
@@ -229,7 +241,8 @@ def call_ai_api(prompt, use_json_format=True, max_retries=2, signal_scores=None)
                         "content": prompt
                     }
                 ],
-                "temperature": 0.7
+                "temperature": 0.7,
+                "timeout": AI_DECISION_TIMEOUT_SECONDS  # Timeout configurabile
             }
 
             # Aggiungi response_format solo per modelli che lo supportano
@@ -264,7 +277,8 @@ def call_ai_api(prompt, use_json_format=True, max_retries=2, signal_scores=None)
         except json.JSONDecodeError as e:
             print(f"   ⚠️  Tentativo {attempt + 1}/{max_retries + 1}: Errore parsing JSON - {e}")
             if attempt < max_retries:
-                print(f"   🔄 Riprovo con prompt più esplicito...")
+                print(f"   🔄 Riprovo tra {AI_RETRY_DELAY_SECONDS}s con prompt più esplicito...")
+                time.sleep(AI_RETRY_DELAY_SECONDS)
                 # Aggiungi enfasi sul formato JSON nel prompt
                 if "IMPORTANT: Respond ONLY with a valid JSON object" not in prompt:
                     prompt = "IMPORTANT: Respond ONLY with a valid JSON object, no other text.\n\n" + prompt
@@ -274,14 +288,16 @@ def call_ai_api(prompt, use_json_format=True, max_retries=2, signal_scores=None)
         except ValueError as e:
             print(f"   ⚠️  Tentativo {attempt + 1}/{max_retries + 1}: Validazione fallita - {e}")
             if attempt < max_retries:
-                print(f"   🔄 Riprovo...")
+                print(f"   🔄 Riprovo tra {AI_RETRY_DELAY_SECONDS}s...")
+                time.sleep(AI_RETRY_DELAY_SECONDS)
             else:
                 raise
 
         except Exception as e:
             print(f"   ❌ Tentativo {attempt + 1}/{max_retries + 1}: Errore API - {e}")
             if attempt < max_retries:
-                print(f"   🔄 Riprovo...")
+                print(f"   🔄 Riprovo tra {AI_RETRY_DELAY_SECONDS}s...")
+                time.sleep(AI_RETRY_DELAY_SECONDS)
                 # Rimuovi response_format se causava problemi
                 use_json_format = False
             else:

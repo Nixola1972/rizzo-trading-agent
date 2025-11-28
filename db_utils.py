@@ -1019,22 +1019,43 @@ def get_latest_account_snapshot() -> Optional[Dict[str, Any]]:
 
 
 
-def get_recent_bot_operations(limit: int = 50) -> List[Dict[str, Any]]:
-    """Restituisce le ultime N operazioni del bot (raw_payload)."""
+def get_recent_bot_operations(limit: int = 50, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Restituisce le ultime N operazioni del bot.
+
+    Args:
+        limit: Numero massimo di operazioni da restituire
+        symbol: Filtra per simbolo specifico (es: 'BTC', 'ETH'). Se None, restituisce tutti.
+
+    Returns:
+        Lista di dizionari con raw_payload e created_at
+    """
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT raw_payload
-                FROM bot_operations
-                ORDER BY created_at DESC
-                LIMIT %s;
-                """,
-                (limit,),
-            )
+            if symbol:
+                cur.execute(
+                    """
+                    SELECT raw_payload, created_at
+                    FROM bot_operations
+                    WHERE symbol = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (symbol, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT raw_payload, created_at
+                    FROM bot_operations
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (limit,),
+                )
             rows = cur.fetchall()
-            return [r[0] for r in rows]
+            return [{'raw_payload': r[0], 'created_at': r[1]} for r in rows]
 
 
 # =====================

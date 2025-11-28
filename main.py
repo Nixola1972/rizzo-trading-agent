@@ -1,6 +1,6 @@
 from indicators import analyze_multiple_tickers
 from news_feed import fetch_latest_news
-from trading_agent import previsione_trading_agent, get_last_signal_scores, get_scoring_config, SCORING_ENABLED
+from trading_agent import previsione_trading_agent, get_last_signal_scores, get_scoring_config, SCORING_ENABLED, AI_CALL_INTERVAL_MINUTES
 from whalealert import format_whale_alerts_to_string
 from sentiment import get_sentiment
 from forecaster import get_crypto_forecasts
@@ -140,6 +140,50 @@ def get_overall_performance(days: int = 7) -> dict:
         print(f"[STATS] ⚠️ Errore recupero overall performance: {e}")
         return None
 
+
+def should_skip_ai_call(symbol: str) -> tuple:
+    """
+    Controlla se dovremmo saltare la chiamata AI per questo simbolo
+    basandosi sull'intervallo configurato AI_CALL_INTERVAL_MINUTES.
+
+    Returns:
+        (should_skip: bool, reason: str, minutes_since_last: int)
+    """
+    from datetime import datetime, timezone
+
+    try:
+        # Recupera le ultime operazioni bot per questo simbolo
+        recent_ops = db_utils.get_recent_bot_operations(symbol=symbol, limit=1)
+
+        if not recent_ops:
+            return (False, "Nessuna operazione precedente", 0)
+
+        last_op = recent_ops[0]
+        last_op_time = last_op.get('created_at')
+
+        if not last_op_time:
+            return (False, "Timestamp non disponibile", 0)
+
+        # Calcola minuti dall'ultima operazione
+        if last_op_time.tzinfo is None:
+            last_op_time = last_op_time.replace(tzinfo=timezone.utc)
+
+        now = datetime.now(timezone.utc)
+        minutes_since = int((now - last_op_time).total_seconds() / 60)
+
+        if minutes_since < AI_CALL_INTERVAL_MINUTES:
+            return (
+                True,
+                f"Ultima chiamata AI {minutes_since}min fa (minimo: {AI_CALL_INTERVAL_MINUTES}min)",
+                minutes_since
+            )
+
+        return (False, f"Passati {minutes_since}min dall'ultima chiamata", minutes_since)
+
+    except Exception as e:
+        print(f"[AI_INTERVAL] ⚠️ Errore controllo intervallo per {symbol}: {e}")
+        return (False, f"Errore: {e}", 0)
+
 # Parse arguments
 parser = argparse.ArgumentParser(description="Trading Bot")
 parser.add_argument("--ticker", type=str, help="Analizza solo questo ticker (es: ETH)")
@@ -159,6 +203,7 @@ def timeout_handler(signum, frame):
 signal.signal(signal.SIGALRM, timeout_handler)
 signal.alarm(GLOBAL_TIMEOUT)
 print(f"⏱️ Global timeout set: {GLOBAL_TIMEOUT} seconds (BOT_TIMEOUT_SECONDS)")
+print(f"⏱️ AI call interval: {AI_CALL_INTERVAL_MINUTES} minutes (AI_CALL_INTERVAL_MINUTES)")
 
 # Collegamento ad Hyperliquid
 TESTNET = os.getenv("TESTNET", "true").lower() == "true"  # Legge da .env
@@ -350,6 +395,15 @@ try:
             )
             print(f"   💾 Operazione MICRO_GAIN {ticker} salvata con id={op_id}")
             continue  # Passa al prossimo ticker
+
+        # === CONTROLLO INTERVALLO AI ===
+        # Salta la chiamata AI se non è passato abbastanza tempo dall'ultima chiamata
+        # (solo se NON c'è una posizione aperta da gestire)
+        if not has_position:
+            skip_ai, skip_reason, mins_since = should_skip_ai_call(ticker)
+            if skip_ai:
+                print(f"   ⏭️  Skip {ticker}: {skip_reason}")
+                continue
 
         # Costruisci prompt specifico per questo simbolo
         with open('system_prompt_single.txt', 'r') as f:
