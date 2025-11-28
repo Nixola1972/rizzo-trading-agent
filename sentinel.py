@@ -806,6 +806,120 @@ def place_micro_pay_sl_order(bot, symbol: str, direction: str, entry_price: floa
         return None
 
 
+# ===== DETECT EXTERNALLY CLOSED POSITIONS =====
+
+def detect_externally_closed_positions(bot, existing_symbols: list):
+    """
+    Rileva posizioni tracciate che sono state chiuse esternamente (TP/SL su Hyperliquid).
+    Registra la chiusura nel Trade Journal.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        existing_symbols: Lista dei simboli con posizioni attualmente aperte
+    """
+    if not TRADE_JOURNAL_ENABLED:
+        return
+
+    try:
+        import trade_journal as tj
+
+        # Ottieni tutti i tracking attivi dal DB
+        all_trackings = db_utils.get_all_position_trackings()
+
+        for tracking in all_trackings:
+            symbol = tracking.get("symbol")
+
+            # Se il simbolo è ancora aperto, skip
+            if symbol in existing_symbols:
+                continue
+
+            # Posizione era tracciata ma non esiste più → chiusa esternamente!
+            log(f"📋 {symbol}: Posizione chiusa esternamente (TP/SL)")
+
+            # Cerca trade aperto nel journal
+            open_trade = tj.get_open_trade(symbol)
+            if not open_trade:
+                log(f"   ⚠️ {symbol}: Nessun trade aperto nel journal, cleanup tracking")
+                db_utils.delete_position_tracking(symbol)
+                continue
+
+            # Ottieni ultimo fill da Hyperliquid per il prezzo di chiusura
+            exit_price = None
+            close_reason = tj.CloseReason.MANUAL  # Default
+
+            try:
+                # Usa user_fills per ottenere gli ultimi trade
+                fills = bot.info.user_fills(bot.account_address)
+
+                # Cerca l'ultimo fill per questo simbolo
+                symbol_fills = [f for f in fills if f.get("coin") == symbol]
+                if symbol_fills:
+                    # Ordina per tempo (più recente prima)
+                    symbol_fills.sort(key=lambda x: x.get("time", 0), reverse=True)
+                    last_fill = symbol_fills[0]
+                    exit_price = float(last_fill.get("px", 0))
+
+                    # Determina reason dal tipo di ordine
+                    # Se il fill è da un ordine trigger, è TP o SL
+                    order_type = last_fill.get("orderType", "")
+                    if "Trigger" in str(order_type) or last_fill.get("cloid", "").startswith("sl"):
+                        close_reason = tj.CloseReason.SL_HIT
+                    elif last_fill.get("cloid", "").startswith("tp"):
+                        close_reason = tj.CloseReason.TP_HIT
+                    else:
+                        # Controlla direzione per capire se era TP o SL
+                        entry_price = float(open_trade.get("entry_price", 0))
+                        direction = open_trade.get("direction", "").lower()
+
+                        if direction == "long":
+                            # Long: se exit > entry, probabilmente TP
+                            if exit_price > entry_price:
+                                close_reason = tj.CloseReason.TP_HIT
+                            else:
+                                close_reason = tj.CloseReason.SL_HIT
+                        else:
+                            # Short: se exit < entry, probabilmente TP
+                            if exit_price < entry_price:
+                                close_reason = tj.CloseReason.TP_HIT
+                            else:
+                                close_reason = tj.CloseReason.SL_HIT
+
+                    log(f"   📍 Exit price: ${exit_price:.2f}, reason: {close_reason.value}")
+            except Exception as e:
+                log(f"   ⚠️ Errore lettura fills: {e}")
+                # Usa ultimo prezzo tracciato come fallback
+                exit_price = tracking.get("last_checked_price") or tracking.get("entry_price")
+
+            if not exit_price:
+                exit_price = tracking.get("entry_price", 0)
+                log(f"   ⚠️ Exit price non trovato, uso entry: ${exit_price:.2f}")
+
+            # Chiudi trade nel journal
+            try:
+                result_close = tj.close_trade(
+                    trade_uuid=open_trade['trade_uuid'],
+                    exit_price=exit_price,
+                    close_reason=close_reason
+                )
+                log(f"   📒 Trade Journal: chiuso trade - Net P&L: ${result_close['net_pnl_usd']:.2f}")
+            except Exception as e:
+                log(f"   ⚠️ Errore chiusura trade journal: {e}")
+
+            # Cleanup tracking
+            db_utils.delete_position_tracking(symbol)
+
+            # Reset SL level
+            sl_key_micro = symbol
+            sl_key_normal = f"{symbol}_NORMAL"
+            sl_key_micropay = f"{symbol}_MICROPAY"
+            for key in [sl_key_micro, sl_key_normal, sl_key_micropay]:
+                if key in _current_sl_level:
+                    del _current_sl_level[key]
+
+    except Exception as e:
+        log(f"⚠️ Errore detect_externally_closed_positions: {e}")
+
+
 def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float,
                                 current_price: float, size: float):
     """
@@ -1860,6 +1974,11 @@ def run_sentinel_check():
 
         # Lista simboli con posizioni aperte
         existing_symbols = [p.get("symbol") for p in positions]
+
+        # === DETECT EXTERNALLY CLOSED POSITIONS ===
+        # Controlla se ci sono posizioni tracciate che non esistono più
+        # (chiuse da TP/SL su Hyperliquid)
+        detect_externally_closed_positions(bot, existing_symbols)
 
         if not positions:
             log("Nessuna posizione aperta")
