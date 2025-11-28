@@ -36,6 +36,14 @@ except ImportError:
     TRADE_JOURNAL_ENABLED = False
     tj = None
 
+# Database Utils - Import opzionale
+try:
+    import db_utils
+    DB_UTILS_ENABLED = True
+except ImportError:
+    DB_UTILS_ENABLED = False
+    db_utils = None
+
 # Configurazione
 SENTINEL_ENABLED = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
 SENTINEL_INTERVAL = int(os.getenv('SENTINEL_INTERVAL_SECONDS', '60'))
