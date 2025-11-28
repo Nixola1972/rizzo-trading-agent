@@ -1196,6 +1196,7 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
 
     try:
         import trade_journal as tj
+        import db_utils
 
         # Ottieni tutti i tracking attivi dal DB
         all_trackings = db_utils.get_all_position_trackings()
