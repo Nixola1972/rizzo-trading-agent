@@ -57,6 +57,89 @@ def determine_trading_mode(net_score: float) -> str:
     else:
         return "NORMAL"
 
+# ===== ENRICHED AI CONTEXT FUNCTIONS =====
+def get_symbol_trade_stats(symbol: str, days: int = 7) -> dict:
+    """
+    Recupera statistiche storiche per un simbolo dal Trade Journal.
+    Aiuta l'AI a capire come sta performando su quel simbolo.
+    """
+    if not TRADE_JOURNAL_ENABLED:
+        return None
+
+    try:
+        by_symbol = tj.get_summary_by_symbol(days)
+        for stat in by_symbol:
+            if stat.get('symbol') == symbol:
+                return {
+                    "trades_count": stat.get('trades', 0),
+                    "win_rate": float(stat.get('win_rate') or 0),
+                    "net_pnl_usd": float(stat.get('net_pnl') or 0),
+                    "avg_pnl_percent": float(stat.get('avg_net_pnl_percent') or 0),
+                    "period_days": days
+                }
+        return {"trades_count": 0, "win_rate": 0, "net_pnl_usd": 0, "avg_pnl_percent": 0, "period_days": days}
+    except Exception as e:
+        print(f"[STATS] ⚠️ Errore recupero stats per {symbol}: {e}")
+        return None
+
+def get_position_context(symbol: str) -> dict:
+    """
+    Recupera contesto della posizione aperta: durata, score apertura, peak, etc.
+    """
+    try:
+        tracking = db_utils.get_position_tracking(symbol)
+        if not tracking:
+            return None
+
+        from datetime import datetime, timezone
+
+        created_at = tracking.get('created_at')
+        if created_at:
+            # Calcola durata posizione in minuti
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            duration_minutes = int((now - created_at).total_seconds() / 60)
+        else:
+            duration_minutes = 0
+
+        return {
+            "duration_minutes": duration_minutes,
+            "entry_price": tracking.get('entry_price'),
+            "peak_price": tracking.get('peak_price'),
+            "opening_score": tracking.get('opening_score'),
+            "trading_mode": tracking.get('trading_mode', 'NORMAL'),
+            "trailing_active": tracking.get('trailing_active', False)
+        }
+    except Exception as e:
+        print(f"[CONTEXT] ⚠️ Errore recupero position context per {symbol}: {e}")
+        return None
+
+def get_overall_performance(days: int = 7) -> dict:
+    """
+    Recupera performance complessiva del bot.
+    Utile per l'AI per capire se essere più conservativo o aggressivo.
+    """
+    if not TRADE_JOURNAL_ENABLED:
+        return None
+
+    try:
+        summary = tj.get_trade_summary(days)
+        if not summary:
+            return None
+
+        return {
+            "total_trades": summary.get('total_trades', 0),
+            "win_rate": float(summary.get('win_rate') or 0),
+            "total_net_pnl": float(summary.get('total_net_pnl') or 0),
+            "avg_pnl_percent": float(summary.get('avg_net_pnl_percent') or 0),
+            "avg_duration_minutes": int((summary.get('avg_duration_sec') or 0) / 60),
+            "period_days": days
+        }
+    except Exception as e:
+        print(f"[STATS] ⚠️ Errore recupero overall performance: {e}")
+        return None
+
 # Parse arguments
 parser = argparse.ArgumentParser(description="Trading Bot")
 parser.add_argument("--ticker", type=str, help="Analizza solo questo ticker (es: ETH)")
@@ -109,9 +192,14 @@ try:
 
     indicators_txt, indicators_json  = analyze_multiple_tickers(tickers)
     news_txt = fetch_latest_news()
-    # whale_alerts_txt = format_whale_alerts_to_string()
+    whale_alerts_txt = format_whale_alerts_to_string()  # Attivato per arricchire contesto AI
     sentiment_txt, sentiment_json  = get_sentiment()
     forecasts_txt, forecasts_json = get_crypto_forecasts()
+
+    # Recupera performance complessiva per contesto AI
+    overall_perf = get_overall_performance(days=7)
+    if overall_perf:
+        print(f"[STATS] 📊 Performance 7gg: {overall_perf['total_trades']} trades, WR {overall_perf['win_rate']:.1f}%, Net P&L ${overall_perf['total_net_pnl']:.2f}")
 
     # Salva sentiment nella cache per il sentinel
     if sentiment_json:
@@ -126,8 +214,14 @@ try:
         except Exception as e:
             print(f"[CACHE] ⚠️ Errore salvataggio sentiment cache: {e}")
 
+    # Recupera trend sentiment (confronto con valori precedenti)
+    sentiment_trend = db_utils.get_sentiment_trend(hours=6)
+    if sentiment_trend:
+        print(f"[SENTIMENT] 📈 Trend: {sentiment_trend['trend']} (da {sentiment_trend['previous_value']} a {sentiment_trend['current_value']}, change: {sentiment_trend['change']:+d})")
+
     msg_info=f"""<indicatori>\n{indicators_txt}\n</indicatori>\n\n
     <news>\n{news_txt}</news>\n\n
+    <whale_alerts>\n{whale_alerts_txt}</whale_alerts>\n\n
     <sentiment>\n{sentiment_txt}\n</sentiment>\n\n
     <forecast>\n{forecasts_txt}\n</forecast>\n\n"""
 
@@ -272,6 +366,13 @@ try:
                 ticker_position = pos
                 break
 
+        # === ENRICHED CONTEXT: dati aggiuntivi per l'AI ===
+        # 1. Statistiche storiche per questo simbolo
+        symbol_stats = get_symbol_trade_stats(ticker, days=7)
+
+        # 2. Contesto posizione (se aperta): durata, entry score, peak, etc.
+        position_context = get_position_context(ticker) if has_position else None
+
         # Costruisci il contesto per questo singolo ticker
         ticker_context = {
             "symbol": ticker,
@@ -283,7 +384,12 @@ try:
             "forecast": ticker_forecasts,
             "account_balance": account_status.get("balance_usd", 0),
             "open_positions_count": len(open_positions),
-            "all_open_symbols": open_symbols
+            "all_open_symbols": open_symbols,
+            # === ENRICHED DATA ===
+            "symbol_historical_stats": symbol_stats,  # Win rate, avg P&L per questo simbolo
+            "position_context": position_context,      # Durata posizione, entry score, peak
+            "bot_overall_performance": overall_perf,   # Performance complessiva bot 7gg
+            "sentiment_trend": sentiment_trend         # Trend sentiment (increasing/decreasing/stable)
         }
 
         system_prompt = system_prompt_template.format(

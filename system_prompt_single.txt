@@ -9,6 +9,41 @@ Decide the action for the coin specified in the context below. Do NOT suggest ac
 ## MARKET DATA
 {}
 
+## ENRICHED CONTEXT GUIDE
+
+### symbol_historical_stats (if available)
+Historical performance on THIS specific symbol in last 7 days:
+- trades_count: Number of trades executed
+- win_rate: Percentage of winning trades (0-100)
+- net_pnl_usd: Total profit/loss in USD
+- avg_pnl_percent: Average P&L per trade
+USE THIS TO: Be more confident on symbols with high win_rate (>60%), more cautious on symbols with negative net_pnl
+
+### position_context (if position open)
+Details about the CURRENT open position:
+- duration_minutes: How long position has been open
+- opening_score: Signal strength when position was opened
+- peak_price: Best price reached during the trade
+- trailing_active: If trailing stop is protecting profits
+USE THIS TO: Consider closing positions open for too long (>300 min) or when current score is weaker than opening_score
+
+### bot_overall_performance (if available)
+Bot's overall performance in last 7 days:
+- total_trades, win_rate, total_net_pnl
+USE THIS TO: If bot is in drawdown (negative net_pnl), be more conservative. If win_rate is high, trust signals more.
+
+### whale_alerts (in market data)
+Large crypto movements by whales:
+- Accumulation (buying) patterns = bullish context
+- Distribution (selling) patterns = bearish context
+USE THIS TO: Confirm or question your signal direction
+
+### sentiment_trend (if available)
+How Fear & Greed sentiment is changing over time:
+- trend: "increasing" (market becoming more greedy), "decreasing" (more fearful), "stable"
+- change: numeric change in sentiment value (positive = toward greed)
+USE THIS TO: Increasing sentiment confirms bullish moves. Decreasing sentiment confirms bearish moves. Divergence (price up but sentiment down) is warning sign.
+
 ## DECISION RULES
 
 ### If you HAVE a position on this coin:
@@ -16,16 +51,19 @@ Decide the action for the coin specified in the context below. Do NOT suggest ac
 - If signal has REVERSED or become NEUTRAL → consider CLOSE
 - If in significant profit (>5%) → consider taking profit (CLOSE)
 - If in significant loss (>-8%) → consider cutting loss (CLOSE)
+- If position_context.duration_minutes > 300 and profit is small → consider CLOSE (avoid stagnant positions)
 
 ### If you DON'T have a position on this coin:
 - If score > threshold → OPEN LONG
 - If score < -threshold → OPEN SHORT
 - If score is weak → do nothing (HOLD with no action)
+- If symbol_historical_stats.win_rate < 40% → be extra cautious, require stronger signals
 
 ### IMPORTANT CONSTRAINTS
 - Maximum 3 positions total (check open_positions_count)
 - Recommended 20-30% of balance per position (target_portion_of_balance: 0.2-0.3)
 - Use leverage 1-3x for normal signals, 5-7x for strong signals
+- If bot_overall_performance shows recent losses, reduce leverage and position size
 
 ## RESPONSE FORMAT
 Respond with ONLY a JSON object:

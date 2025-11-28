@@ -1477,6 +1477,65 @@ def cleanup_old_sentiment_cache(keep_hours: int = 24) -> int:
     return len(deleted)
 
 
+def get_sentiment_trend(hours: int = 6) -> Optional[Dict[str, Any]]:
+    """Calcola il trend del sentiment confrontando valori recenti.
+
+    Restituisce:
+    - current_value: valore attuale
+    - previous_value: valore precedente (1-2 ore fa)
+    - change: differenza (current - previous)
+    - trend: 'increasing', 'decreasing', o 'stable'
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Prendi ultimi 2 valori sentiment con almeno 30 minuti di distanza
+            cur.execute(
+                """
+                SELECT value, created_at
+                FROM sentiment_cache
+                WHERE created_at > NOW() - INTERVAL '%s hours'
+                ORDER BY created_at DESC
+                LIMIT 5;
+                """,
+                (hours,),
+            )
+            rows = cur.fetchall()
+
+    if len(rows) < 2:
+        return None
+
+    current = rows[0]
+    # Cerca il primo valore con almeno 30 minuti di differenza
+    previous = None
+    for row in rows[1:]:
+        time_diff = (current[1] - row[1]).total_seconds() / 60
+        if time_diff >= 30:
+            previous = row
+            break
+
+    if not previous:
+        previous = rows[-1]  # Usa l'ultimo disponibile
+
+    current_value = current[0]
+    previous_value = previous[0]
+    change = current_value - previous_value
+
+    if change > 3:
+        trend = "increasing"
+    elif change < -3:
+        trend = "decreasing"
+    else:
+        trend = "stable"
+
+    return {
+        "current_value": current_value,
+        "previous_value": previous_value,
+        "change": change,
+        "trend": trend
+    }
+
+
 if __name__ == "__main__":
     init_db()
 
