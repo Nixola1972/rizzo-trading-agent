@@ -776,6 +776,136 @@ def get_unprofitable_due_to_fees(days: int = 30) -> List[dict]:
             return cur.fetchall()
 
 
+def get_closed_trades(symbol: str = None, days: int = 30) -> List[dict]:
+    """
+    Get closed trades, optionally filtered by symbol.
+
+    Args:
+        symbol: Filter by symbol (optional)
+        days: Number of days to look back
+
+    Returns:
+        List of closed trade dicts
+    """
+    with get_journal_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if symbol:
+                cur.execute("""
+                    SELECT * FROM trades
+                    WHERE status = 'CLOSED'
+                      AND symbol = %s
+                      AND closed_at >= NOW() - INTERVAL '%s days'
+                    ORDER BY closed_at DESC
+                """, (symbol, days))
+            else:
+                cur.execute("""
+                    SELECT * FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '%s days'
+                    ORDER BY closed_at DESC
+                """, (days,))
+            return cur.fetchall()
+
+
+def get_equity_history(days: int = 7) -> List[dict]:
+    """
+    Get equity history based on cumulative P&L.
+
+    Returns list of {date, equity, pnl} dicts.
+    """
+    with get_journal_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    DATE_TRUNC('day', closed_at) as trade_date,
+                    SUM(net_pnl_usd) as daily_pnl,
+                    SUM(SUM(net_pnl_usd)) OVER (ORDER BY DATE_TRUNC('day', closed_at)) as cumulative_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '%s days'
+                GROUP BY DATE_TRUNC('day', closed_at)
+                ORDER BY trade_date
+            """, (days,))
+            rows = cur.fetchall()
+
+            # Convert to equity (starting from 100)
+            result = []
+            base_equity = 100  # Starting equity reference
+            for row in rows:
+                result.append({
+                    "date": row["trade_date"],
+                    "daily_pnl": float(row["daily_pnl"] or 0),
+                    "equity": base_equity + float(row["cumulative_pnl"] or 0)
+                })
+            return result
+
+
+def get_trade_summary_extended(days: int = 30) -> dict:
+    """
+    Extended trade summary with more metrics for AI context.
+    """
+    with get_journal_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*) as total_trades,
+                    COUNT(*) FILTER (WHERE profitable = true) as winning_trades,
+                    COUNT(*) FILTER (WHERE profitable = false) as losing_trades,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 2) as win_rate,
+                    ROUND(SUM(pnl_usd)::numeric, 2) as total_gross_pnl,
+                    ROUND(SUM(fee_total)::numeric, 2) as total_fees,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as total_net_pnl,
+                    ROUND(AVG(pnl_percent)::numeric, 4) as avg_pnl_percent,
+                    ROUND(AVG(net_pnl_percent)::numeric, 4) as avg_net_pnl_percent,
+                    ROUND(AVG(duration_seconds)::numeric, 0) as avg_duration_sec,
+                    -- Additional metrics
+                    ROUND(SUM(CASE WHEN profitable THEN net_pnl_usd ELSE 0 END)::numeric, 2) as total_profit,
+                    ROUND(SUM(CASE WHEN NOT profitable THEN net_pnl_usd ELSE 0 END)::numeric, 2) as total_loss,
+                    ROUND(AVG(CASE WHEN profitable THEN net_pnl_usd END)::numeric, 2) as avg_win,
+                    ROUND(AVG(CASE WHEN NOT profitable THEN net_pnl_usd END)::numeric, 2) as avg_loss,
+                    ROUND(MAX(net_pnl_usd)::numeric, 2) as max_win,
+                    ROUND(MIN(net_pnl_usd)::numeric, 2) as max_loss
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '%s days'
+            """, (days,))
+            return cur.fetchone()
+
+
+def get_summary_by_direction(symbol: str = None, days: int = 30) -> List[dict]:
+    """Get summary grouped by direction (LONG/SHORT)."""
+    with get_journal_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if symbol:
+                cur.execute("""
+                    SELECT
+                        direction,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 2) as win_rate,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(AVG(net_pnl_percent)::numeric, 4) as avg_net_pnl_percent
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND symbol = %s
+                      AND closed_at >= NOW() - INTERVAL '%s days'
+                    GROUP BY direction
+                """, (symbol, days))
+            else:
+                cur.execute("""
+                    SELECT
+                        direction,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 2) as win_rate,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(AVG(net_pnl_percent)::numeric, 4) as avg_net_pnl_percent
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '%s days'
+                    GROUP BY direction
+                """, (days,))
+            return cur.fetchall()
+
+
 def get_suggestions() -> List[str]:
     """Generate optimization suggestions based on data."""
     suggestions = []

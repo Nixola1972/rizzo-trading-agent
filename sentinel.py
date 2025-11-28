@@ -143,6 +143,20 @@ SCORE_SMOOTHING_SAMPLES = int(os.getenv('SCORE_SMOOTHING_SAMPLES', '3'))  # Medi
 _score_history = {}  # symbol -> list of recent scores
 
 
+# ===== SMART SENTINEL CONFIGURATION =====
+# Wake AI Agent su tutte le chiusure (non solo TP)
+SENTINEL_WAKE_ON_ALL_CLOSES = os.getenv('SENTINEL_WAKE_ON_ALL_CLOSES', 'true').lower() == 'true'
+
+# Volatility Monitoring
+SENTINEL_VOLATILITY_CHECK = os.getenv('SENTINEL_VOLATILITY_CHECK', 'false').lower() == 'true'
+SENTINEL_VOLATILITY_THRESHOLD_PCT = float(os.getenv('SENTINEL_VOLATILITY_THRESHOLD_PCT', '2.0'))
+SENTINEL_VOLATILITY_WINDOW_SEC = int(os.getenv('SENTINEL_VOLATILITY_WINDOW_SEC', '300'))
+SENTINEL_VOLATILITY_COOLDOWN_SEC = int(os.getenv('SENTINEL_VOLATILITY_COOLDOWN_SEC', '600'))  # 10 min cooldown
+
+# Passive SL Verification
+SENTINEL_SL_VERIFICATION = os.getenv('SENTINEL_SL_VERIFICATION', 'true').lower() == 'true'
+SENTINEL_SL_VERIFICATION_INTERVAL = int(os.getenv('SENTINEL_SL_VERIFICATION_INTERVAL', '300'))  # 5 min
+
 # Log file configuration
 LOG_FILE_ENABLED = os.getenv('LOG_FILE_ENABLED', 'true').lower() == 'true'
 LOG_FILE_PATH = os.getenv('LOG_FILE_PATH', '/app/logs/sentinel.log')
@@ -180,6 +194,366 @@ def log(msg: str):
                 f.write(f"[{full_timestamp}] {msg}\n")
         except Exception as e:
             print(f"[{timestamp}] ⚠️ Errore scrittura log file: {e}")
+
+
+# ============================================================================
+# SMART SENTINEL: WAKE AI AGENT
+# ============================================================================
+
+def wake_ai_agent(symbol: str, reason: str):
+    """
+    Sveglia l'AI agent per rivalutare un simbolo.
+
+    Lancia main.py in background (fire and forget) con priorità alta.
+
+    Args:
+        symbol: Simbolo da analizzare (BTC, ETH, SOL)
+        reason: Motivo del trigger (stop_loss, trailing_stop, volatility_spike, etc.)
+    """
+    import telegram_notifier as tg
+
+    log(f"🚀 Triggering AI agent per {symbol} (reason: {reason})...")
+
+    try:
+        # Prepara il comando
+        log_file = f"/tmp/ai_wake_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+        with open(log_file, 'w') as f_out:
+            process = subprocess.Popen(
+                [sys.executable, "main.py", "--ticker", symbol, "--reason", reason, "--priority", "high"],
+                stdout=f_out,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                cwd=os.path.dirname(os.path.abspath(__file__))
+            )
+
+        log(f"   ✅ AI agent avviato per {symbol} (PID: {process.pid})")
+
+        # Notifica Telegram (opzionale)
+        if SENTINEL_TELEGRAM_NOTIFY:
+            try:
+                emoji_map = {
+                    "stop_loss": "🛑",
+                    "trailing_stop": "📉",
+                    "take_profit": "💰",
+                    "volatility_spike": "⚡",
+                    "reversal": "🔄",
+                    "sl_mismatch": "⚠️",
+                }
+                emoji = emoji_map.get(reason, "🤖")
+                tg.send_telegram_message(
+                    f"{emoji} <b>AI Wake Trigger</b>\n\n"
+                    f"<b>Symbol:</b> {symbol}\n"
+                    f"<b>Reason:</b> {reason}\n"
+                    f"<b>PID:</b> {process.pid}"
+                )
+            except Exception:
+                pass
+
+        return {"success": True, "pid": process.pid}
+
+    except Exception as e:
+        log(f"   ❌ Errore wake_ai_agent: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# SMART SENTINEL: VOLATILITY MONITOR
+# ============================================================================
+
+class VolatilityMonitor:
+    """
+    Monitora la volatilità dei prezzi per rilevare movimenti bruschi.
+
+    Mantiene una coda di prezzi con timestamp per ogni simbolo.
+    Se la variazione (max-min)/min supera la soglia, triggera un alert.
+    """
+
+    def __init__(self):
+        from collections import deque
+        # symbol -> deque of (timestamp, price)
+        self._price_history = {}
+        # symbol -> last alert timestamp (per cooldown)
+        self._last_alert = {}
+
+    def add_price(self, symbol: str, price: float, timestamp: float = None):
+        """
+        Aggiunge un prezzo alla history.
+
+        Args:
+            symbol: Simbolo
+            price: Prezzo corrente
+            timestamp: Timestamp Unix (default: now)
+        """
+        if timestamp is None:
+            timestamp = time.time()
+
+        if symbol not in self._price_history:
+            self._price_history[symbol] = deque(maxlen=1000)
+
+        self._price_history[symbol].append((timestamp, price))
+
+        # Pulisci prezzi vecchi
+        self._cleanup_old_prices(symbol)
+
+    def _cleanup_old_prices(self, symbol: str):
+        """Rimuove prezzi più vecchi della finestra."""
+        if symbol not in self._price_history:
+            return
+
+        cutoff = time.time() - SENTINEL_VOLATILITY_WINDOW_SEC
+        while self._price_history[symbol] and self._price_history[symbol][0][0] < cutoff:
+            self._price_history[symbol].popleft()
+
+    def check_volatility(self, symbol: str) -> dict:
+        """
+        Controlla se la volatilità supera la soglia.
+
+        Returns:
+            dict con:
+                - triggered: bool
+                - volatility_pct: float
+                - min_price: float
+                - max_price: float
+                - reason: str
+        """
+        result = {
+            "triggered": False,
+            "volatility_pct": 0.0,
+            "min_price": 0,
+            "max_price": 0,
+            "reason": ""
+        }
+
+        if not SENTINEL_VOLATILITY_CHECK:
+            return result
+
+        if symbol not in self._price_history or len(self._price_history[symbol]) < 2:
+            return result
+
+        # Ottieni prezzi nella finestra
+        prices = [p[1] for p in self._price_history[symbol]]
+
+        if not prices:
+            return result
+
+        min_price = min(prices)
+        max_price = max(prices)
+
+        if min_price <= 0:
+            return result
+
+        # Calcola volatilità
+        volatility_pct = ((max_price - min_price) / min_price) * 100
+
+        result["volatility_pct"] = round(volatility_pct, 2)
+        result["min_price"] = min_price
+        result["max_price"] = max_price
+
+        # Controlla soglia
+        if volatility_pct >= SENTINEL_VOLATILITY_THRESHOLD_PCT:
+            # Controlla cooldown
+            if self._is_in_cooldown(symbol):
+                result["reason"] = f"Volatility {volatility_pct:.2f}% (in cooldown)"
+                return result
+
+            result["triggered"] = True
+            result["reason"] = f"Volatility spike: {volatility_pct:.2f}% in {SENTINEL_VOLATILITY_WINDOW_SEC}s"
+
+            # Imposta cooldown
+            self._last_alert[symbol] = time.time()
+
+        return result
+
+    def _is_in_cooldown(self, symbol: str) -> bool:
+        """Verifica se il simbolo è in cooldown dopo un alert."""
+        if symbol not in self._last_alert:
+            return False
+
+        elapsed = time.time() - self._last_alert[symbol]
+        return elapsed < SENTINEL_VOLATILITY_COOLDOWN_SEC
+
+    def get_stats(self, symbol: str) -> dict:
+        """Ottieni statistiche per un simbolo."""
+        if symbol not in self._price_history:
+            return {"count": 0, "oldest": None, "newest": None}
+
+        history = self._price_history[symbol]
+        if not history:
+            return {"count": 0, "oldest": None, "newest": None}
+
+        return {
+            "count": len(history),
+            "oldest": history[0][0] if history else None,
+            "newest": history[-1][0] if history else None,
+            "window_sec": SENTINEL_VOLATILITY_WINDOW_SEC
+        }
+
+
+# Istanza globale del volatility monitor
+_volatility_monitor = VolatilityMonitor()
+
+
+# ============================================================================
+# SMART SENTINEL: PASSIVE SL VERIFICATION
+# ============================================================================
+
+_last_sl_verification_time = 0
+
+
+def should_run_sl_verification() -> bool:
+    """Controlla se è tempo di eseguire la verifica SL passiva."""
+    global _last_sl_verification_time
+
+    if not SENTINEL_SL_VERIFICATION:
+        return False
+
+    elapsed = time.time() - _last_sl_verification_time
+    return elapsed >= SENTINEL_SL_VERIFICATION_INTERVAL
+
+
+def run_passive_sl_verification(bot, positions: list):
+    """
+    Verifica passiva che gli ordini SL siano corretti.
+
+    Confronta SL nel DB/memoria con ordini su Hyperliquid.
+    Se c'è mismatch, tenta di correggere.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        positions: Lista posizioni aperte
+    """
+    global _last_sl_verification_time
+
+    if not SENTINEL_SL_VERIFICATION:
+        return
+
+    if not should_run_sl_verification():
+        return
+
+    _last_sl_verification_time = time.time()
+
+    log("🔍 Verifica SL passiva...")
+
+    import db_utils
+    import telegram_notifier as tg
+
+    issues_found = []
+
+    try:
+        # Ottieni ordini aperti da Hyperliquid
+        try:
+            open_orders = bot.info.frontend_open_orders(bot.account_address)
+        except AttributeError:
+            open_orders = bot.info.open_orders(bot.account_address)
+
+        for pos in positions:
+            symbol = pos.get("symbol", "")
+            direction = pos.get("side", "long").lower()
+            entry_price = float(pos.get("entry_price", 0))
+            size = float(pos.get("size", 0))
+
+            # Cerca tracking nel DB
+            tracking = db_utils.get_position_tracking(symbol)
+            if not tracking:
+                continue
+
+            trading_mode = tracking.get("trading_mode", "NORMAL")
+
+            # Determina SL atteso
+            if trading_mode == "MICRO_GAIN":
+                expected_sl_pct = MICRO_GAIN_STOP_LOSS_PERCENT
+                leverage = MICRO_GAIN_LEVERAGE
+            elif trading_mode == "MICRO_PAY":
+                expected_sl_pct = MICRO_PAY_STOP_LOSS_PERCENT
+                leverage = MICRO_PAY_LEVERAGE
+            else:
+                expected_sl_pct = NORMAL_STOP_LOSS_PERCENT
+                # Parse leverage dalla posizione
+                leverage_raw = pos.get("leverage", 1)
+                if isinstance(leverage_raw, str):
+                    import re
+                    match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+                    leverage = float(match.group(1)) if match else 1.0
+                else:
+                    leverage = float(leverage_raw)
+
+            # Calcola prezzo SL atteso
+            price_change_pct = expected_sl_pct / leverage
+            if direction == "long":
+                expected_sl_price = entry_price * (1 - price_change_pct / 100)
+                expected_side = "A"  # Ask (sell)
+            else:
+                expected_sl_price = entry_price * (1 + price_change_pct / 100)
+                expected_side = "B"  # Bid (buy)
+
+            # Cerca ordine SL per questo simbolo
+            sl_order = None
+            for order in open_orders:
+                if order.get("coin") == symbol and order.get("side") == expected_side:
+                    trigger_px = order.get("triggerPx")
+                    if trigger_px and trigger_px != "0.0":
+                        sl_order = order
+                        break
+
+            # Verifica
+            if not sl_order:
+                issues_found.append({
+                    "symbol": symbol,
+                    "issue": "SL_MISSING",
+                    "trading_mode": trading_mode
+                })
+                log(f"   ⚠️ {symbol}: SL mancante! Mode={trading_mode}")
+
+                # Tenta di piazzare SL
+                log(f"   🔧 Tentativo piazzamento SL per {symbol}...")
+                if trading_mode == "MICRO_GAIN":
+                    place_micro_gain_sl_order(bot, symbol, direction, entry_price, size)
+                elif trading_mode == "MICRO_PAY":
+                    place_micro_pay_sl_order(bot, symbol, direction, entry_price, size)
+                else:
+                    place_normal_initial_sl(bot, symbol, direction, entry_price, size, leverage)
+
+            else:
+                # Verifica prezzo SL
+                actual_sl_price = float(sl_order.get("triggerPx", 0))
+                price_diff_pct = abs(actual_sl_price - expected_sl_price) / expected_sl_price * 100
+
+                if price_diff_pct > 1.0:  # Tolleranza 1%
+                    issues_found.append({
+                        "symbol": symbol,
+                        "issue": "SL_PRICE_MISMATCH",
+                        "expected": expected_sl_price,
+                        "actual": actual_sl_price,
+                        "diff_pct": price_diff_pct
+                    })
+                    log(f"   ⚠️ {symbol}: SL price mismatch - expected ${expected_sl_price:.2f}, actual ${actual_sl_price:.2f}")
+
+        # Report finale
+        if issues_found:
+            log(f"   📋 Trovati {len(issues_found)} problemi SL")
+
+            # Notifica Telegram se ci sono problemi critici
+            missing_sl = [i for i in issues_found if i["issue"] == "SL_MISSING"]
+            if missing_sl and SENTINEL_TELEGRAM_NOTIFY:
+                try:
+                    symbols_list = ", ".join([i["symbol"] for i in missing_sl])
+                    tg.send_telegram_message(
+                        f"⚠️ <b>SL VERIFICATION ALERT</b>\n\n"
+                        f"Simboli senza SL: {symbols_list}\n"
+                        f"Tentativo correzione automatica in corso."
+                    )
+                except Exception:
+                    pass
+        else:
+            log(f"   ✅ Tutti gli SL verificati OK")
+
+    except Exception as e:
+        log(f"   ❌ Errore verifica SL passiva: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def get_smoothed_score(symbol: str, raw_score: float) -> float:
@@ -2167,27 +2541,32 @@ def run_sentinel_check():
                         except Exception as e:
                             log(f"   ⚠️ Errore Telegram: {e}")
 
-                    # Trigger bot dopo take profit per rivalutare
+                    # === SMART SENTINEL: Wake AI Agent su chiusure ===
+                    # Mappa action_taken -> reason per wake_ai_agent
+                    wake_reason_map = {
+                        "CLOSE_TAKE_PROFIT": "take_profit",
+                        "CLOSE_STOP_LOSS": "stop_loss",
+                        "CLOSE_TRAILING_STOP": "trailing_stop",
+                        "CLOSE_MICRO_GAIN_REVERSAL": "reversal",
+                    }
+
+                    # Determina se svegliare l'AI
+                    should_wake_ai = False
+                    wake_reason = wake_reason_map.get(action_taken, "position_closed")
+
                     if action_taken == "CLOSE_TAKE_PROFIT" and TAKE_PROFIT_TRIGGER_BOT:
-                        log(f"   🚀 Triggering bot per rivalutare {symbol}...")
-                        try:
-                            # Lancia main.py in background per questo ticker
-                            # Usa sys.executable per usare lo stesso interprete Python
-                            log_file = f"/tmp/bot_trigger_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-                            with open(log_file, 'w') as f_out:
-                                process = subprocess.Popen(
-                                    [sys.executable, "main.py", "--ticker", symbol, "--reason", "take_profit"],
-                                    stdout=f_out,
-                                    stderr=subprocess.STDOUT,
-                                    start_new_session=True,
-                                    cwd=os.path.dirname(os.path.abspath(__file__))
-                                )
-                            log(f"   ✅ Bot triggerato per {symbol} (PID: {process.pid}, log: {log_file})")
+                        should_wake_ai = True
+                    elif SENTINEL_WAKE_ON_ALL_CLOSES and action_taken in wake_reason_map:
+                        should_wake_ai = True
+
+                    if should_wake_ai:
+                        log(f"   🚀 Wake AI Agent per {symbol} (reason: {wake_reason})...")
+                        wake_result = wake_ai_agent(symbol, wake_reason)
+                        if wake_result.get("success"):
                             bot_triggered = True
-                        except Exception as e:
-                            log(f"   ⚠️ Errore trigger bot: {e}")
-                            import traceback
-                            traceback.print_exc()
+                            log(f"   ✅ AI Agent avviato (PID: {wake_result.get('pid')})")
+                        else:
+                            log(f"   ⚠️ Fallito wake AI: {wake_result.get('error')}")
 
                 except Exception as e:
                     log(f"   ❌ Errore chiusura: {e}")
@@ -2229,6 +2608,41 @@ def run_sentinel_check():
         if verification_result["failed"] > 0:
             log(f"⚠️ ATTENZIONE: {verification_result['failed']} posizioni senza SL verificato!")
 
+        # === SMART SENTINEL: VERIFICA SL PASSIVA PERIODICA ===
+        run_passive_sl_verification(bot, positions)
+
+        # === SMART SENTINEL: VOLATILITY MONITORING ===
+        if SENTINEL_VOLATILITY_CHECK:
+            log("\n⚡ Controllo volatilità...")
+            for pos in positions:
+                symbol = pos.get("symbol", "")
+                mark_price = float(pos.get("mark_price", 0))
+
+                # Aggiungi prezzo alla history
+                _volatility_monitor.add_price(symbol, mark_price)
+
+                # Controlla volatilità
+                vol_result = _volatility_monitor.check_volatility(symbol)
+
+                if vol_result.get("triggered"):
+                    log(f"   ⚡ {symbol}: VOLATILITY SPIKE! {vol_result['reason']}")
+
+                    # Notifica Telegram
+                    if SENTINEL_TELEGRAM_NOTIFY:
+                        try:
+                            tg.send_telegram_message(
+                                f"⚡ <b>VOLATILITY WARNING</b>\n\n"
+                                f"<b>Symbol:</b> {symbol}\n"
+                                f"<b>Volatility:</b> {vol_result['volatility_pct']:.2f}%\n"
+                                f"<b>Window:</b> {SENTINEL_VOLATILITY_WINDOW_SEC}s\n"
+                                f"<b>Range:</b> ${vol_result['min_price']:.2f} - ${vol_result['max_price']:.2f}"
+                            )
+                        except Exception:
+                            pass
+
+                    # Wake AI Agent per rivalutare
+                    wake_ai_agent(symbol, "volatility_spike")
+
     except Exception as e:
         log(f"❌ Errore sentinel: {e}")
         import traceback
@@ -2265,6 +2679,17 @@ def run_loop(interval: int = None):
         log(f"   💵 MICRO_PAY: disabled (HOLD extends to score {SCORE_THRESHOLD_HOLD})")
     if TAKE_PROFIT_ENABLED:
         log(f"   Take Profit: {TAKE_PROFIT_PERCENT}% P&L")
+
+    # === SMART SENTINEL CONFIGURATION ===
+    log(f"\n🧠 SMART SENTINEL:")
+    log(f"   Wake on all closes: {'ENABLED' if SENTINEL_WAKE_ON_ALL_CLOSES else 'DISABLED'}")
+    log(f"   Volatility check: {'ENABLED' if SENTINEL_VOLATILITY_CHECK else 'DISABLED'}")
+    if SENTINEL_VOLATILITY_CHECK:
+        log(f"      Threshold: {SENTINEL_VOLATILITY_THRESHOLD_PCT}%, Window: {SENTINEL_VOLATILITY_WINDOW_SEC}s")
+        log(f"      Cooldown: {SENTINEL_VOLATILITY_COOLDOWN_SEC}s")
+    log(f"   SL Verification: {'ENABLED' if SENTINEL_SL_VERIFICATION else 'DISABLED'}")
+    if SENTINEL_SL_VERIFICATION:
+        log(f"      Interval: {SENTINEL_SL_VERIFICATION_INTERVAL}s")
 
     try:
         while True:
