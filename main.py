@@ -580,6 +580,88 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                 system_prompt += free_mode_instructions
                 print(f"   🆓 AI_FREE_MODE: Prompt modificato per libertà decisionale")
 
+            # === PROFIT-TAKING RULES: Aggiungi pressione per prendere profitti ===
+            if has_position and ticker_position:
+                # Calcola metriche profitto
+                entry_price = float(ticker_position.get('entry_price', 0))
+                mark_price = float(ticker_position.get('mark_price', 0))
+                pnl_usd = float(ticker_position.get('pnl_usd', 0))
+
+                # Parse leverage
+                leverage_raw = ticker_position.get('leverage', 1)
+                if isinstance(leverage_raw, str):
+                    import re
+                    match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+                    leverage = float(match.group(1)) if match else 1.0
+                else:
+                    leverage = float(leverage_raw)
+
+                # Calcola P&L %
+                direction = ticker_position.get('side', 'long').lower()
+                if entry_price > 0:
+                    if direction == 'long':
+                        price_change = ((mark_price - entry_price) / entry_price) * 100
+                    else:
+                        price_change = ((entry_price - mark_price) / entry_price) * 100
+                    current_pnl_pct = price_change * leverage
+                else:
+                    current_pnl_pct = 0
+
+                # Recupera max profit dal position context
+                max_profit_pct = 0
+                duration_minutes = 0
+                if position_context:
+                    max_profit_pct = position_context.get('max_profit_pct', current_pnl_pct)
+                    duration_minutes = position_context.get('duration_minutes', 0)
+
+                # Calcola profit decay
+                profit_decay_pct = 0
+                if max_profit_pct > 0 and current_pnl_pct < max_profit_pct:
+                    profit_decay_pct = ((max_profit_pct - current_pnl_pct) / max_profit_pct) * 100
+
+                # Costruisci warning dinamico
+                profit_warnings = []
+
+                # Warning 1: Hai profitto, considera di prenderlo
+                if current_pnl_pct >= 1.5:
+                    profit_warnings.append(f"💰 HAI PROFITTO: +{current_pnl_pct:.1f}% - Considera SERIAMENTE di chiudere!")
+
+                # Warning 2: Profit decay - stai perdendo i guadagni
+                if max_profit_pct >= 1.5 and profit_decay_pct >= 30:
+                    profit_warnings.append(f"📉 PROFIT DECAY: Eri a +{max_profit_pct:.1f}%, ora +{current_pnl_pct:.1f}% (perso {profit_decay_pct:.0f}% del profitto!)")
+                    if profit_decay_pct >= 50:
+                        profit_warnings.append("⚠️ URGENTE: Hai perso più del 50% del profitto massimo! Chiudi ORA!")
+
+                # Warning 3: Posizione aperta troppo a lungo
+                if duration_minutes >= 60 and current_pnl_pct > 0:
+                    profit_warnings.append(f"⏰ TEMPO: Posizione aperta da {duration_minutes} minuti con profitto - Il mercato può girare!")
+
+                # Warning 4: Profitto piccolo ma a rischio
+                if 0.5 <= current_pnl_pct < 1.5 and duration_minutes >= 30:
+                    profit_warnings.append(f"⚡ Piccolo profitto (+{current_pnl_pct:.1f}%) da {duration_minutes}min - Meglio poco che niente!")
+
+                # Aggiungi al prompt se ci sono warning
+                if profit_warnings:
+                    profit_instructions = """
+
+## 💰 PROFIT-TAKING ALERT - LEGGI ATTENTAMENTE!
+
+""" + "\n".join(profit_warnings) + """
+
+### REGOLE PROFIT-TAKING:
+1. **Profitto > 2%**: CHIUDI! Un profitto sicuro è meglio di una perdita potenziale
+2. **Profit Decay > 50%**: CHIUDI IMMEDIATAMENTE! Stai perdendo i tuoi guadagni
+3. **Posizione > 60min con profitto**: Considera fortemente di chiudere
+4. **Non essere avido**: Piccoli profitti costanti > grandi perdite occasionali
+
+### RICORDA:
+- Il mercato crypto è volatile, il profitto può svanire in secondi
+- "HOLD" quando sei in profitto = RISCHIO di perdere tutto
+- Meglio chiudere troppo presto che troppo tardi
+"""
+                    system_prompt += profit_instructions
+                    print(f"   💰 PROFIT ALERT: P&L={current_pnl_pct:+.1f}%, Max={max_profit_pct:.1f}%, Decay={profit_decay_pct:.0f}%")
+
             # Chiama AI per questo specifico ticker
             out = previsione_trading_agent(
                 system_prompt,
