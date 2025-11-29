@@ -65,6 +65,15 @@ NORMAL_TRAILING_GAP = float(os.getenv('NORMAL_TRAILING_GAP', '1.5'))
 DEFAULT_LOOP_INTERVAL_MINUTES = int(os.getenv('AI_CALL_INTERVAL_MINUTES', '15'))
 BOT_TIMEOUT_SECONDS = int(os.getenv("BOT_TIMEOUT_SECONDS", "300"))
 
+# ===== AI FREE MODE CONFIGURATION =====
+# Quando abilitato, l'AI viene sempre chiamata indipendentemente dallo score
+AI_FREE_MODE = os.getenv('AI_FREE_MODE', 'false').lower() == 'true'
+MAX_POSITIONS_PER_SYMBOL = int(os.getenv('MAX_POSITIONS_PER_SYMBOL', '1'))
+if AI_FREE_MODE:
+    print("🆓 AI_FREE_MODE: AI sempre chiamata, score come suggerimento")
+if MAX_POSITIONS_PER_SYMBOL > 1:
+    print(f"📊 MAX_POSITIONS_PER_SYMBOL: {MAX_POSITIONS_PER_SYMBOL} posizioni per simbolo")
+
 # Hyperliquid Config
 TESTNET = os.getenv("TESTNET", "true").lower() == "true"
 VERBOSE = os.getenv("VERBOSE", "true").lower() == "true"
@@ -386,14 +395,19 @@ def run_analysis_cycle(
             # Se c'è già una posizione, gestiscila (HOLD o CLOSE)
             # Se NON c'è posizione e il segnale è forte, considera OPEN
             # Con MICRO_GAIN: apri anche se score è tra HOLD e OPEN threshold
+            # Con AI_FREE_MODE: chiama sempre l'AI, non skip mai
             is_micro_gain_candidate = False
             if not has_position:
                 min_threshold = SCORE_THRESHOLD_HOLD if MICRO_GAIN_ENABLED else SCORE_THRESHOLD_OPEN
                 if abs(net_score) < min_threshold:
-                    print(f"   ⏭️  Skip {ticker_sym}: no position e score {net_score:.1f} sotto soglia {min_threshold}")
-                    continue
-                # Marca come candidato MICRO_GAIN
-                if MICRO_GAIN_ENABLED and abs(net_score) < SCORE_THRESHOLD_OPEN:
+                    if AI_FREE_MODE:
+                        # AI_FREE_MODE: non skip, passa all'AI con info che score è basso
+                        print(f"   🆓 AI_FREE_MODE: {ticker_sym} score={net_score:.1f} (sotto soglia {min_threshold}) → chiamo AI comunque")
+                    else:
+                        print(f"   ⏭️  Skip {ticker_sym}: no position e score {net_score:.1f} sotto soglia {min_threshold}")
+                        continue
+                # Marca come candidato MICRO_GAIN (solo se non AI_FREE_MODE)
+                if not AI_FREE_MODE and MICRO_GAIN_ENABLED and abs(net_score) < SCORE_THRESHOLD_OPEN:
                     is_micro_gain_candidate = True
                     print(f"   🎯 {ticker_sym}: score {net_score:.1f} in range MICRO_GAIN ({SCORE_THRESHOLD_HOLD}-{SCORE_THRESHOLD_OPEN})")
 
