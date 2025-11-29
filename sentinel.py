@@ -113,6 +113,17 @@ NORMAL_TRAILING_GAP = float(os.getenv('NORMAL_TRAILING_GAP', '1.5'))  # SL segue
 NORMAL_TRAILING_MODE = os.getenv('NORMAL_TRAILING_MODE', 'steps')
 NORMAL_TRAILING_STEPS_STR = os.getenv('NORMAL_TRAILING_STEPS', '3:0,5:2,8:5,12:8,15:10')
 
+# ===== LEVERAGE SCALING CONFIG =====
+# Strategia che aumenta la leva quando la posizione è in profitto protetto
+LEVERAGE_SCALING_ENABLED = os.getenv('LEVERAGE_SCALING_ENABLED', 'false').lower() == 'true'
+LEVERAGE_SCALING_MIN_PROTECTED_PROFIT = float(os.getenv('LEVERAGE_SCALING_MIN_PROTECTED_PROFIT', '0.5'))  # SL deve proteggere almeno questo %
+LEVERAGE_SCALING_STEP = int(os.getenv('LEVERAGE_SCALING_STEP', '2'))  # +2x ogni scaling
+LEVERAGE_SCALING_MAX = int(os.getenv('LEVERAGE_SCALING_MAX', '15'))  # Leva massima
+LEVERAGE_SCALING_COOLDOWN_CYCLES = int(os.getenv('LEVERAGE_SCALING_COOLDOWN_CYCLES', '2'))  # Cicli di attesa tra scaling
+
+# Tracking interno per cooldown leverage scaling (symbol -> cicli rimanenti)
+_leverage_scaling_cooldown = {}
+
 def parse_trailing_steps(steps_str: str, default_steps: list = None) -> list:
     """Parse trailing steps from string format 'pnl:sl,pnl:sl,...' to list of tuples."""
     if default_steps is None:
@@ -2089,6 +2100,330 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
     return result
 
 
+# ===== LEVERAGE SCALING FUNCTIONS =====
+
+def check_leverage_scaling_conditions(
+    symbol: str,
+    direction: str,
+    current_leverage: float,
+    current_sl_level: float,
+    trading_mode: str
+) -> dict:
+    """
+    Verifica se le condizioni per il leverage scaling sono soddisfatte.
+
+    Returns:
+        dict con:
+        - can_scale: bool
+        - reason: str (motivo se non può scalare)
+        - new_leverage: int (nuova leva se può scalare)
+    """
+    result = {
+        "can_scale": False,
+        "reason": "",
+        "new_leverage": 0
+    }
+
+    # 1. Scaling abilitato?
+    if not LEVERAGE_SCALING_ENABLED:
+        result["reason"] = "Leverage scaling disabilitato"
+        return result
+
+    # 2. Solo per NORMAL mode (non MICRO_GAIN)
+    if trading_mode != "NORMAL":
+        result["reason"] = f"Solo per NORMAL mode (attuale: {trading_mode})"
+        return result
+
+    # 3. Cooldown attivo?
+    if symbol in _leverage_scaling_cooldown and _leverage_scaling_cooldown[symbol] > 0:
+        cycles_left = _leverage_scaling_cooldown[symbol]
+        result["reason"] = f"Cooldown attivo ({cycles_left} cicli rimanenti)"
+        return result
+
+    # 4. Leva già al massimo?
+    if current_leverage >= LEVERAGE_SCALING_MAX:
+        result["reason"] = f"Leva già al massimo ({current_leverage}x >= {LEVERAGE_SCALING_MAX}x)"
+        return result
+
+    # 5. SL protegge profitto minimo?
+    if current_sl_level is None:
+        result["reason"] = "SL level non disponibile"
+        return result
+
+    if current_sl_level < LEVERAGE_SCALING_MIN_PROTECTED_PROFIT:
+        result["reason"] = f"SL protegge {current_sl_level:+.2f}% < minimo {LEVERAGE_SCALING_MIN_PROTECTED_PROFIT}%"
+        return result
+
+    # Tutte le condizioni soddisfatte!
+    new_leverage = min(int(current_leverage) + LEVERAGE_SCALING_STEP, LEVERAGE_SCALING_MAX)
+    result["can_scale"] = True
+    result["new_leverage"] = new_leverage
+    result["reason"] = f"OK: SL protegge {current_sl_level:+.2f}% >= {LEVERAGE_SCALING_MIN_PROTECTED_PROFIT}%"
+
+    return result
+
+
+def execute_leverage_scaling(
+    bot,
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    mark_price: float,
+    size: float,
+    current_leverage: float,
+    new_leverage: int,
+    current_sl_level: float
+) -> dict:
+    """
+    Esegue il leverage scaling con ordine di protezione.
+
+    Procedura:
+    1. Piazza ordine LIMIT di protezione al prezzo SL attuale
+    2. Aumenta la leva
+    3. Ricalcola e piazza nuovo SL
+    4. Cancella ordine protezione
+
+    Returns:
+        dict con status e dettagli
+    """
+    import telegram_notifier as tg
+
+    result = {
+        "success": False,
+        "old_leverage": current_leverage,
+        "new_leverage": new_leverage,
+        "protection_order_id": None,
+        "error": None
+    }
+
+    log(f"   🚀 LEVERAGE SCALING: {symbol} {current_leverage}x → {new_leverage}x")
+
+    try:
+        # === STEP 1: Calcola prezzo protezione (dove lo SL chiuderebbe) ===
+        # Il current_sl_level è in % P&L, dobbiamo convertirlo in prezzo
+        sl_price_change_pct = abs(current_sl_level) / current_leverage
+
+        if direction == "long":
+            if current_sl_level >= 0:
+                protection_price = entry_price * (1 + sl_price_change_pct / 100)
+            else:
+                protection_price = entry_price * (1 - sl_price_change_pct / 100)
+        else:  # short
+            if current_sl_level >= 0:
+                protection_price = entry_price * (1 - sl_price_change_pct / 100)
+            else:
+                protection_price = entry_price * (1 + sl_price_change_pct / 100)
+
+        # Arrotonda al tick size
+        protection_price = bot._round_to_tick(protection_price, symbol)
+
+        log(f"   📋 Step 1: Piazzo ordine protezione LIMIT @ ${protection_price:.4f}")
+
+        # === STEP 2: Piazza ordine LIMIT di protezione ===
+        is_buy = direction == "short"  # Opposto per chiudere
+
+        protection_order = bot.exchange.order(
+            symbol,
+            is_buy,
+            size,
+            protection_price,
+            {"limit": {"tif": "Gtc"}},
+            reduce_only=True
+        )
+
+        if protection_order.get("status") != "ok":
+            result["error"] = f"Errore piazzamento ordine protezione: {protection_order}"
+            log(f"   ❌ {result['error']}")
+            return result
+
+        # Estrai order ID
+        response_data = protection_order.get("response", {})
+        if response_data.get("type") == "order":
+            order_data = response_data.get("data", {})
+            statuses = order_data.get("statuses", [])
+            if statuses and statuses[0].get("resting"):
+                result["protection_order_id"] = statuses[0]["resting"]["oid"]
+                log(f"   ✅ Ordine protezione piazzato: OID={result['protection_order_id']}")
+            else:
+                result["error"] = f"Ordine protezione non resting: {statuses}"
+                log(f"   ❌ {result['error']}")
+                return result
+        else:
+            result["error"] = f"Risposta ordine protezione inattesa: {response_data}"
+            log(f"   ❌ {result['error']}")
+            return result
+
+        time.sleep(0.3)
+
+        # === STEP 3: Aumenta la leva ===
+        log(f"   📋 Step 2: Aumento leva {current_leverage}x → {new_leverage}x")
+
+        leverage_result = bot.set_leverage_for_symbol(
+            symbol=symbol,
+            leverage=new_leverage,
+            is_cross=True
+        )
+
+        if leverage_result.get("status") != "ok":
+            log(f"   ⚠️ Warning leva: {leverage_result}")
+            # Continua comunque, potrebbe essere solo un warning
+
+        time.sleep(0.5)
+
+        # === STEP 4: Ricalcola e piazza nuovo SL ===
+        log(f"   📋 Step 3: Ricalcolo SL per nuova leva")
+
+        # Ricalcola il prezzo SL per la nuova leva (mantieni stesso livello %)
+        new_sl_price_change_pct = abs(current_sl_level) / new_leverage
+
+        if direction == "long":
+            if current_sl_level >= 0:
+                new_sl_price = entry_price * (1 + new_sl_price_change_pct / 100)
+            else:
+                new_sl_price = entry_price * (1 - new_sl_price_change_pct / 100)
+        else:  # short
+            if current_sl_level >= 0:
+                new_sl_price = entry_price * (1 - new_sl_price_change_pct / 100)
+            else:
+                new_sl_price = entry_price * (1 + new_sl_price_change_pct / 100)
+
+        new_sl_price = bot._round_to_tick(new_sl_price, symbol)
+
+        # Prima cancella vecchio SL (se esiste)
+        try:
+            open_orders = bot.exchange.open_orders()
+            for order in open_orders:
+                if order.get("symbol") == symbol and order.get("orderType") == "trigger":
+                    log(f"   🗑️ Cancello vecchio SL OID={order.get('oid')}")
+                    bot.exchange.cancel(symbol, order.get("oid"))
+                    time.sleep(0.2)
+        except Exception as e:
+            log(f"   ⚠️ Errore cancellazione vecchio SL: {e}")
+
+        # Piazza nuovo SL
+        log(f"   📋 Step 4: Piazzo nuovo SL @ ${new_sl_price:.4f} (protegge {current_sl_level:+.2f}% P&L)")
+
+        is_buy_sl = direction == "short"
+        sl_order = bot.exchange.order(
+            symbol,
+            is_buy_sl,
+            size,
+            new_sl_price,
+            {"trigger": {"triggerPx": new_sl_price, "isMarket": True, "tpsl": "sl"}},
+            reduce_only=True
+        )
+
+        if sl_order.get("status") != "ok":
+            log(f"   ⚠️ Warning nuovo SL: {sl_order}")
+        else:
+            log(f"   ✅ Nuovo SL piazzato")
+
+        time.sleep(0.3)
+
+        # === STEP 5: Cancella ordine protezione ===
+        log(f"   📋 Step 5: Cancello ordine protezione")
+
+        try:
+            bot.exchange.cancel(symbol, result["protection_order_id"])
+            log(f"   ✅ Ordine protezione cancellato")
+        except Exception as e:
+            log(f"   ⚠️ Errore cancellazione protezione (potrebbe essere già eseguito): {e}")
+
+        # === STEP 6: Imposta cooldown ===
+        _leverage_scaling_cooldown[symbol] = LEVERAGE_SCALING_COOLDOWN_CYCLES
+        log(f"   ⏱️ Cooldown impostato: {LEVERAGE_SCALING_COOLDOWN_CYCLES} cicli")
+
+        result["success"] = True
+
+        # Notifica Telegram
+        if SENTINEL_TELEGRAM_NOTIFY:
+            try:
+                tg.send_telegram_message(
+                    f"🚀 <b>LEVERAGE SCALING</b>\n\n"
+                    f"<b>Symbol:</b> {symbol}\n"
+                    f"<b>Direction:</b> {direction.upper()}\n"
+                    f"<b>Leva:</b> {current_leverage}x → {new_leverage}x\n"
+                    f"<b>SL protegge:</b> {current_sl_level:+.2f}%\n"
+                    f"<b>Nuovo SL @:</b> ${new_sl_price:.4f}\n\n"
+                    f"✅ Scaling completato con successo!"
+                )
+            except Exception as e:
+                log(f"   ⚠️ Errore notifica Telegram: {e}")
+
+        log(f"   ✅ LEVERAGE SCALING completato: {symbol} ora a {new_leverage}x")
+
+    except Exception as e:
+        result["error"] = str(e)
+        log(f"   ❌ Errore leverage scaling: {e}")
+
+        # Se abbiamo piazzato ordine protezione, prova a cancellarlo
+        if result["protection_order_id"]:
+            try:
+                bot.exchange.cancel(symbol, result["protection_order_id"])
+                log(f"   🧹 Cleanup: ordine protezione cancellato")
+            except:
+                pass
+
+    return result
+
+
+def process_leverage_scaling(bot, pos: dict, tracking_data: dict, current_sl_level: float):
+    """
+    Processa leverage scaling per una posizione.
+    Chiamato dal loop principale del sentinel.
+    """
+    symbol = pos.get("symbol", "")
+    direction = pos.get("side", "long").lower()
+    entry_price = float(pos.get("entry_price", 0))
+    mark_price = float(pos.get("mark_price", 0))
+    size = float(pos.get("size", 0))
+
+    # Parse leverage
+    leverage_raw = pos.get("leverage", 1)
+    if isinstance(leverage_raw, str):
+        import re
+        match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+        current_leverage = float(match.group(1)) if match else 1.0
+    else:
+        current_leverage = float(leverage_raw)
+
+    trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+
+    # Decrementa cooldown se attivo
+    if symbol in _leverage_scaling_cooldown and _leverage_scaling_cooldown[symbol] > 0:
+        _leverage_scaling_cooldown[symbol] -= 1
+        if _leverage_scaling_cooldown[symbol] > 0:
+            log(f"   ⏱️ {symbol} scaling cooldown: {_leverage_scaling_cooldown[symbol]} cicli rimanenti")
+
+    # Verifica condizioni
+    check_result = check_leverage_scaling_conditions(
+        symbol=symbol,
+        direction=direction,
+        current_leverage=current_leverage,
+        current_sl_level=current_sl_level,
+        trading_mode=trading_mode
+    )
+
+    if not check_result["can_scale"]:
+        # Solo log se scaling è abilitato (evita spam)
+        if LEVERAGE_SCALING_ENABLED and trading_mode == "NORMAL":
+            log(f"   📊 {symbol} scaling: {check_result['reason']}")
+        return None
+
+    # Esegui scaling
+    return execute_leverage_scaling(
+        bot=bot,
+        symbol=symbol,
+        direction=direction,
+        entry_price=entry_price,
+        mark_price=mark_price,
+        size=size,
+        current_leverage=current_leverage,
+        new_leverage=check_result["new_leverage"],
+        current_sl_level=current_sl_level
+    )
+
+
 def run_order_verification(bot, positions: list) -> dict:
     """
     Esegue verifica ordini per tutte le posizioni aperte.
@@ -2505,6 +2840,13 @@ def run_sentinel_check():
                         bot, symbol, direction, entry_price, mark_price, position_size, pos_leverage
                     )
 
+                    # === LEVERAGE SCALING (dopo trailing, quando SL protegge profitto) ===
+                    if LEVERAGE_SCALING_ENABLED:
+                        sl_key = f"{symbol}_NORMAL"
+                        current_sl_level = _current_sl_level.get(sl_key)
+                        if current_sl_level is not None:
+                            process_leverage_scaling(bot, pos, tracking_data, current_sl_level)
+
             # === CHECK TRAILING STOP (solo per NORMAL mode) ===
             result = check_trailing_stop(pos, tracking_data)
 
@@ -2761,6 +3103,16 @@ def run_loop(interval: int = None):
         log(f"   💵 MICRO_PAY: disabled (HOLD extends to score {SCORE_THRESHOLD_HOLD})")
     if TAKE_PROFIT_ENABLED:
         log(f"   Take Profit: {TAKE_PROFIT_PERCENT}% P&L")
+
+    # === LEVERAGE SCALING CONFIGURATION ===
+    if LEVERAGE_SCALING_ENABLED:
+        log(f"\n🚀 LEVERAGE SCALING: ENABLED")
+        log(f"   Min protected profit: +{LEVERAGE_SCALING_MIN_PROTECTED_PROFIT}%")
+        log(f"   Step: +{LEVERAGE_SCALING_STEP}x per scaling")
+        log(f"   Max leverage: {LEVERAGE_SCALING_MAX}x")
+        log(f"   Cooldown: {LEVERAGE_SCALING_COOLDOWN_CYCLES} cicli tra scaling")
+    else:
+        log(f"\n🚀 LEVERAGE SCALING: disabled")
 
     # === SMART SENTINEL CONFIGURATION ===
     log(f"\n🧠 SMART SENTINEL:")
