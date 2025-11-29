@@ -1672,9 +1672,22 @@ def place_normal_initial_sl(bot, symbol: str, direction: str, entry_price: float
                 if order.get("coin") == symbol and order.get("side") == expected_side:
                     trigger_px = order.get("triggerPx")
                     if trigger_px and trigger_px != "0.0":
-                        # SL già esiste su Hyperliquid, aggiorna solo la memoria
-                        _current_sl_level[sl_key] = -NORMAL_STOP_LOSS_PERCENT
-                        log(f"   ✅ {symbol} SL già esistente su HL (trigger=${trigger_px}), sincronizzato")
+                        # SL già esiste su Hyperliquid - CALCOLA il livello reale dal prezzo
+                        trigger_price = float(trigger_px)
+
+                        # Calcola la percentuale SL reale basata sul prezzo trigger
+                        if direction == "long":
+                            # Long: SL sotto entry = negativo, sopra entry = positivo
+                            price_diff_pct = ((trigger_price - entry_price) / entry_price) * 100
+                        else:
+                            # Short: SL sopra entry = negativo, sotto entry = positivo
+                            price_diff_pct = ((entry_price - trigger_price) / entry_price) * 100
+
+                        # Moltiplica per leva per ottenere il livello SL in %
+                        calculated_sl_level = price_diff_pct * leverage
+
+                        _current_sl_level[sl_key] = calculated_sl_level
+                        log(f"   ✅ {symbol} SL già esistente su HL (trigger=${trigger_px}), livello calcolato: {calculated_sl_level:+.2f}%")
                         return False
         except Exception as e:
             log(f"   ⚠️ Errore check ordini esistenti: {e}")
