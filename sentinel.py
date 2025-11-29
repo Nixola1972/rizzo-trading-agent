@@ -2000,12 +2000,32 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
         if trading_mode == "MICRO_GAIN":
             sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, size)
         else:
-            # Per NORMAL mode
-            price_change_pct = NORMAL_STOP_LOSS_PERCENT / leverage
-            if direction == "long":
-                sl_price = entry_price * (1 - price_change_pct / 100)
+            # Per NORMAL mode - usa current_sl_level se disponibile (trailing attivo)
+            if current_sl_level is not None:
+                # current_sl_level è già in % rispetto all'entry (es. +0.60% o -5.0%)
+                sl_pct = current_sl_level
+                log(f"   📊 Usando current_sl_level: {sl_pct:+.2f}%")
             else:
-                sl_price = entry_price * (1 + price_change_pct / 100)
+                # Fallback al valore iniziale
+                sl_pct = -NORMAL_STOP_LOSS_PERCENT
+                log(f"   📊 Usando SL iniziale: {sl_pct:.2f}%")
+
+            # Calcola prezzo SL basato sulla percentuale
+            price_change_pct = abs(sl_pct) / leverage
+            if direction == "long":
+                if sl_pct >= 0:
+                    # Trailing attivo: SL sopra entry (in profitto)
+                    sl_price = entry_price * (1 + price_change_pct / 100)
+                else:
+                    # SL sotto entry (in perdita)
+                    sl_price = entry_price * (1 - price_change_pct / 100)
+            else:  # short
+                if sl_pct >= 0:
+                    # Trailing attivo: SL sotto entry (in profitto per short)
+                    sl_price = entry_price * (1 - price_change_pct / 100)
+                else:
+                    # SL sopra entry (in perdita per short)
+                    sl_price = entry_price * (1 + price_change_pct / 100)
             sl_price = bot._round_to_tick(sl_price, symbol)
 
             is_buy = direction == "short"
