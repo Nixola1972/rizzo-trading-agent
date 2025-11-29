@@ -549,6 +549,37 @@ def run_analysis_cycle(
                 msg_info
             )
 
+            # === AI_FREE_MODE: Aggiungi istruzioni per libertà decisionale ===
+            if AI_FREE_MODE:
+                free_mode_instructions = """
+
+## 🆓 AI FREE MODE - LIBERTÀ DECISIONALE ATTIVA
+
+IMPORTANTE: Sei in modalità FREE MODE. Le regole sullo score sono DISABILITATE.
+
+### IGNORA QUESTE REGOLE:
+- ❌ "If score is weak → do nothing" - IGNORA
+- ❌ "If score > threshold → OPEN" - IGNORA
+- ❌ "require stronger signals" - IGNORA
+
+### INVECE, DECIDI BASANDOTI SU:
+1. **Indicatori Tecnici**: RSI, MACD, EMA alignment, volume
+2. **Sentiment di Mercato**: Fear & Greed, whale alerts
+3. **Forecast**: Previsioni di prezzo a 15min e 1h
+4. **Contesto BTC**: Se BTC è bearish, cautela su altcoin
+5. **Risk Metrics**: Exposure attuale, posizioni aperte
+
+### SEI LIBERO DI:
+- Aprire posizioni anche con score basso se gli indicatori supportano
+- Ignorare lo score se vedi pattern tecnici chiari
+- Essere più aggressivo se il contesto lo permette
+
+### LO SCORE È SOLO UN SUGGERIMENTO:
+Il net_score nel context è informativo, NON vincolante. Tu decidi.
+"""
+                system_prompt += free_mode_instructions
+                print(f"   🆓 AI_FREE_MODE: Prompt modificato per libertà decisionale")
+
             # Chiama AI per questo specifico ticker
             out = previsione_trading_agent(
                 system_prompt,
@@ -560,6 +591,20 @@ def run_analysis_cycle(
 
             # Forza il simbolo corretto
             out['symbol'] = ticker_sym
+
+            # === AI_FREE_MODE: Log se AI decide diversamente dallo score ===
+            if AI_FREE_MODE:
+                ai_operation = out.get('operation', 'hold')
+                ai_direction = out.get('direction', '')
+                score_direction = direction  # dalla valutazione score
+
+                # Verifica se AI ha deciso diversamente dallo score
+                if ai_operation == 'open' and score_direction == 'HOLD':
+                    print(f"   🆓 FREE MODE: AI ha deciso OPEN {ai_direction} nonostante score={net_score:.1f} (HOLD)")
+                elif ai_operation == 'open' and ((ai_direction == 'long' and net_score < 0) or (ai_direction == 'short' and net_score > 0)):
+                    print(f"   🆓 FREE MODE: AI ha deciso {ai_direction.upper()} contro direzione score ({net_score:.1f})")
+                elif ai_operation != 'hold':
+                    print(f"   🆓 FREE MODE: AI decide {ai_operation} {ai_direction} (score suggeriva {score_direction})")
 
             print(f"   ✅ Decisione per {ticker_sym}: {out.get('operation')} {out.get('direction', '')}")
 
