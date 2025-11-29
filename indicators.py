@@ -1,5 +1,6 @@
 import pandas as pd
 import ta
+import requests
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple
 
@@ -139,21 +140,164 @@ class CryptoTechnicalAnalysisHL:
         return {"pp": pp, "s1": s1, "s2": s2, "r1": r1, "r2": r2}
 
     # ==============================
-    #   FUNDING / OI (placeholder)
+    #   FUNDING / OI (from Hyperliquid API)
     # ==============================
+    def _get_asset_contexts(self) -> Dict[str, Dict]:
+        """
+        Fetch metaAndAssetCtxs from Hyperliquid API.
+        Returns dict mapping coin name to its context (OI, funding, etc.)
+        Cached for 60 seconds to avoid excessive API calls.
+        """
+        cache_key = '_asset_contexts_cache'
+        cache_time_key = '_asset_contexts_time'
+
+        # Check cache (60 second TTL)
+        now = datetime.now()
+        if hasattr(self, cache_key) and hasattr(self, cache_time_key):
+            cache_age = (now - getattr(self, cache_time_key)).total_seconds()
+            if cache_age < 60:
+                return getattr(self, cache_key)
+
+        try:
+            # Determine API URL
+            base_url = getattr(self, 'base_url', 'https://api.hyperliquid.xyz')
+            if 'testnet' in base_url:
+                api_url = "https://api.hyperliquid-testnet.xyz/info"
+            else:
+                api_url = "https://api.hyperliquid.xyz/info"
+
+            response = requests.post(
+                api_url,
+                json={"type": "metaAndAssetCtxs"},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # data = [meta, assetCtxs]
+            # meta contains universe (list of assets)
+            # assetCtxs contains funding, openInterest, etc.
+            if len(data) >= 2:
+                meta = data[0]
+                asset_ctxs = data[1]
+
+                # Build mapping: coin name -> context
+                result = {}
+                universe = meta.get('universe', [])
+
+                for i, asset in enumerate(universe):
+                    coin_name = asset.get('name', '')
+                    if i < len(asset_ctxs):
+                        ctx = asset_ctxs[i]
+                        result[coin_name] = {
+                            'funding': float(ctx.get('funding', 0)),
+                            'open_interest': float(ctx.get('openInterest', 0)),
+                            'mark_price': float(ctx.get('markPx', 0)),
+                            'oracle_price': float(ctx.get('oraclePx', 0)),
+                            'premium': float(ctx.get('premium', 0)),
+                        }
+
+                # Cache result
+                setattr(self, cache_key, result)
+                setattr(self, cache_time_key, now)
+                return result
+
+            return {}
+        except Exception as e:
+            print(f"[INDICATORS] Warning: Failed to fetch asset contexts: {e}")
+            return {}
+
     def get_funding_rate(self, coin: str) -> float:
         """
-        Per ora ritorniamo 0.0 per evitare problemi di compatibilità se
-        la tua versione dell'SDK non espone funding_history.
+        Get current funding rate for a coin from Hyperliquid.
+        Funding rate is expressed as hourly rate (multiply by 24 for daily, by 8760 for annual).
         """
-        return 0.0
+        try:
+            contexts = self._get_asset_contexts()
+            coin_upper = coin.upper()
+
+            if coin_upper in contexts:
+                funding = contexts[coin_upper].get('funding', 0)
+                return funding
+            return 0.0
+        except Exception as e:
+            print(f"[INDICATORS] Error getting funding rate for {coin}: {e}")
+            return 0.0
 
     def get_open_interest(self, coin: str) -> Dict[str, float]:
         """
-        Hyperliquid non espone un semplice 'open interest globale' via SDK.
-        Placeholder che ritorna 0.0.
+        Get open interest for a coin from Hyperliquid.
+        Returns OI in USD notional value.
         """
-        return {"latest": 0.0, "average": 0.0}
+        try:
+            contexts = self._get_asset_contexts()
+            coin_upper = coin.upper()
+
+            if coin_upper in contexts:
+                oi = contexts[coin_upper].get('open_interest', 0)
+                # For average, we'd need historical data - for now return same as latest
+                return {"latest": oi, "average": oi}
+            return {"latest": 0.0, "average": 0.0}
+        except Exception as e:
+            print(f"[INDICATORS] Error getting open interest for {coin}: {e}")
+            return {"latest": 0.0, "average": 0.0}
+
+    # ==============================
+    #   CORRELATION (BTC/ETH/SOL)
+    # ==============================
+    def calculate_correlations(self, coins: List[str] = None, window: int = 20) -> Dict[str, float]:
+        """
+        Calculate price return correlations between coins.
+        Uses 15m timeframe returns over specified window.
+
+        Args:
+            coins: List of coins to analyze (default: BTC, ETH, SOL)
+            window: Number of periods for correlation calculation (default: 20)
+
+        Returns:
+            Dict with correlation pairs, e.g.:
+            {"BTC_ETH": 0.85, "BTC_SOL": 0.72, "ETH_SOL": 0.78}
+        """
+        if coins is None:
+            coins = ["BTC", "ETH", "SOL"]
+
+        try:
+            # Fetch price data for all coins
+            price_data = {}
+            for coin in coins:
+                try:
+                    df = self.fetch_ohlcv(coin.upper(), "15m", limit=window + 10)
+                    if len(df) >= window:
+                        # Calculate returns
+                        df['returns'] = df['close'].pct_change()
+                        price_data[coin.upper()] = df['returns'].tail(window).values
+                except Exception as e:
+                    print(f"[INDICATORS] Warning: Could not fetch data for {coin}: {e}")
+                    continue
+
+            if len(price_data) < 2:
+                return {}
+
+            # Build DataFrame of returns
+            returns_df = pd.DataFrame(price_data)
+
+            # Calculate correlation matrix
+            corr_matrix = returns_df.corr()
+
+            # Extract correlation pairs
+            result = {}
+            coins_list = list(price_data.keys())
+            for i, coin1 in enumerate(coins_list):
+                for coin2 in coins_list[i+1:]:
+                    pair_key = f"{coin1}_{coin2}"
+                    corr_value = corr_matrix.loc[coin1, coin2]
+                    if pd.notna(corr_value):
+                        result[pair_key] = round(corr_value, 4)
+
+            return result
+        except Exception as e:
+            print(f"[INDICATORS] Error calculating correlations: {e}")
+            return {}
 
     # ==============================
     #   ANALISI COMPLETA A 15m
@@ -206,6 +350,7 @@ class CryptoTechnicalAnalysisHL:
 
         oi_data = self.get_open_interest(coin)
         funding_rate = self.get_funding_rate(coin)
+        correlations = self.calculate_correlations()
 
         current_15m = df_15m.iloc[-1]
         current_longer = longer_term.iloc[-1]
@@ -227,6 +372,7 @@ class CryptoTechnicalAnalysisHL:
                 "open_interest_latest": oi_data["latest"],
                 "open_interest_average": oi_data["average"],
                 "funding_rate": funding_rate,
+                "correlations": correlations,
             },
 
             "intraday": {
@@ -274,13 +420,16 @@ class CryptoTechnicalAnalysisHL:
 
         deriv = data["derivatives"]
         output += (
-            f"In addition, here is the latest {data['ticker']} funding data on Hyperliquid:\n"
+            f"In addition, here is the latest {data['ticker']} derivatives data from Hyperliquid:\n"
         )
         output += (
-            f"Open Interest (placeholder): Latest: {deriv['open_interest_latest']:.2f} "
-            f"Average: {deriv['open_interest_average']:.2f}\n"
+            f"Open Interest: ${deriv['open_interest_latest']:,.0f} USD\n"
         )
-        output += f"Funding Rate: {deriv['funding_rate']:.2e}\n\n"
+        output += f"Funding Rate: {deriv['funding_rate']:.6f} (hourly, positive = longs pay shorts)\n"
+        if deriv.get('correlations'):
+            corr_str = ", ".join([f"{k}: {v:.2f}" for k, v in deriv['correlations'].items()])
+            output += f"Correlations (20-period returns): {corr_str}\n"
+        output += "\n"
 
         intra = data["intraday"]
         output += "Intraday series (15m, oldest → latest):\n"

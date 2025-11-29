@@ -624,6 +624,10 @@ def get_market_context(all_indicators: List[dict]) -> dict:
         "market_regime": None,  # "trending_up", "trending_down", "ranging", "volatile"
         "overall_sentiment_score": None,
         "volatility_regime": None,  # "high", "normal", "low"
+        # Derivatives data
+        "funding_rates": {},  # funding rate per coin
+        "open_interest": {},  # OI per coin
+        "correlations": {},  # price return correlations
     }
 
     if not all_indicators:
@@ -677,6 +681,31 @@ def get_market_context(all_indicators: List[dict]) -> dict:
                     result["btc_momentum"] = "down"
                 else:
                     result["btc_momentum"] = "neutral"
+
+        # Extract derivatives data (OI, Funding, Correlations)
+        for ind in all_indicators:
+            ticker = ind.get("ticker", "").upper()
+            deriv = ind.get("derivatives", {})
+            if deriv:
+                # Funding rate
+                funding = deriv.get("funding_rate")
+                if funding is not None:
+                    result["funding_rates"][ticker] = funding
+
+                # Open Interest
+                oi = deriv.get("open_interest_latest")
+                if oi is not None:
+                    result["open_interest"][ticker] = oi
+
+                # Correlations (same for all, just grab once)
+                if not result["correlations"] and deriv.get("correlations"):
+                    result["correlations"] = deriv["correlations"]
+
+        # Calculate average correlation if available
+        if result["correlations"]:
+            corr_values = list(result["correlations"].values())
+            if corr_values:
+                result["market_correlation"] = round(sum(corr_values) / len(corr_values), 2)
 
         # Market Regime (basato su ATR medio)
         atr_ratios = []
@@ -1023,6 +1052,16 @@ def format_context_summary(context: dict) -> str:
     market = context.get("market_context", {})
     if market.get("btc_trend"):
         lines.append(f"BTC={market['btc_trend']}")
+
+    # Derivatives
+    if market.get("market_correlation") is not None:
+        lines.append(f"Corr={market['market_correlation']:.2f}")
+    funding = market.get("funding_rates", {}).get(symbol)
+    if funding is not None:
+        lines.append(f"Fund={funding:.6f}")
+    oi = market.get("open_interest", {}).get(symbol)
+    if oi is not None:
+        lines.append(f"OI=${oi/1e6:.1f}M")
 
     return f"[{symbol}] " + " | ".join(lines) if lines else f"[{symbol}] No context"
 
