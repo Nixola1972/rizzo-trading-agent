@@ -751,18 +751,23 @@ def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=
         # ===== SISTEMA DI OVERRIDE COMPLETO =====
 
         # 1. Non permettere all'AI di aprire posizioni se lo score è sotto soglia
+        #    ECCEZIONE: Se AI_FREE_MODE è attivo, l'AI decide liberamente
         if scores and result.get('symbol') in scores:
             score = scores[result['symbol']]
             net_score = score.get('net_score', 0)
             threshold = score.get('thresholds', {}).get('open', 15.0)
 
-            # Se score sotto soglia E AI vuole aprire → FORZA HOLD
+            # Se score sotto soglia E AI vuole aprire → FORZA HOLD (solo se NON in AI_FREE_MODE)
             if abs(net_score) < threshold and result.get('operation') == 'open':
-                original_decision = f"{result['operation']} {result['direction']}"
-                print(f"⚠️  OVERRIDE OPEN: net_score={net_score:.1f} < threshold={threshold}")
-                print(f"   AI voleva: {original_decision} → Forzato: HOLD")
-                result['operation'] = 'hold'
-                result['_override_reason'] = f"Score {net_score:.1f} sotto soglia {threshold}. AI voleva: {original_decision}"
+                if AI_FREE_MODE:
+                    # AI_FREE_MODE: lascia decidere l'AI, non forzare HOLD
+                    print(f"🆓 AI_FREE_MODE: AI vuole OPEN con score={net_score:.1f} (sotto soglia {threshold}) → PERMESSO")
+                else:
+                    original_decision = f"{result['operation']} {result['direction']}"
+                    print(f"⚠️  OVERRIDE OPEN: net_score={net_score:.1f} < threshold={threshold}")
+                    print(f"   AI voleva: {original_decision} → Forzato: HOLD")
+                    result['operation'] = 'hold'
+                    result['_override_reason'] = f"Score {net_score:.1f} sotto soglia {threshold}. AI voleva: {original_decision}"
 
         # 2. Trailing Stop, Stop Loss, e Protezione Chiusure Premature
         if open_positions is not None:
