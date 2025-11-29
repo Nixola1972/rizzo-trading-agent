@@ -625,25 +625,37 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                     profit_decay_pct = ((max_profit_pct - current_pnl_pct) / max_profit_pct) * 100
 
                 # Costruisci warning dinamico
+                # NOTA: Fees Hyperliquid ~0.25% round trip (open+close)
+                # Quindi profitto netto = profitto lordo - 0.25%
+                FEES_ESTIMATE = 0.25  # % stimata per round trip
+                net_profit_pct = current_pnl_pct - FEES_ESTIMATE
                 profit_warnings = []
 
-                # Warning 1: Hai profitto, considera di prenderlo
-                if current_pnl_pct >= 1.5:
-                    profit_warnings.append(f"💰 HAI PROFITTO: +{current_pnl_pct:.1f}% - Considera SERIAMENTE di chiudere!")
+                # Warning 1: Profitto SIGNIFICATIVO (>3%) - il trailing dovrebbe gestirlo ma avvisa
+                if current_pnl_pct >= 5.0:
+                    profit_warnings.append(f"💰 PROFITTO ALTO: +{current_pnl_pct:.1f}% (netto ~{net_profit_pct:.1f}% dopo fees) - Valuta se prendere profitto!")
 
-                # Warning 2: Profit decay - stai perdendo i guadagni
-                if max_profit_pct >= 1.5 and profit_decay_pct >= 30:
+                # Warning 2: Profit decay CRITICO - stai perdendo troppo dei guadagni
+                # Attiva solo se avevi un buon profitto (>3%) e ora stai decadendo
+                if max_profit_pct >= 3.0 and profit_decay_pct >= 40:
+                    remaining_net = current_pnl_pct - FEES_ESTIMATE
                     profit_warnings.append(f"📉 PROFIT DECAY: Eri a +{max_profit_pct:.1f}%, ora +{current_pnl_pct:.1f}% (perso {profit_decay_pct:.0f}% del profitto!)")
-                    if profit_decay_pct >= 50:
-                        profit_warnings.append("⚠️ URGENTE: Hai perso più del 50% del profitto massimo! Chiudi ORA!")
 
-                # Warning 3: Posizione aperta troppo a lungo
-                if duration_minutes >= 60 and current_pnl_pct > 0:
-                    profit_warnings.append(f"⏰ TEMPO: Posizione aperta da {duration_minutes} minuti con profitto - Il mercato può girare!")
+                    # URGENTE se decay > 60% O se il profitto netto sta per andare a zero
+                    if profit_decay_pct >= 60:
+                        profit_warnings.append(f"⚠️ URGENTE: Hai perso oltre il 60% del profitto! Netto stimato: {remaining_net:.1f}%")
+                    elif remaining_net < 0.5:
+                        profit_warnings.append(f"⚠️ ATTENZIONE: Profitto netto dopo fees ~{remaining_net:.1f}% - Rischi di andare in pari!")
 
-                # Warning 4: Profitto piccolo ma a rischio
-                if 0.5 <= current_pnl_pct < 1.5 and duration_minutes >= 30:
-                    profit_warnings.append(f"⚡ Piccolo profitto (+{current_pnl_pct:.1f}%) da {duration_minutes}min - Meglio poco che niente!")
+                # Warning 3: Posizione aperta MOLTO a lungo con profitto discreto
+                # Più conservativo: solo dopo 120min e con profitto > 2%
+                if duration_minutes >= 120 and current_pnl_pct >= 2.0:
+                    profit_warnings.append(f"⏰ TEMPO: Posizione aperta da {duration_minutes} minuti con +{current_pnl_pct:.1f}% - Considera chiusura!")
+
+                # Warning 4: Profitto che sta per essere mangiato dalle fees
+                # Se sei tra 0.3% e 0.8%, dopo fees sei quasi a zero
+                if 0.3 <= current_pnl_pct < 0.8 and duration_minutes >= 45:
+                    profit_warnings.append(f"⚡ ATTENZIONE FEES: Profitto +{current_pnl_pct:.1f}%, dopo fees ~{net_profit_pct:.1f}% - Quasi break-even!")
 
                 # Aggiungi al prompt se ci sono warning
                 if profit_warnings:
@@ -653,16 +665,21 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
 
 """ + "\n".join(profit_warnings) + """
 
-### REGOLE PROFIT-TAKING:
-1. **Profitto > 2%**: CHIUDI! Un profitto sicuro è meglio di una perdita potenziale
-2. **Profit Decay > 50%**: CHIUDI IMMEDIATAMENTE! Stai perdendo i tuoi guadagni
-3. **Posizione > 60min con profitto**: Considera fortemente di chiudere
-4. **Non essere avido**: Piccoli profitti costanti > grandi perdite occasionali
+### CONSIDERA LE FEES (~0.25% round trip):
+- Profitto lordo 0.5% → Netto ~0.25% (quasi break-even)
+- Profitto lordo 1% → Netto ~0.75%
+- Profitto lordo 3% → Netto ~2.75% (buono!)
 
-### RICORDA:
-- Il mercato crypto è volatile, il profitto può svanire in secondi
-- "HOLD" quando sei in profitto = RISCHIO di perdere tutto
-- Meglio chiudere troppo presto che troppo tardi
+### REGOLE PROFIT-TAKING:
+1. **Profitto > 5%**: Valuta seriamente di chiudere - è un ottimo risultato
+2. **Profit Decay > 60%**: URGENTE - stai perdendo troppo dei guadagni
+3. **Profitto < 0.5% dopo tanto tempo**: Le fees mangeranno tutto
+4. **Il trailing stop protegge i profitti automaticamente** - questi warning sono per situazioni critiche
+
+### NOTA:
+- Il sistema di trailing stop già protegge i profitti
+- Questi warning sono per situazioni dove il decay è critico
+- Non chiudere prematuramente se il trailing è attivo e il trend è ancora favorevole
 """
                     system_prompt += profit_instructions
                     print(f"   💰 PROFIT ALERT: P&L={current_pnl_pct:+.1f}%, Max={max_profit_pct:.1f}%, Decay={profit_decay_pct:.0f}%")
