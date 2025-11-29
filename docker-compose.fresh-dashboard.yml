@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  fresh-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: rizzo_fresh_dashboard
+    ports:
+      - "8502:8501"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - DASHBOARD_START_DATE=${DASHBOARD_START_DATE:-today}
+    env_file:
+      - .env
+    command: streamlit run dashboard_fresh.py --server.port=8501 --server.address=0.0.0.0
+    restart: unless-stopped
+    networks:
+      - memory-net
+
+networks:
+  memory-net:
+    external: true
+    name: unified-memory-stack_memory-net
