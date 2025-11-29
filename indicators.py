@@ -189,12 +189,21 @@ class CryptoTechnicalAnalysisHL:
                     coin_name = asset.get('name', '')
                     if i < len(asset_ctxs):
                         ctx = asset_ctxs[i]
+                        # Safe float conversion with None handling
+                        def safe_float(val, default=0.0):
+                            if val is None:
+                                return default
+                            try:
+                                return float(val)
+                            except (ValueError, TypeError):
+                                return default
+
                         result[coin_name] = {
-                            'funding': float(ctx.get('funding', 0)),
-                            'open_interest': float(ctx.get('openInterest', 0)),
-                            'mark_price': float(ctx.get('markPx', 0)),
-                            'oracle_price': float(ctx.get('oraclePx', 0)),
-                            'premium': float(ctx.get('premium', 0)),
+                            'funding': safe_float(ctx.get('funding')),
+                            'open_interest': safe_float(ctx.get('openInterest')),
+                            'mark_price': safe_float(ctx.get('markPx')),
+                            'oracle_price': safe_float(ctx.get('oraclePx')),
+                            'premium': safe_float(ctx.get('premium')),
                         }
 
                 # Cache result
@@ -249,6 +258,7 @@ class CryptoTechnicalAnalysisHL:
         """
         Calculate price return correlations between coins.
         Uses 15m timeframe returns over specified window.
+        Cached for 5 minutes to reduce API calls.
 
         Args:
             coins: List of coins to analyze (default: BTC, ETH, SOL)
@@ -258,14 +268,30 @@ class CryptoTechnicalAnalysisHL:
             Dict with correlation pairs, e.g.:
             {"BTC_ETH": 0.85, "BTC_SOL": 0.72, "ETH_SOL": 0.78}
         """
+        # Check cache (5 min TTL - correlations don't change fast)
+        cache_key = '_correlations_cache'
+        cache_time_key = '_correlations_time'
+        now = datetime.now()
+
+        if hasattr(self, cache_key) and hasattr(self, cache_time_key):
+            cache_age = (now - getattr(self, cache_time_key)).total_seconds()
+            if cache_age < 300:  # 5 minutes
+                return getattr(self, cache_key)
+
         if coins is None:
             coins = ["BTC", "ETH", "SOL"]
 
         try:
-            # Fetch price data for all coins
+            import time
+
+            # Fetch price data for all coins with delay to avoid rate limiting
             price_data = {}
-            for coin in coins:
+            for idx, coin in enumerate(coins):
                 try:
+                    # Small delay between API calls to avoid 429
+                    if idx > 0:
+                        time.sleep(0.3)
+
                     df = self.fetch_ohlcv(coin.upper(), "15m", limit=window + 10)
                     if len(df) >= window:
                         # Calculate returns
@@ -293,6 +319,10 @@ class CryptoTechnicalAnalysisHL:
                     corr_value = corr_matrix.loc[coin1, coin2]
                     if pd.notna(corr_value):
                         result[pair_key] = round(corr_value, 4)
+
+            # Cache result
+            setattr(self, cache_key, result)
+            setattr(self, cache_time_key, now)
 
             return result
         except Exception as e:
