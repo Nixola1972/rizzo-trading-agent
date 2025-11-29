@@ -189,7 +189,13 @@ class HyperLiquidTrader:
         symbol = order_json["symbol"]
         direction = order_json["direction"]
         portion = Decimal(str(order_json["target_portion_of_balance"]))
-        leverage = int(order_json.get("leverage", 1))
+
+        # Leggi la leva richiesta e applica MAX_LEVERAGE cap
+        requested_leverage = int(order_json.get("leverage", 1))
+        max_leverage_env = int(os.getenv('MAX_LEVERAGE', '10'))
+        leverage = min(requested_leverage, max_leverage_env)
+        if requested_leverage > max_leverage_env:
+            print(f"⚠️ Leva richiesta {requested_leverage}x limitata a MAX_LEVERAGE={max_leverage_env}x")
 
         if op == "hold":
             print(f"[HyperLiquidTrader] HOLD — nessuna azione per {symbol}.")
