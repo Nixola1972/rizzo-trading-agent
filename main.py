@@ -65,6 +65,13 @@ NORMAL_TRAILING_GAP = float(os.getenv('NORMAL_TRAILING_GAP', '1.5'))
 DEFAULT_LOOP_INTERVAL_MINUTES = int(os.getenv('AI_CALL_INTERVAL_MINUTES', '15'))
 BOT_TIMEOUT_SECONDS = int(os.getenv("BOT_TIMEOUT_SECONDS", "300"))
 
+# ===== MIN HOLD TIME - Previene chiusure premature =====
+# L'AI non può chiudere posizioni prima di MIN_HOLD_MINUTES minuti
+# Basato su analisi: trades 10-30 min hanno performance migliore (+0.49% avg)
+MIN_HOLD_MINUTES = int(os.getenv('MIN_HOLD_MINUTES', '10'))
+if MIN_HOLD_MINUTES > 0:
+    print(f"⏱️  MIN_HOLD_MINUTES: {MIN_HOLD_MINUTES} min (chiusure AI bloccate prima)")
+
 # ===== AI FREE MODE CONFIGURATION =====
 # Quando abilitato, l'AI viene sempre chiamata indipendentemente dallo score
 AI_FREE_MODE = os.getenv('AI_FREE_MODE', 'false').lower() == 'true'
@@ -711,6 +718,15 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                     print(f"   🆓 FREE MODE: AI decide {ai_operation} {ai_direction} (score suggeriva {score_direction})")
 
             print(f"   ✅ Decisione per {ticker_sym}: {out.get('operation')} {out.get('direction', '')}")
+
+            # === MIN_HOLD_MINUTES: Blocca chiusure premature ===
+            if out.get("operation") == "close" and MIN_HOLD_MINUTES > 0 and position_context:
+                pos_duration = position_context.get('duration_minutes', 0)
+                if pos_duration < MIN_HOLD_MINUTES:
+                    print(f"   ⏱️  BLOCKED: AI vuole chiudere ma posizione aperta solo {pos_duration} min (min: {MIN_HOLD_MINUTES})")
+                    print(f"   ➡️  Override: CLOSE → HOLD (attendi ancora {MIN_HOLD_MINUTES - pos_duration} min)")
+                    out['operation'] = 'hold'
+                    out['reason'] = f"MIN_HOLD override: {pos_duration}/{MIN_HOLD_MINUTES} min"
 
             # Esegui solo se non è HOLD
             if out.get("operation") != "hold":
