@@ -37,13 +37,23 @@ Each decision should focus on ONE coin at a time, but consider your overall port
 ### When to HOLD (maintain existing position):
 - If you have an open position and the signal is STILL in the same direction → HOLD
 - Example: You have SHORT on SOL, signal score is still negative → HOLD, don't close
-- Only close if: signal REVERSES or becomes clearly NEUTRAL
+- IMPORTANT: Score going from STRONG to NEUTRAL is NOT a reason to close!
+  - Example: SHORT opened at score -13, now score is +2 → This is NOISE, NOT reversal → HOLD
+  - A score of +2 or -2 means "no clear direction", not "close your position"
 
 ### When to CLOSE:
-- Signal has REVERSED (was bearish, now bullish or vice versa)
-- Signal has become NEUTRAL/WEAK (score near zero)
-- Take profit: position has significant unrealized profit
-- Stop loss: position has significant unrealized loss
+- Signal has STRONGLY REVERSED (not just neutral!):
+  - For SHORT: close only if score becomes STRONGLY BULLISH (> +8 to +10)
+  - For LONG: close only if score becomes STRONGLY BEARISH (< -8 to -10)
+- Take profit: position has significant unrealized profit (> 1-2%)
+- Stop loss: position has significant unrealized loss (handled by trailing stop system)
+- DO NOT close just because score went to neutral/zero - that's market noise!
+
+### AVOID OVER-TRADING:
+- Opening and closing within 5-10 minutes is usually a MISTAKE
+- Small score fluctuations (-13 → +2) are NOISE, not signals
+- Fees eat your profits if you trade too frequently
+- When in doubt: HOLD and let the position develop
 
 ### When to OPEN:
 - No position exists for that coin AND signal is strong
