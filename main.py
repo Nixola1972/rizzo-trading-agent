@@ -510,6 +510,9 @@ def run_analysis_cycle(
                     break
 
             # === ENRICHED CONTEXT: usa il nuovo modulo ai_context ===
+            # Inizializza position_context prima del blocco condizionale
+            position_context = None
+
             if AI_CONTEXT_ENABLED:
                 ticker_context = build_full_ai_context(
                     symbol=ticker_sym,
@@ -520,6 +523,8 @@ def run_analysis_cycle(
                     position=ticker_position,
                     score_data=score_data
                 )
+                # Estrai position_context dal ticker_context per il profit-taking
+                position_context = ticker_context.get('position_context')
                 # Log context summary
                 print(f"   📊 {format_context_summary(ticker_context)}")
             else:
