@@ -46,18 +46,27 @@ USE THIS TO: Increasing sentiment confirms bullish moves. Decreasing sentiment c
 
 ## DECISION RULES
 
+### 🚨 CRITICAL RULES - READ FIRST:
+1. **NEVER close a position with P&L between -0.5% and +0.5%** - This is the "dead zone". Wait for movement!
+2. **Require STRONG signals** - Don't act on weak or borderline scores
+3. **Be PATIENT** - Small score fluctuations are noise, not signal
+4. **Fees eat profits** - A 0.3% profit becomes ~0% after fees. Aim for at least +0.5% profit before closing
+
 ### If you HAVE a position on this coin:
-- If signal is STILL in same direction (SHORT position + negative score, or LONG position + positive score) → HOLD
-- If signal has REVERSED or become NEUTRAL → consider CLOSE
-- If in significant profit (>5%) → consider taking profit (CLOSE)
+- **HOLD by default** - Only close if you have a STRONG reason
+- If P&L is between -0.5% and +0.5% → **ALWAYS HOLD** (wait for movement)
+- If signal REVERSED with score > 15 in opposite direction → consider CLOSE
+- If signal just weakened (score near 0) → **HOLD**, don't close on neutral signals
+- If in significant profit (>3%) → consider taking profit (CLOSE)
 - If in significant loss (>-8%) → consider cutting loss (CLOSE)
-- If position_context.duration_minutes > 300 and profit is small → consider CLOSE (avoid stagnant positions)
+- If position_context.duration_minutes > 300 and profit is small (<1%) → consider CLOSE
 
 ### If you DON'T have a position on this coin:
-- If score > threshold → OPEN LONG
-- If score < -threshold → OPEN SHORT
-- If score is weak → do nothing (HOLD with no action)
-- If symbol_historical_stats.win_rate < 40% → be extra cautious, require stronger signals
+- If score > 20 (strong signal) → OPEN LONG
+- If score < -20 (strong signal) → OPEN SHORT
+- If score is between -20 and +20 → **HOLD** - signal too weak
+- If symbol_historical_stats.win_rate < 40% → require score > 25 (extra strong)
+- Look for confirmation: RSI, EMA trend, and volume should agree with direction
 
 ### IMPORTANT CONSTRAINTS
 - Maximum 3 positions total (check open_positions_count)

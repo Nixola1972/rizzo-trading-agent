@@ -121,8 +121,18 @@ LEVERAGE_SCALING_STEP = int(os.getenv('LEVERAGE_SCALING_STEP', '2'))  # +2x ogni
 LEVERAGE_SCALING_MAX = int(os.getenv('LEVERAGE_SCALING_MAX', '15'))  # Leva massima
 LEVERAGE_SCALING_COOLDOWN_CYCLES = int(os.getenv('LEVERAGE_SCALING_COOLDOWN_CYCLES', '2'))  # Cicli di attesa tra scaling
 
+# ===== AUTO TAKE PROFIT CONFIG =====
+# Piazza automaticamente un ordine LIMIT TP dopo X minuti dall'apertura
+# Questo garantisce un profitto minimo e previene chiusure AI a 0%
+AUTO_TP_ENABLED = os.getenv('AUTO_TP_ENABLED', 'false').lower() == 'true'
+AUTO_TP_PERCENT = float(os.getenv('AUTO_TP_PERCENT', '0.4'))  # Target profit % P&L
+AUTO_TP_DELAY_MINUTES = int(os.getenv('AUTO_TP_DELAY_MINUTES', '15'))  # Piazza TP dopo X minuti
+
 # Tracking interno per cooldown leverage scaling (symbol -> cicli rimanenti)
 _leverage_scaling_cooldown = {}
+
+# Tracking interno per AUTO_TP (symbol -> order_id se già piazzato)
+_auto_tp_orders = {}
 
 def parse_trailing_steps(steps_str: str, default_steps: list = None) -> list:
     """Parse trailing steps from string format 'pnl:sl,pnl:sl,...' to list of tuples."""
@@ -2424,6 +2434,140 @@ def process_leverage_scaling(bot, pos: dict, tracking_data: dict, current_sl_lev
     )
 
 
+# ===== AUTO TAKE PROFIT FUNCTIONS =====
+
+def check_and_place_auto_tp(bot, pos: dict, tracking_data: dict):
+    """
+    Verifica se piazzare un ordine LIMIT TP automatico.
+
+    Condizioni:
+    1. AUTO_TP_ENABLED = true
+    2. Posizione aperta da >= AUTO_TP_DELAY_MINUTES
+    3. Non esiste già un ordine TP per questo simbolo
+    4. Trading mode = NORMAL (non MICRO_GAIN che ha già TP)
+
+    Args:
+        bot: HyperLiquidTrader instance
+        pos: Dati posizione
+        tracking_data: Dati tracking dal DB
+    """
+    import telegram_notifier as tg
+
+    if not AUTO_TP_ENABLED:
+        return None
+
+    symbol = pos.get("symbol", "")
+    direction = pos.get("side", "long").lower()
+    entry_price = float(pos.get("entry_price", 0))
+    size = float(pos.get("size", 0))
+
+    # Solo per NORMAL mode
+    trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+    if trading_mode != "NORMAL":
+        return None
+
+    # Già piazzato?
+    if symbol in _auto_tp_orders and _auto_tp_orders[symbol]:
+        return None
+
+    # Verifica tempo dall'apertura
+    if not tracking_data:
+        return None
+
+    created_at = tracking_data.get('created_at')
+    if not created_at:
+        return None
+
+    from datetime import datetime, timezone
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    duration_minutes = (now - created_at).total_seconds() / 60
+
+    if duration_minutes < AUTO_TP_DELAY_MINUTES:
+        remaining = AUTO_TP_DELAY_MINUTES - duration_minutes
+        log(f"   ⏳ {symbol} AUTO_TP: aspetta ancora {remaining:.0f} min")
+        return None
+
+    # Parse leverage
+    leverage_raw = pos.get("leverage", 1)
+    if isinstance(leverage_raw, str):
+        import re
+        match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+        leverage = float(match.group(1)) if match else 1.0
+    else:
+        leverage = float(leverage_raw)
+
+    # Calcola prezzo TP basato su P&L %
+    # P&L % = (price_change / entry) * leverage * 100
+    # price_change = (target_pnl / 100) * entry / leverage
+    price_change_pct = AUTO_TP_PERCENT / leverage
+
+    if direction == "long":
+        tp_price = entry_price * (1 + price_change_pct / 100)
+    else:  # short
+        tp_price = entry_price * (1 - price_change_pct / 100)
+
+    tp_price = bot._round_to_tick(tp_price, symbol)
+
+    log(f"   🎯 AUTO_TP: Piazzo LIMIT @ ${tp_price:.4f} per {symbol} (target +{AUTO_TP_PERCENT}% P&L)")
+
+    try:
+        # Piazza ordine LIMIT
+        is_buy = direction == "short"  # Opposto per chiudere
+
+        tp_order = bot.exchange.order(
+            symbol,
+            is_buy,
+            size,
+            tp_price,
+            {"limit": {"tif": "Gtc"}},
+            reduce_only=True
+        )
+
+        if tp_order.get("status") == "ok":
+            response_data = tp_order.get("response", {})
+            if response_data.get("type") == "order":
+                order_data = response_data.get("data", {})
+                statuses = order_data.get("statuses", [])
+                if statuses and statuses[0].get("resting"):
+                    order_id = statuses[0]["resting"]["oid"]
+                    _auto_tp_orders[symbol] = order_id
+                    log(f"   ✅ AUTO_TP piazzato: OID={order_id}")
+
+                    # Notifica Telegram
+                    if SENTINEL_TELEGRAM_NOTIFY:
+                        try:
+                            tg.send_telegram_message(
+                                f"🎯 <b>AUTO TAKE PROFIT</b>\n\n"
+                                f"<b>Symbol:</b> {symbol}\n"
+                                f"<b>Direction:</b> {direction.upper()}\n"
+                                f"<b>Entry:</b> ${entry_price:.2f}\n"
+                                f"<b>TP Price:</b> ${tp_price:.4f}\n"
+                                f"<b>Target P&L:</b> +{AUTO_TP_PERCENT}%\n"
+                                f"<b>Leverage:</b> {leverage}x\n\n"
+                                f"✅ Ordine LIMIT piazzato dopo {duration_minutes:.0f} min"
+                            )
+                        except Exception as e:
+                            log(f"   ⚠️ Errore Telegram: {e}")
+
+                    return {"success": True, "order_id": order_id, "tp_price": tp_price}
+
+        log(f"   ⚠️ AUTO_TP risposta inattesa: {tp_order}")
+        return {"success": False, "error": str(tp_order)}
+
+    except Exception as e:
+        log(f"   ❌ AUTO_TP errore: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def cleanup_auto_tp_on_close(symbol: str):
+    """Rimuove tracking AUTO_TP quando posizione viene chiusa."""
+    if symbol in _auto_tp_orders:
+        del _auto_tp_orders[symbol]
+        log(f"   🧹 AUTO_TP tracking rimosso per {symbol}")
+
+
 def run_order_verification(bot, positions: list) -> dict:
     """
     Esegue verifica ordini per tutte le posizioni aperte.
@@ -2847,6 +2991,10 @@ def run_sentinel_check():
                         if current_sl_level is not None:
                             process_leverage_scaling(bot, pos, tracking_data, current_sl_level)
 
+                    # === AUTO TAKE PROFIT (piazza LIMIT dopo X minuti) ===
+                    if AUTO_TP_ENABLED:
+                        check_and_place_auto_tp(bot, pos, tracking_data)
+
             # === CHECK TRAILING STOP (solo per NORMAL mode) ===
             result = check_trailing_stop(pos, tracking_data)
 
@@ -2938,6 +3086,9 @@ def run_sentinel_check():
                     sl_key_normal = f"{symbol}_NORMAL"
                     if sl_key_normal in _current_sl_level:
                         del _current_sl_level[sl_key_normal]
+
+                    # Reset AUTO_TP tracking
+                    cleanup_auto_tp_on_close(symbol)
 
                     # Cancella ordini TP/SL rimasti per questo simbolo
                     try:
@@ -3113,6 +3264,14 @@ def run_loop(interval: int = None):
         log(f"   Cooldown: {LEVERAGE_SCALING_COOLDOWN_CYCLES} cicli tra scaling")
     else:
         log(f"\n🚀 LEVERAGE SCALING: disabled")
+
+    # === AUTO TAKE PROFIT CONFIGURATION ===
+    if AUTO_TP_ENABLED:
+        log(f"\n🎯 AUTO TAKE PROFIT: ENABLED")
+        log(f"   Target: +{AUTO_TP_PERCENT}% P&L")
+        log(f"   Delay: {AUTO_TP_DELAY_MINUTES} min dopo apertura")
+    else:
+        log(f"\n🎯 AUTO TAKE PROFIT: disabled")
 
     # === SMART SENTINEL CONFIGURATION ===
     log(f"\n🧠 SMART SENTINEL:")
