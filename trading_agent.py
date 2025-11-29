@@ -23,6 +23,10 @@ INITIAL_STOP_LOSS_PERCENT = float(os.getenv('INITIAL_STOP_LOSS_PERCENT', '10'))
 SCORE_THRESHOLD_CLOSE_REVERSAL = float(os.getenv('SCORE_THRESHOLD_CLOSE_REVERSAL', '10'))
 SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '16'))
 
+# ===== AI FREE MODE =====
+# Quando attivo, disabilita la protezione chiusure e lascia decidere l'AI
+AI_FREE_MODE = os.getenv('AI_FREE_MODE', 'false').lower() == 'true'
+
 if TRAILING_STOP_ENABLED:
     print(f"🛡️  Trailing Stop: ENABLED (trailing={TRAILING_STOP_PERCENT}%, activation={TRAILING_STOP_ACTIVATION_PERCENT}%, stop_loss={INITIAL_STOP_LOSS_PERCENT}%)")
     print(f"🛡️  Close Reversal Threshold: {SCORE_THRESHOLD_CLOSE_REVERSAL}")
@@ -419,7 +423,15 @@ def check_close_protection(
     direction = position.get("side", "long").lower()
     net_score = score.get("net_score", 0)
 
-    # Logica di protezione:
+    # === AI_FREE_MODE: Bypassa la protezione, lascia decidere l'AI ===
+    if AI_FREE_MODE:
+        print(f"🆓 AI_FREE_MODE: Protezione chiusura disabilitata, AI decide liberamente")
+        return {
+            "allow_close": True,
+            "reason": f"AI_FREE_MODE: AI libera di chiudere (score={net_score:.1f})"
+        }
+
+    # Logica di protezione (solo se AI_FREE_MODE è False):
     # - Se LONG e score >= -REVERSAL_THRESHOLD → NON chiudere (trend non invertito)
     # - Se SHORT e score <= +REVERSAL_THRESHOLD → NON chiudere (trend non invertito)
 
