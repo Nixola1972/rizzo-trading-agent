@@ -380,7 +380,9 @@ class CryptoTechnicalAnalysisHL:
 
         oi_data = self.get_open_interest(coin)
         funding_rate = self.get_funding_rate(coin)
-        correlations = self.calculate_correlations()
+        # Correlations disabled to avoid rate limiting (429 errors)
+        # TODO: Reuse OHLCV data already fetched instead of extra API calls
+        correlations = {}  # self.calculate_correlations()
 
         current_15m = df_15m.iloc[-1]
         current_longer = longer_term.iloc[-1]
