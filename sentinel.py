@@ -2227,43 +2227,62 @@ def execute_leverage_scaling(
         # Arrotonda al tick size
         protection_price = bot._round_to_tick(protection_price, symbol)
 
-        log(f"   📋 Step 1: Piazzo ordine protezione LIMIT @ ${protection_price:.4f}")
+        # === VERIFICA: Non piazzare protezione se prezzo è già migliore ===
+        # Per LONG: se mark_price > protection_price, il LIMIT SELL verrebbe eseguito subito!
+        # Per SHORT: se mark_price < protection_price, il LIMIT BUY verrebbe eseguito subito!
+        skip_protection = False
+        if direction == "long" and mark_price > protection_price:
+            log(f"   ⚠️ Skip protezione: mark ${mark_price:.2f} > protection ${protection_price:.2f} (già in profitto)")
+            skip_protection = True
+        elif direction == "short" and mark_price < protection_price:
+            log(f"   ⚠️ Skip protezione: mark ${mark_price:.2f} < protection ${protection_price:.2f} (già in profitto)")
+            skip_protection = True
 
-        # === STEP 2: Piazza ordine LIMIT di protezione ===
-        is_buy = direction == "short"  # Opposto per chiudere
+        if not skip_protection:
+            log(f"   📋 Step 1: Piazzo ordine protezione LIMIT @ ${protection_price:.4f}")
 
-        protection_order = bot.exchange.order(
-            symbol,
-            is_buy,
-            size,
-            protection_price,
-            {"limit": {"tif": "Gtc"}},
-            reduce_only=True
-        )
+            # === STEP 2: Piazza ordine LIMIT di protezione ===
+            is_buy = direction == "short"  # Opposto per chiudere
 
-        if protection_order.get("status") != "ok":
-            result["error"] = f"Errore piazzamento ordine protezione: {protection_order}"
-            log(f"   ❌ {result['error']}")
-            return result
+            protection_order = bot.exchange.order(
+                symbol,
+                is_buy,
+                size,
+                protection_price,
+                {"limit": {"tif": "Gtc"}},
+                reduce_only=True
+            )
 
-        # Estrai order ID
-        response_data = protection_order.get("response", {})
-        if response_data.get("type") == "order":
-            order_data = response_data.get("data", {})
-            statuses = order_data.get("statuses", [])
-            if statuses and statuses[0].get("resting"):
-                result["protection_order_id"] = statuses[0]["resting"]["oid"]
-                log(f"   ✅ Ordine protezione piazzato: OID={result['protection_order_id']}")
-            else:
-                result["error"] = f"Ordine protezione non resting: {statuses}"
+            if protection_order.get("status") != "ok":
+                result["error"] = f"Errore piazzamento ordine protezione: {protection_order}"
                 log(f"   ❌ {result['error']}")
                 return result
-        else:
-            result["error"] = f"Risposta ordine protezione inattesa: {response_data}"
-            log(f"   ❌ {result['error']}")
-            return result
 
-        time.sleep(0.3)
+            # Estrai order ID
+            response_data = protection_order.get("response", {})
+            if response_data.get("type") == "order":
+                order_data = response_data.get("data", {})
+                statuses = order_data.get("statuses", [])
+                if statuses and statuses[0].get("resting"):
+                    result["protection_order_id"] = statuses[0]["resting"]["oid"]
+                    log(f"   ✅ Ordine protezione piazzato: OID={result['protection_order_id']}")
+                elif statuses and statuses[0].get("filled"):
+                    # L'ordine è stato riempito immediatamente - ABORT!
+                    result["error"] = f"ABORT: Ordine protezione riempito subito! Posizione potrebbe essere chiusa."
+                    log(f"   🚨 {result['error']}")
+                    return result
+                else:
+                    result["error"] = f"Ordine protezione non resting: {statuses}"
+                    log(f"   ❌ {result['error']}")
+                    return result
+            else:
+                result["error"] = f"Risposta ordine protezione inattesa: {response_data}"
+                log(f"   ❌ {result['error']}")
+                return result
+
+            time.sleep(0.3)
+        else:
+            log(f"   📋 Step 1: SKIP protezione (prezzo già favorevole)")
 
         # === STEP 3: Aumenta la leva ===
         log(f"   📋 Step 2: Aumento leva {current_leverage}x → {new_leverage}x")
@@ -2330,14 +2349,16 @@ def execute_leverage_scaling(
 
         time.sleep(0.3)
 
-        # === STEP 5: Cancella ordine protezione ===
-        log(f"   📋 Step 5: Cancello ordine protezione")
-
-        try:
-            bot.exchange.cancel(symbol, result["protection_order_id"])
-            log(f"   ✅ Ordine protezione cancellato")
-        except Exception as e:
-            log(f"   ⚠️ Errore cancellazione protezione (potrebbe essere già eseguito): {e}")
+        # === STEP 5: Cancella ordine protezione (se piazzato) ===
+        if result["protection_order_id"]:
+            log(f"   📋 Step 5: Cancello ordine protezione")
+            try:
+                bot.exchange.cancel(symbol, result["protection_order_id"])
+                log(f"   ✅ Ordine protezione cancellato")
+            except Exception as e:
+                log(f"   ⚠️ Errore cancellazione protezione (potrebbe essere già eseguito): {e}")
+        else:
+            log(f"   📋 Step 5: SKIP (nessun ordine protezione da cancellare)")
 
         # === STEP 6: Imposta cooldown ===
         _leverage_scaling_cooldown[symbol] = LEVERAGE_SCALING_COOLDOWN_CYCLES
