@@ -2343,7 +2343,55 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
 
         sl_price = None
         if trading_mode == "MICRO_GAIN":
-            sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, size)
+            # Per MICRO_GAIN - usa current_sl_level se disponibile (trailing attivo)
+            if current_sl_level is not None:
+                # current_sl_level è già in % rispetto all'entry (es. +0.60% o -3.0%)
+                sl_pct = current_sl_level
+                log(f"   📊 Usando current_sl_level: {sl_pct:+.2f}%")
+            else:
+                # Fallback al valore iniziale
+                sl_pct = -MICRO_GAIN_STOP_LOSS_PERCENT
+                log(f"   📊 Usando SL iniziale: {sl_pct:.2f}%")
+
+            # Calcola prezzo SL basato sulla percentuale
+            price_change_pct = abs(sl_pct) / MICRO_GAIN_LEVERAGE
+            if direction == "long":
+                if sl_pct >= 0:
+                    # Trailing attivo: SL sopra entry (in profitto)
+                    sl_price = entry_price * (1 + price_change_pct / 100)
+                else:
+                    # SL sotto entry (in perdita)
+                    sl_price = entry_price * (1 - price_change_pct / 100)
+            else:  # short
+                if sl_pct >= 0:
+                    # Trailing attivo: SL sotto entry (in profitto per short)
+                    sl_price = entry_price * (1 - price_change_pct / 100)
+                else:
+                    # SL sopra entry (in perdita per short)
+                    sl_price = entry_price * (1 + price_change_pct / 100)
+            sl_price = bot._round_to_tick(sl_price, symbol)
+
+            log(f"   🛡️ Piazzo SL STOP @ ${sl_price:.2f} (trigger, {sl_pct:+.1f}%)")
+
+            is_buy = direction == "short"
+            sl_order = bot.exchange.order(
+                symbol,
+                is_buy,
+                size,
+                sl_price,
+                {"trigger": {"triggerPx": sl_price, "isMarket": True, "tpsl": "sl"}},
+                reduce_only=True
+            )
+
+            if sl_order.get("status") == "ok":
+                response_data = sl_order.get("response", {})
+                if response_data.get("type") == "order":
+                    statuses = response_data.get("data", {}).get("statuses", [])
+                    if statuses and statuses[0].get("resting"):
+                        log(f"   ✅ SL STOP piazzato: OID={statuses[0]['resting']['oid']}")
+            else:
+                log(f"   ❌ Errore API: {sl_order}")
+                sl_price = None
         else:
             # Per NORMAL mode - usa current_sl_level se disponibile (trailing attivo)
             if current_sl_level is not None:
