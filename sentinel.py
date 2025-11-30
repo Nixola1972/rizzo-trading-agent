@@ -1199,6 +1199,72 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
         return None
 
 
+def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price: float):
+    """
+    Inizializza _current_sl_level per MICRO_GAIN da ordine SL esistente su Hyperliquid.
+
+    Questa funzione risolve il problema del riavvio container: quando la sentinel
+    si riavvia, _current_sl_level è vuoto ma potrebbero esserci ordini SL già piazzati.
+    Calcola il livello SL corrente dall'ordine esistente.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+
+    Returns:
+        bool: True se il livello è stato inizializzato/trovato
+    """
+    global _current_sl_level
+
+    # Se già esiste, non fare nulla
+    if symbol in _current_sl_level:
+        return True
+
+    try:
+        # Cerca ordini SL esistenti
+        try:
+            open_orders = bot.info.frontend_open_orders(bot.account_address)
+        except AttributeError:
+            open_orders = bot.info.open_orders(bot.account_address)
+
+        expected_side = "B" if direction == "short" else "A"
+
+        for order in open_orders:
+            if order.get("coin") == symbol and order.get("side") == expected_side:
+                trigger_px = order.get("triggerPx")
+                if trigger_px and trigger_px != "0.0":
+                    # SL già esiste - calcola il livello reale dal prezzo trigger
+                    trigger_price = float(trigger_px)
+
+                    # Calcola la percentuale SL reale basata sul prezzo trigger
+                    if direction == "long":
+                        # Long: SL sotto entry = negativo, sopra entry = positivo
+                        price_diff_pct = ((trigger_price - entry_price) / entry_price) * 100
+                    else:
+                        # Short: SL sopra entry = negativo, sotto entry = positivo
+                        price_diff_pct = ((entry_price - trigger_price) / entry_price) * 100
+
+                    # Moltiplica per leva per ottenere il livello SL in %
+                    calculated_sl_level = price_diff_pct * MICRO_GAIN_LEVERAGE
+
+                    _current_sl_level[symbol] = calculated_sl_level
+                    log(f"   ✅ {symbol} MICRO_GAIN SL recuperato da HL (trigger=${trigger_px}), livello: {calculated_sl_level:+.2f}%")
+                    return True
+
+        # Nessun ordine SL trovato - inizializza al default
+        _current_sl_level[symbol] = -MICRO_GAIN_STOP_LOSS_PERCENT
+        log(f"   ℹ️ {symbol} MICRO_GAIN SL level inizializzato a default: {-MICRO_GAIN_STOP_LOSS_PERCENT:+.2f}%")
+        return True
+
+    except Exception as e:
+        log(f"   ⚠️ Errore recupero SL level per {symbol}: {e}")
+        # In caso di errore, usa il default
+        _current_sl_level[symbol] = -MICRO_GAIN_STOP_LOSS_PERCENT
+        return True
+
+
 # ===== MICRO_PAY FUNCTIONS =====
 
 def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
@@ -3328,6 +3394,10 @@ def run_sentinel_check():
 
             if trading_mode == "MICRO_GAIN" and tracking_data:
                 micro_gain_result = check_micro_gain_reversal(pos, tracking_data)
+
+                # === INITIALIZE MICRO_GAIN SL LEVEL (recupera da ordine esistente) ===
+                if position_size > 0:
+                    initialize_micro_gain_sl_level(bot, symbol, direction, entry_price)
 
                 # === UPDATE MICRO_GAIN TRAILING SL (lock-in profit) ===
                 if position_size > 0:
