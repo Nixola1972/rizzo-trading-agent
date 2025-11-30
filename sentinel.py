@@ -1413,16 +1413,19 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
 
             new_sl_price = bot._round_to_tick(new_sl_price, symbol)
 
-            # Cancella ordini SL esistenti
+            # Cancella ordini SL esistenti (usa frontend_open_orders per vedere trigger orders!)
             try:
-                open_orders = bot.info.open_orders(bot.account_address)
+                try:
+                    open_orders = bot.info.frontend_open_orders(bot.account_address)
+                except AttributeError:
+                    open_orders = bot.info.open_orders(bot.account_address)
                 for order in open_orders:
                     if order.get("coin") == symbol:
                         # Cancella solo ordini SL (lato opposto alla posizione)
                         expected_side = "B" if direction == "short" else "A"
                         if order.get("side") == expected_side:
                             bot.exchange.cancel(symbol, order.get("oid"))
-                            log(f"   🗑️ Cancellato SL precedente")
+                            log(f"   🗑️ Cancellato SL precedente OID={order.get('oid')}")
             except Exception as e:
                 log(f"   ⚠️ Errore cancellazione: {e}")
 
@@ -1594,16 +1597,19 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
 
             new_sl_price = bot._round_to_tick(new_sl_price, symbol)
 
-            # Cancella ordini SL esistenti
+            # Cancella ordini SL esistenti (usa frontend_open_orders per vedere trigger orders!)
             try:
-                open_orders = bot.info.open_orders(bot.account_address)
+                try:
+                    open_orders = bot.info.frontend_open_orders(bot.account_address)
+                except AttributeError:
+                    open_orders = bot.info.open_orders(bot.account_address)
                 for order in open_orders:
                     if order.get("coin") == symbol:
                         # Cancella solo ordini SL (lato opposto alla posizione)
                         expected_side = "B" if direction == "short" else "A"
                         if order.get("side") == expected_side:
                             bot.exchange.cancel(symbol, order.get("oid"))
-                            log(f"   🗑️ Cancellato SL precedente")
+                            log(f"   🗑️ Cancellato SL precedente OID={order.get('oid')}")
             except Exception as e:
                 log(f"   ⚠️ Errore cancellazione: {e}")
 
@@ -3111,9 +3117,12 @@ def run_sentinel_check():
                     # Reset AUTO_TP tracking
                     cleanup_auto_tp_on_close(symbol)
 
-                    # Cancella ordini TP/SL rimasti per questo simbolo
+                    # Cancella ordini TP/SL rimasti per questo simbolo (usa frontend_open_orders per trigger!)
                     try:
-                        open_orders = bot.info.open_orders(bot.account_address)
+                        try:
+                            open_orders = bot.info.frontend_open_orders(bot.account_address)
+                        except AttributeError:
+                            open_orders = bot.info.open_orders(bot.account_address)
                         for order in open_orders:
                             if order.get("coin") == symbol:
                                 bot.exchange.cancel(symbol, order.get("oid"))
