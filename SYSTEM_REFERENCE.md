@@ -1,306 +1,684 @@
-# Rizzo Trading Agent - Documentazione di Riferimento
+# Rizzo Trading Agent - Documentazione Completa di Riferimento
 
-> **IMPORTANTE**: Leggi questo documento all'inizio di ogni sessione per comprendere il sistema.
-
-## Indice
-1. [Architettura Sistema](#architettura-sistema)
-2. [Componenti Principali](#componenti-principali)
-3. [Modalità di Trading](#modalità-di-trading)
-4. [Sistema di Score](#sistema-di-score)
-5. [Logica Smart Wake AI](#logica-smart-wake-ai)
-6. [Trailing Stop e Stop Loss](#trailing-stop-e-stop-loss)
-7. [Parametri Chiave (.env)](#parametri-chiave-env)
-8. [Database e Tracking](#database-e-tracking)
-9. [Deploy Docker](#deploy-docker)
-10. [Troubleshooting Comune](#troubleshooting-comune)
+> **IMPORTANTE PER CLAUDE**: Leggi questo documento all'inizio di ogni sessione per comprendere il sistema.
 
 ---
 
-## Architettura Sistema
+## 1. ARCHITETTURA GENERALE
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           RIZZO TRADING AGENT                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌──────────────────┐         ┌──────────────────────────────────────┐  │
-│  │   SENTINEL.PY    │         │            MAIN.PY (AI)              │  │
-│  │  (loop 30 sec)   │────────▶│         (loop 10-15 min)             │  │
-│  │                  │  wake   │                                      │  │
-│  │ • Monitor posiz. │         │ • Analisi completa (news, forecast)  │  │
-│  │ • Trailing SL    │         │ • Decisioni AI (OpenRouter/Claude)   │  │
-│  │ • Auto TP        │         │ • Open/Close posizioni               │  │
-│  │ • MICRO_GAIN     │         │                                      │  │
-│  │ • Score check    │         │                                      │  │
-│  └──────────────────┘         └──────────────────────────────────────┘  │
-│           │                                    │                         │
-│           ▼                                    ▼                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                      HYPERLIQUID EXCHANGE                         │   │
-│  │  • Ordini LIMIT/MARKET                                           │   │
-│  │  • Ordini TRIGGER (Stop Loss)                                    │   │
-│  │  • Posizioni con leva fino a 50x                                 │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│           │                                    │                         │
-│           ▼                                    ▼                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                    POSTGRESQL DATABASE                            │   │
-│  │  • position_tracking (stato posizioni)                           │   │
-│  │  • signal_scores (storico score)                                 │   │
-│  │  • trade_journal (storico trade)                                 │   │
-│  │  • sentiment_cache (Fear & Greed)                                │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           RIZZO TRADING AGENT                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌────────────────────┐              ┌────────────────────────────────────┐ │
+│  │   SENTINEL.PY      │   wake_ai    │            MAIN.PY (AI)            │ │
+│  │   (loop 30 sec)    │─────────────▶│         (loop 10-15 min)           │ │
+│  │                    │              │                                    │ │
+│  │ • Monitor posizioni│              │ • Raccolta dati completa           │ │
+│  │ • Trailing SL      │              │ • Chiamata AI (OpenRouter)         │ │
+│  │ • MICRO_GAIN auto  │              │ • Decisioni open/close             │ │
+│  │ • Score check      │              │ • Trade journal                    │ │
+│  │ • SL verification  │              │                                    │ │
+│  └────────────────────┘              └────────────────────────────────────┘ │
+│           │                                       │                          │
+│           ▼                                       ▼                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                      HYPERLIQUID EXCHANGE                             │   │
+│  │  • Ordini LIMIT/MARKET                                               │   │
+│  │  • Ordini TRIGGER (Stop Loss) - ATTENZIONE: open_orders() non li vede│   │
+│  │  • Posizioni con leva fino a 50x                                     │   │
+│  │  • API: exchange.market_open(), exchange.cancel(), etc.              │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│           │                                       │                          │
+│           ▼                                       ▼                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                    POSTGRESQL DATABASE                                │   │
+│  │  • position_tracking: stato posizioni con SL level                   │   │
+│  │  • signal_scores: storico score per analisi                          │   │
+│  │  • trades: trade journal completo                                    │   │
+│  │  • sentiment_cache: Fear & Greed Index                               │   │
+│  │  • bot_operations: log operazioni AI                                 │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Componenti Principali
+## 2. FILE PRINCIPALI E LORO FUNZIONI
 
-### 1. sentinel.py
-**Loop continuo ogni 30 secondi** che:
-- Monitora posizioni aperte
-- Gestisce trailing stop loss
-- Apre automaticamente posizioni MICRO_GAIN/MICRO_PAY
-- Verifica e corregge ordini SL
-- Sveglia l'AI quando necessario
+### 2.1 sentinel.py (151 KB - File più grande e critico)
 
-### 2. main.py
-**Ciclo AI ogni 10-15 minuti** che:
-- Raccoglie dati completi (indicatori, news, whale alerts, forecast)
-- Chiama l'AI (OpenRouter/Claude) per decisioni
-- Esegue operazioni open/close
-- Salva nel trade journal
+**Scopo**: Loop continuo ogni 30 secondi che monitora e gestisce le posizioni.
 
-### 3. hyperliquid_trader.py
-Interfaccia con l'exchange Hyperliquid:
-- `open_orders()`: Ordini LIMIT attivi (NON vede trigger orders!)
-- `frontend_open_orders()`: TUTTI gli ordini inclusi TRIGGER (Stop Loss)
-- `execute_signal()`: Esegue operazioni
+#### Funzioni Principali:
 
-### 4. signal_scorer.py
-Calcola lo score dei segnali:
-- RSI: peso 15
-- Trend (EMA+MACD): peso 10
-- Fear & Greed: peso 8
-- Volume: peso 4
+| Funzione | Linea | Descrizione |
+|----------|-------|-------------|
+| `run_loop()` | 3633 | Loop principale del sentinel |
+| `run_sentinel_check()` | 3231 | Singolo ciclo di controllo |
+| `check_and_open_micro_gain()` | 2945 | Auto-apertura MICRO_GAIN/PAY |
+| `check_and_wake_ai_for_normal()` | 3032 | Wake AI per score NORMAL range |
+| `calculate_quick_score()` | 805 | Calcola score tecnico rapido |
+| `get_smoothed_score()` | 700 | Media mobile degli score |
+| `check_score_confirmation()` | 737 | Verifica N cicli sopra soglia |
+| `update_micro_gain_sl_order()` | 1516 | Aggiorna trailing SL MICRO_GAIN |
+| `update_normal_sl_order()` | 1704 | Aggiorna trailing SL NORMAL |
+| `verify_and_fix_sl_order()` | 2163 | Verifica e corregge ordini SL |
+| `check_take_profit()` | 3086 | Controlla condizioni TP |
+| `check_trailing_stop()` | 3140 | Controlla trailing stop |
+| `check_micro_gain_reversal()` | 932 | Controlla inversione score |
+| `open_micro_gain_position()` | 993 | Apre posizione MICRO_GAIN |
+| `open_micro_pay_position()` | 1204 | Apre posizione MICRO_PAY |
+| `place_micro_gain_sl_order()` | 1144 | Piazza SL per MICRO_GAIN |
+| `wake_ai_agent()` | 239 | Sveglia main.py in background |
+| `should_wake_ai_for_symbol()` | 298 | Decide se svegliare AI per score |
+| `should_wake_ai_for_event()` | 376 | Decide se svegliare AI per eventi |
+| `detect_externally_closed_positions()` | 1403 | Rileva chiusure esterne |
+| `check_leverage_scaling_conditions()` | 2360 | Verifica condizioni per scaling leva |
+| `execute_leverage_scaling()` | 2421 | Esegue aumento leva |
+| `check_and_place_auto_tp()` | 2717 | Piazza TP automatico |
+| `get_step_sl_level()` | 1682 | Calcola livello SL per step |
+| `parse_trailing_steps()` | 141 | Parsing "pnl:sl,pnl:sl" string |
+| `log()` | 218 | Logging con timestamp |
 
-### 5. db_utils.py
-Gestione database PostgreSQL:
-- `get_position_tracking()`: Stato posizione
-- `upsert_position_tracking()`: Aggiorna tracking
-- `log_signal_score()`: Salva score per analisi
-- `check_score_confirmation_db()`: Verifica conferma cicli
-
----
-
-## Modalità di Trading
-
-### NORMAL Mode (score >= SCORE_THRESHOLD_OPEN)
-- Gestito dall'AI in main.py
-- Trailing stop a gradini o continuo
-- Leva configurabile (default 3x)
-- Per segnali forti e affidabili
-
-### MICRO_GAIN Mode (SCORE_THRESHOLD_HOLD <= score < SCORE_THRESHOLD_OPEN)
-- Apertura automatica dal sentinel
-- Trade veloci con target piccoli (+3% P&L tipico)
-- Trailing stop con step bassi
-- Leva più alta (4-5x tipico)
-- Chiusura su reversal di score
-
-### MICRO_PAY Mode (MICRO_PAY_THRESHOLD <= score < SCORE_THRESHOLD_HOLD)
-- Per segnali deboli
-- Trade molto piccoli
-- TP/SL fissi (no trailing)
-- Disabilitato di default
-
-```
-Score Range:
-    0          5         10        12        17        20+
-    |----------|---------|---------|---------|---------|
-       HOLD      MICRO_    MICRO_    MICRO_     NORMAL
-                  PAY       PAY       GAIN
-              (se enabled)
-```
-
----
-
-## Sistema di Score
-
-### Calcolo Score
+#### Variabili Globali Importanti:
 ```python
-# Componenti positive (bullish) e negative (bearish)
-score_bullish = RSI_contribution + Trend_contribution + Volume_contribution + FG_contribution
-score_bearish = RSI_contribution + Trend_contribution + Volume_contribution + FG_contribution
-
-net_score = score_bullish - score_bearish
-# Positivo = LONG, Negativo = SHORT
+_trailing_peaks = {}      # symbol -> peak price raggiunto
+_current_sl_level = {}    # symbol -> livello SL corrente (%)
+_last_close_time = {}     # symbol -> timestamp ultima chiusura (cooldown)
+_score_history = {}       # symbol -> lista ultimi N score (smoothing)
+_leverage_scaling_cooldown = {}  # symbol -> cicli rimanenti
+_auto_tp_orders = {}      # symbol -> order_id TP piazzato
 ```
-
-### Score Smoothing
-```python
-SCORE_SMOOTHING_SAMPLES = 3  # Media ultimi 3 cicli
-```
-Riduce volatilità causata da indicatori binari.
-
-### Score Confirmation (NUOVO)
-```python
-SCORE_CONFIRMATION_CYCLES = 3  # Cicli consecutivi sopra soglia
-```
-Prima di aprire, verifica che:
-1. Tutti gli ultimi N score siano sopra la soglia
-2. Tutti abbiano la stessa direzione (tutti + o tutti -)
 
 ---
 
-## Logica Smart Wake AI
+### 2.2 main.py (48 KB)
 
-### AI_FREE_MODE = true
-```
-AI gira su schedule (ogni AI_CALL_INTERVAL_MINUTES)
-Sentinel sveglia AI SOLO su:
-  ✅ Chiusure (SL, TP, trailing)
-  ✅ Volatility spike
-  ❌ NON per score (AI decide da sola)
-```
+**Scopo**: Ciclo AI che analizza mercato e prende decisioni di trading.
 
-### AI_FREE_MODE = false (default)
-```
-Sentinel sveglia AI se:
-  ✅ Score >= SCORE_THRESHOLD_OPEN + confermato + no posizione
-  ✅ Score in direzione OPPOSTA alla posizione
-  ❌ Score sotto soglia
-  ❌ Posizione già allineata con score
-```
+#### Funzioni Principali:
 
-### Funzioni chiave (sentinel.py):
-- `should_wake_ai_for_symbol()`: Decide wake per score
-- `should_wake_ai_for_event()`: Decide wake per eventi
-- `check_and_wake_ai_for_normal()`: Wake proattivo per NORMAL range
+| Funzione | Linea | Descrizione |
+|----------|-------|-------------|
+| `run_analysis_cycle()` | 258 | Singolo ciclo di analisi completa |
+| `run_autonomous_loop()` | 931 | Loop autonomo ogni N minuti |
+| `main()` | 1004 | Entry point |
+| `determine_trading_mode()` | 94 | Determina MICRO_GAIN/NORMAL |
+| `should_skip_ai_call()` | 202 | Verifica intervallo minimo |
+| `get_symbol_trade_stats()` | 117 | Statistiche trade per simbolo |
+| `get_position_context()` | 142 | Contesto posizione per AI |
+| `get_overall_performance()` | 176 | Performance ultimi N giorni |
+
+#### Flusso del Ciclo:
+1. Recupera indicatori tecnici (`indicators.py`)
+2. Recupera news e whale alerts
+3. Recupera sentiment e forecast
+4. Calcola score per ogni simbolo
+5. Chiama AI per decisione
+6. Verifica score confirmation (NUOVO)
+7. Esegue operazione
+8. Salva in trade journal
 
 ---
 
-## Trailing Stop e Stop Loss
+### 2.3 hyperliquid_trader.py (20 KB)
 
-### MICRO_GAIN Trailing (Steps Mode)
-```
-MICRO_GAIN_TRAILING_STEPS = "1:0,2:1,3:2"
-# A +1% P&L → SL = 0% (breakeven)
-# A +2% P&L → SL = +1%
-# A +3% P&L → SL = +2%
+**Scopo**: Interfaccia con exchange Hyperliquid.
+
+#### Classe: `HyperLiquidTrader`
+
+| Metodo | Descrizione |
+|--------|-------------|
+| `__init__()` | Inizializza connessione exchange |
+| `execute_signal()` | Esegue operazione (open/close/adjust) |
+| `get_account_status()` | Ritorna balance e posizioni |
+| `get_current_leverage()` | Legge leva attuale |
+| `set_leverage_for_symbol()` | Imposta leva per simbolo |
+| `_round_to_tick()` | Arrotonda prezzo al tick |
+| `_get_tick_size()` | Ottiene tick size per simbolo |
+
+#### Metodi Exchange Sottostanti:
+```python
+# ATTENZIONE: Differenza critica!
+self.exchange.open_orders()           # Solo ordini LIMIT - NON vede trigger!
+self.exchange.frontend_open_orders()  # TUTTI gli ordini inclusi TRIGGER (SL)
+
+self.exchange.market_open()           # Apre posizione a mercato
+self.exchange.market_close()          # Chiude posizione a mercato
+self.exchange.order()                 # Piazza ordine limit/trigger
+self.exchange.cancel()                # Cancella ordine per oid
 ```
 
-### NORMAL Trailing (Steps Mode)
+---
+
+### 2.4 signal_scorer.py (16 KB)
+
+**Scopo**: Calcola score dei segnali tecnici.
+
+#### Funzioni:
+
+| Funzione | Descrizione |
+|----------|-------------|
+| `calculate_signal_score()` | Calcolo principale score |
+| `get_weight()` | Legge peso da env |
+| `format_score_for_prompt()` | Formatta per prompt AI |
+| `get_scoring_config()` | Ritorna config pesi |
+
+#### Pesi Default:
+```python
+RSI_WEIGHT = 15        # Overbought/Oversold
+TREND_WEIGHT = 10      # EMA + MACD aligned
+MACD_WEIGHT = 5        # MACD standalone
+FG_WEIGHT = 8          # Fear & Greed
+VOLUME_WEIGHT = 4      # Volume imbalance
 ```
+
+#### Output:
+```python
+{
+    'score_bullish': 18.0,
+    'score_bearish': 5.0,
+    'net_score': 13.0,        # bullish - bearish
+    'direction': 'LONG',       # LONG/SHORT/HOLD
+    'confidence': 'NORMAL',    # STRONG/NORMAL/WEAK
+    'signals': [...]           # Dettaglio ogni indicatore
+}
+```
+
+---
+
+### 2.5 db_utils.py (60 KB)
+
+**Scopo**: Tutte le operazioni database PostgreSQL.
+
+#### Funzioni Principali:
+
+| Funzione | Descrizione |
+|----------|-------------|
+| `get_connection()` | Connessione al DB |
+| `init_db()` | Crea tabelle se non esistono |
+| **Position Tracking** | |
+| `get_position_tracking()` | Legge tracking posizione |
+| `upsert_position_tracking()` | Crea/aggiorna tracking |
+| `delete_position_tracking()` | Elimina tracking |
+| `get_all_position_trackings()` | Lista tutti i tracking |
+| **Signal Scores** | |
+| `log_signal_score()` | Salva score nel DB |
+| `get_recent_scores()` | Ultimi N score per simbolo |
+| `check_score_confirmation_db()` | Verifica conferma cicli |
+| **Account & Operations** | |
+| `log_account_status()` | Snapshot account |
+| `log_bot_operation()` | Log operazione AI |
+| `get_latest_account_snapshot()` | Ultimo snapshot |
+| **Sentiment** | |
+| `save_sentiment_cache()` | Salva F&G in cache |
+| `get_cached_sentiment()` | Legge F&G da cache |
+| `get_sentiment_trend()` | Trend F&G |
+| **Sentinel** | |
+| `log_sentinel_check()` | Log controllo sentinel |
+| `get_sentinel_logs()` | Legge log sentinel |
+| `get_sentinel_status()` | Stato corrente |
+| **Errors** | |
+| `log_error()` | Logga errore |
+
+---
+
+### 2.6 trade_journal.py (36 KB)
+
+**Scopo**: Registrazione dettagliata di tutti i trade.
+
+#### Funzioni Principali:
+
+| Funzione | Descrizione |
+|----------|-------------|
+| `open_trade()` | Registra apertura trade |
+| `close_trade()` | Registra chiusura con P&L |
+| `get_open_trade()` | Trade aperto per simbolo |
+| `update_trade_peak()` | Aggiorna peak price |
+| `log_event()` | Evento generico |
+| `log_sl_placed()` | SL piazzato |
+| `log_sl_modified()` | SL modificato |
+| `log_trailing_activated()` | Trailing attivato |
+| `save_snapshot()` | Snapshot periodico |
+| `get_trade_summary()` | Riepilogo trade |
+| `get_summary_by_mode()` | Riepilogo per mode |
+| `get_summary_by_symbol()` | Riepilogo per simbolo |
+| `get_fee_analysis()` | Analisi fees |
+| `calculate_fees()` | Calcola fees (~0.035% taker) |
+
+---
+
+### 2.7 trading_agent.py (31 KB)
+
+**Scopo**: Gestione chiamate AI e parsing risposte.
+
+#### Funzioni Principali:
+
+| Funzione | Descrizione |
+|----------|-------------|
+| `previsione_trading_agent()` | Chiamata principale AI |
+| `call_ai_api()` | Chiamata HTTP a OpenRouter |
+| `extract_json_from_text()` | Estrae JSON da risposta |
+| `validate_trading_decision()` | Valida decisione AI |
+| `calculate_scores_for_symbols()` | Calcola score per tutti |
+| `enhance_prompt_with_scoring()` | Aggiunge score al prompt |
+| `check_trailing_stop()` | Check trailing (legacy) |
+| `check_close_protection()` | Protezione chiusure |
+| `evaluate_position_override()` | Override decisioni AI |
+
+---
+
+### 2.8 indicators.py (19 KB)
+
+**Scopo**: Calcolo indicatori tecnici.
+
+#### Classe: `CryptoTechnicalAnalysisHL`
+
+| Metodo | Descrizione |
+|--------|-------------|
+| `get_complete_analysis()` | Analisi completa simbolo |
+| `calculate_rsi()` | RSI 14 periodi |
+| `calculate_macd()` | MACD (12,26,9) |
+| `calculate_ema()` | EMA 20 periodi |
+
+#### Funzione:
+| Funzione | Descrizione |
+|----------|-------------|
+| `analyze_multiple_tickers()` | Analizza lista simboli |
+
+---
+
+### 2.9 telegram_notifier.py (8 KB)
+
+**Scopo**: Notifiche Telegram.
+
+#### Funzioni:
+
+| Funzione | Descrizione |
+|----------|-------------|
+| `send_telegram_message()` | Invia messaggio |
+| `notify_trade_open()` | Notifica apertura |
+| `notify_trade_close()` | Notifica chiusura |
+| `notify_hold()` | Notifica hold |
+| `notify_error()` | Notifica errore |
+| `notify_bot_started()` | Bot avviato |
+| `notify_trading_decision()` | Decisione AI |
+
+---
+
+### 2.10 Altri File
+
+| File | Descrizione |
+|------|-------------|
+| `forecaster.py` | Previsioni Prophet (ML) |
+| `sentiment.py` | API Fear & Greed |
+| `news_feed.py` | Feed news crypto |
+| `whalealert.py` | Alert whale transactions |
+| `ai_context.py` | Costruisce contesto AI arricchito |
+| `analytics.py` | Analisi performance |
+| `dashboard.py` | Dashboard web Streamlit |
+| `trade_analyzer.py` | Analisi dettagliata trade |
+| `weight_optimizer.py` | Ottimizzazione pesi score |
+| `strategy_controller.py` | Controllo strategie |
+| `backtester.py` | Backtesting strategie |
+
+---
+
+## 3. SCHEMA DATABASE COMPLETO
+
+### 3.1 position_tracking
+```sql
+CREATE TABLE position_tracking (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL UNIQUE,
+    direction VARCHAR(10),           -- 'long' o 'short'
+    entry_price DECIMAL(20, 8),
+    current_price DECIMAL(20, 8),
+    trailing_active BOOLEAN DEFAULT FALSE,
+    peak_price DECIMAL(20, 8),
+    opening_score DECIMAL(10, 4),
+    trading_mode VARCHAR(20),        -- 'MICRO_GAIN', 'MICRO_PAY', 'NORMAL'
+    sl_level DECIMAL(10, 4),         -- Livello SL corrente (% P&L)
+    sl_price DECIMAL(20, 8),         -- Prezzo SL attuale
+    opened_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### 3.2 signal_scores
+```sql
+CREATE TABLE signal_scores (
+    id SERIAL PRIMARY KEY,
+    context_id INTEGER,
+    symbol VARCHAR(20) NOT NULL,
+    score_bullish DECIMAL(10, 4),
+    score_bearish DECIMAL(10, 4),
+    net_score DECIMAL(10, 4),
+    direction VARCHAR(10),           -- 'LONG', 'SHORT', 'HOLD'
+    confidence VARCHAR(20),          -- 'STRONG', 'NORMAL', 'WEAK'
+    signals JSONB,                   -- Dettaglio ogni indicatore
+    thresholds JSONB,
+    weights_config JSONB,
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+-- Indici per query veloci
+CREATE INDEX idx_signal_scores_symbol ON signal_scores(symbol);
+CREATE INDEX idx_signal_scores_created_at ON signal_scores(timestamp);
+```
+
+### 3.3 trades (Trade Journal)
+```sql
+CREATE TABLE trades (
+    id SERIAL PRIMARY KEY,
+    trade_uuid UUID UNIQUE NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    direction VARCHAR(10),           -- 'long', 'short'
+    status VARCHAR(20),              -- 'open', 'closed'
+    trading_mode VARCHAR(20),        -- 'MICRO_GAIN', 'NORMAL', etc.
+
+    -- Apertura
+    entry_price DECIMAL(20, 8),
+    entry_size DECIMAL(20, 8),
+    entry_notional DECIMAL(20, 8),
+    leverage INTEGER,
+    open_score DECIMAL(10, 4),
+    open_reason TEXT,
+    opened_at TIMESTAMP,
+
+    -- Chiusura
+    exit_price DECIMAL(20, 8),
+    close_reason VARCHAR(50),
+    close_score DECIMAL(10, 4),
+    closed_at TIMESTAMP,
+
+    -- P&L
+    gross_pnl_usd DECIMAL(20, 8),
+    fees_usd DECIMAL(20, 8),
+    net_pnl_usd DECIMAL(20, 8),
+    pnl_percent DECIMAL(10, 4),
+
+    -- Tracking
+    peak_price DECIMAL(20, 8),
+    peak_pnl_percent DECIMAL(10, 4),
+    profitable BOOLEAN
+);
+```
+
+### 3.4 trade_events
+```sql
+CREATE TABLE trade_events (
+    id SERIAL PRIMARY KEY,
+    trade_uuid UUID REFERENCES trades(trade_uuid),
+    event_type VARCHAR(50),          -- 'sl_placed', 'sl_modified', 'trailing_activated'
+    event_data JSONB,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### 3.5 bot_operations
+```sql
+CREATE TABLE bot_operations (
+    id SERIAL PRIMARY KEY,
+    operation VARCHAR(50),           -- 'open', 'close', 'hold', 'adjust'
+    symbol VARCHAR(20),
+    direction VARCHAR(10),
+    reason TEXT,
+    context_id INTEGER,
+    execution_result JSONB,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### 3.6 sentiment_cache
+```sql
+CREATE TABLE sentiment_cache (
+    id SERIAL PRIMARY KEY,
+    valore INTEGER,                  -- Fear & Greed value (0-100)
+    classificazione VARCHAR(50),     -- 'Extreme Fear', 'Fear', etc.
+    timestamp_aggiornamento TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### 3.7 account_snapshots
+```sql
+CREATE TABLE account_snapshots (
+    id SERIAL PRIMARY KEY,
+    balance_usd DECIMAL(20, 8),
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE open_positions (
+    id SERIAL PRIMARY KEY,
+    snapshot_id INTEGER REFERENCES account_snapshots(id),
+    symbol VARCHAR(20),
+    side VARCHAR(10),
+    size DECIMAL(20, 8),
+    entry_price DECIMAL(20, 8),
+    mark_price DECIMAL(20, 8),
+    pnl_usd DECIMAL(20, 8),
+    leverage VARCHAR(20)
+);
+```
+
+### 3.8 sentinel_logs
+```sql
+CREATE TABLE sentinel_logs (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20),
+    action VARCHAR(50),              -- 'trailing_update', 'sl_placed', etc.
+    details JSONB,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+---
+
+## 4. MODALITÀ DI TRADING
+
+### 4.1 Range Score
+```
+Score:  -30    -20    -17    -12    -5     0     5     12     17     20     30
+         │      │      │      │     │     │     │      │      │      │      │
+         └──────┴──────┴──────┴─────┴─────┴─────┴──────┴──────┴──────┴──────┘
+                │             │                        │             │
+         STRONG SHORT    MICRO_PAY              MICRO_GAIN    STRONG LONG
+                          (disabled)              (12-17)        (NORMAL)
+```
+
+### 4.2 MICRO_GAIN Mode
+```python
+# Configurazione
+SCORE_THRESHOLD_HOLD = 12           # Score minimo
+SCORE_THRESHOLD_OPEN = 17           # Sopra questo è NORMAL
+MICRO_GAIN_TARGET_PERCENT = 3.0     # Target P&L %
+MICRO_GAIN_STOP_LOSS_PERCENT = 3.0  # SL iniziale %
+MICRO_GAIN_LEVERAGE = 4             # Leva
+MICRO_GAIN_PORTION = 0.3            # 30% balance
+MICRO_GAIN_TRAILING_STEPS = "1:0,2:1,3:2"  # P&L:SL pairs
+
+# Apertura automatica dal sentinel quando:
+# - Score in range [12, 17)
+# - Score confermato (N cicli consecutivi)
+# - Stessa direzione per tutti i cicli
+# - Nessuna posizione esistente
+# - Non in cooldown
+```
+
+### 4.3 NORMAL Mode
+```python
+# Configurazione
+SCORE_THRESHOLD_OPEN = 17           # Score minimo
+NORMAL_STOP_LOSS_PERCENT = 5.0      # SL iniziale
 NORMAL_TRAILING_STEPS = "3:0,5:2,8:5,12:8,15:10"
-# A +3% P&L → SL = 0% (breakeven)
-# A +5% P&L → SL = +2%
-# etc.
+
+# Gestito dall'AI in main.py
+# Trailing più ampio e conservativo
 ```
 
-### Ordini SL su Hyperliquid
-- Tipo: **TRIGGER ORDER** (Stop Market)
-- **IMPORTANTE**: `open_orders()` NON li vede!
-- Usare `frontend_open_orders()` per vedere trigger orders
-- Cancellare TUTTI gli ordini prima di piazzarne uno nuovo
+### 4.4 Trailing Stop a Gradini
+```python
+# Esempio: "3:0,5:2,8:5"
+# Significa:
+# - A P&L +3% → SL = 0% (breakeven)
+# - A P&L +5% → SL = +2%
+# - A P&L +8% → SL = +5%
+
+# Il SL NON scende mai, solo sale
+# get_step_sl_level() calcola il livello appropriato
+```
 
 ---
 
-## Parametri Chiave (.env)
+## 5. LOGICA SMART WAKE AI
 
-### Score Thresholds
-```bash
-SCORE_THRESHOLD_HOLD=12          # Soglia minima per MICRO_GAIN
-SCORE_THRESHOLD_OPEN=17          # Soglia per NORMAL mode
-SCORE_CONFIRMATION_CYCLES=3      # Cicli conferma
-SCORE_SMOOTHING_SAMPLES=3        # Campioni per media
+### 5.1 AI_FREE_MODE = true
+```python
+# AI gira su schedule proprio (ogni AI_CALL_INTERVAL_MINUTES)
+# Sentinel sveglia AI SOLO per EVENTI:
+#   - Chiusure (SL, TP, trailing)
+#   - Volatility spike
+# Sentinel NON sveglia per score (AI decide da sola)
 ```
 
-### MICRO_GAIN
+### 5.2 AI_FREE_MODE = false
+```python
+# Sentinel sveglia AI quando:
+should_wake_ai_for_symbol(symbol, score, positions):
+    # 1. Score >= SCORE_THRESHOLD_OPEN + confermato + no posizione → Wake
+    # 2. Score opposto alla posizione esistente → Wake
+    # 3. Score allineato con posizione → NO wake
+    # 4. Score sotto soglia → NO wake
+```
+
+### 5.3 Score Confirmation
+```python
+SCORE_CONFIRMATION_CYCLES = 3  # Richiesti N cicli
+
+check_score_confirmation(symbol, threshold):
+    # Verifica che negli ultimi N cicli:
+    # 1. TUTTI gli score siano >= threshold
+    # 2. TUTTI abbiano la stessa direzione (+ o -)
+    # Se confermato → può aprire
+    # Se no → aspetta ancora
+```
+
+---
+
+## 6. ORDINI SU HYPERLIQUID
+
+### 6.1 Tipi di Ordine
+```python
+# LIMIT - Ordine con prezzo specifico
+# MARKET - Esegue subito a mercato
+# TRIGGER (Stop Market) - Si attiva quando prezzo raggiunge trigger
+
+# CRITICO: Differenza tra API
+exchange.open_orders()           # Vede SOLO ordini LIMIT
+exchange.frontend_open_orders()  # Vede TUTTI inclusi TRIGGER
+```
+
+### 6.2 Cancellazione Ordini SL
+```python
+# SEMPRE usare frontend_open_orders per vedere SL
+open_orders = bot.exchange.frontend_open_orders(bot.address)
+
+# Cancellare TUTTI gli ordini per il simbolo prima di piazzarne uno nuovo
+expected_side = "B" if direction == "short" else "A"  # Buy per chiudere short
+for order in open_orders:
+    if order.get("coin") == symbol and order.get("side") == expected_side:
+        bot.exchange.cancel(symbol, order.get("oid"))
+        time.sleep(0.1)  # Delay tra cancellazioni
+```
+
+---
+
+## 7. PARAMETRI .env CHIAVE
+
+### 7.1 Score e Conferma
+```bash
+SCORE_THRESHOLD_HOLD=12              # Soglia MICRO_GAIN
+SCORE_THRESHOLD_OPEN=17              # Soglia NORMAL
+SCORE_CONFIRMATION_CYCLES=3          # Cicli conferma
+SCORE_SMOOTHING_SAMPLES=3            # Media mobile
+```
+
+### 7.2 MICRO_GAIN
 ```bash
 MICRO_GAIN_ENABLED=true
 MICRO_GAIN_AUTO_OPEN=true
-MICRO_GAIN_TARGET_PERCENT=3.0    # TP target P&L %
-MICRO_GAIN_STOP_LOSS_PERCENT=3.0 # SL iniziale P&L %
+MICRO_GAIN_TARGET_PERCENT=3.0
+MICRO_GAIN_STOP_LOSS_PERCENT=3.0
 MICRO_GAIN_LEVERAGE=4
-MICRO_GAIN_PORTION=0.3           # % balance per trade
-MICRO_GAIN_COOLDOWN_SECONDS=180  # Attesa dopo chiusura
-MICRO_GAIN_MAX_POSITIONS=2       # Max posizioni simultanee
+MICRO_GAIN_PORTION=0.3
+MICRO_GAIN_COOLDOWN_SECONDS=180
+MICRO_GAIN_MAX_POSITIONS=2
+MICRO_GAIN_TRAILING_MODE=steps
+MICRO_GAIN_TRAILING_STEPS=1:0,2:1,3:2
+MICRO_GAIN_REVERSAL_SCORE=15
 ```
 
-### AI Configuration
+### 7.3 NORMAL Mode
 ```bash
-AI_FREE_MODE=false               # AI libera di decidere
-AI_CALL_INTERVAL_MINUTES=10      # Intervallo tra cicli AI
-MIN_HOLD_MINUTES=10              # Tempo minimo prima di chiudere
-```
-
-### Trailing Stop
-```bash
-MICRO_GAIN_TRAILING_MODE=steps   # steps/continuous/disable
+NORMAL_TRAILING_ENABLED=true
+NORMAL_STOP_LOSS_PERCENT=5.0
 NORMAL_TRAILING_MODE=steps
 NORMAL_TRAILING_STEPS=3:0,5:2,8:5,12:8,15:10
 ```
 
-### Features Opzionali
+### 7.4 AI
 ```bash
-LEVERAGE_SCALING_ENABLED=true    # Aumenta leva su profitto protetto
-AUTO_TP_ENABLED=true             # Piazza TP automatico dopo X min
+AI_FREE_MODE=false
+AI_CALL_INTERVAL_MINUTES=10
+MIN_HOLD_MINUTES=10
+OPENROUTER_API_KEY=sk-...
+OPENROUTER_MODEL=deepseek/deepseek-v3.1-terminus
+```
+
+### 7.5 Features Extra
+```bash
+LEVERAGE_SCALING_ENABLED=true
+LEVERAGE_SCALING_MIN_PROTECTED_PROFIT=0.5
+LEVERAGE_SCALING_STEP=2
+LEVERAGE_SCALING_MAX=15
+
+AUTO_TP_ENABLED=true
 AUTO_TP_PERCENT=0.4
 AUTO_TP_DELAY_MINUTES=15
 ```
 
----
-
-## Database e Tracking
-
-### Tabella: position_tracking
-```sql
-symbol, direction, entry_price, current_price, trailing_active,
-trading_mode, opening_score, sl_level, sl_price, opened_at
-```
-
-### Tabella: signal_scores
-```sql
-symbol, net_score, score_bullish, score_bearish, direction,
-confidence, signals (JSON), timestamp
-```
-
-### Query utili:
-```sql
--- Ultimi score per simbolo
-SELECT symbol, net_score, timestamp
-FROM signal_scores
-WHERE symbol = 'BTC'
-ORDER BY timestamp DESC LIMIT 10;
-
--- Volatilità score (std dev)
-SELECT symbol, STDDEV(net_score) as volatility
-FROM signal_scores
-WHERE timestamp > NOW() - INTERVAL '1 hour'
-GROUP BY symbol;
+### 7.6 Telegram
+```bash
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+SENTINEL_TELEGRAM_NOTIFY=true
 ```
 
 ---
 
-## Deploy Docker
+## 8. DEPLOY E COMANDI DOCKER
 
-### Ricostruzione completa:
+### 8.1 Struttura Container
+```
+Container: rizzo_sentinel
+Network: unified-memory-stack_memory-net
+Env file: /root/trading-bots/rizzo-trading-agent/.env
+Entrypoint: bash /app/entrypoint.sh
+
+entrypoint.sh esegue:
+1. main.py in loop (AI ogni 10-15 min)
+2. sentinel.py in loop (monitoring ogni 30s)
+```
+
+### 8.2 Ricostruzione Completa
 ```bash
 cd /root/trading-bots/rizzo-trading-agent
-
-# Pull codice
 git pull origin <branch>
-
-# Ricostruisci immagine
 docker build -t rizzo-sentinel:latest .
-
-# Stop e rimuovi vecchio container
 docker stop rizzo_sentinel && docker rm rizzo_sentinel
-
-# Avvia nuovo container
 docker run -d \
   --name rizzo_sentinel \
   --env-file /root/trading-bots/rizzo-trading-agent/.env \
@@ -308,68 +686,83 @@ docker run -d \
   --restart unless-stopped \
   rizzo-sentinel:latest \
   bash /app/entrypoint.sh
-
-# Verifica log
 docker logs -f rizzo_sentinel
 ```
 
-### Solo restart (senza rebuild):
+### 8.3 Solo Restart
 ```bash
 docker restart rizzo_sentinel
 ```
 
+### 8.4 Accesso Database
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d rizzo_trading
+```
+
 ---
 
-## Troubleshooting Comune
+## 9. TROUBLESHOOTING
 
-### Problema: Ordini SL duplicati
+### 9.1 Ordini SL Duplicati
+**Problema**: Multipli ordini SL per stesso simbolo
 **Causa**: `open_orders()` non vede trigger orders
-**Soluzione**: Usare `frontend_open_orders()` e cancellare TUTTI gli ordini
+**Soluzione**: Usare `frontend_open_orders()` e cancellare TUTTI prima di piazzare nuovo
 
-### Problema: Aperture su score instabili
-**Causa**: Score spike momentanei
-**Soluzione**: `SCORE_CONFIRMATION_CYCLES=3` richiede score stabile
+### 9.2 Aperture su Score Instabili
+**Problema**: Apre su spike momentanei
+**Causa**: Score non confermato
+**Soluzione**: `SCORE_CONFIRMATION_CYCLES=3`
 
-### Problema: AI chiamata inutilmente
-**Causa**: Wake per ogni ciclo anche senza opportunità
-**Soluzione**: Smart wake logic (AI_FREE_MODE e check condizioni)
+### 9.3 AI Chiamata Inutilmente
+**Problema**: AI svegliata quando non serve
+**Causa**: Wake senza verificare condizioni
+**Soluzione**: Smart wake logic implementata
 
-### Problema: SL non aggiornato
-**Causa**: Errore nella cancellazione ordine precedente
-**Soluzione**: Delay tra cancellazioni (`time.sleep(0.1)`)
-
-### Problema: Posizione chiusa ma tracking rimane
+### 9.4 Posizione Chiusa ma Tracking Rimane
+**Problema**: Tracking orfano nel DB
 **Causa**: Chiusura esterna (TP/SL su exchange)
-**Soluzione**: `detect_externally_closed_positions()` pulisce tracking
+**Soluzione**: `detect_externally_closed_positions()` pulisce
+
+### 9.5 SL Non Aggiornato
+**Problema**: Trailing non funziona
+**Causa**: Errore cancellazione ordine precedente
+**Soluzione**: Delay tra cancellazioni, retry logic
 
 ---
 
-## File Principali
+## 10. NOTE PER CLAUDE
 
-| File | Descrizione |
-|------|-------------|
-| `sentinel.py` | Loop monitoring, trailing, MICRO_GAIN auto |
-| `main.py` | Ciclo AI, analisi completa, decisioni |
-| `hyperliquid_trader.py` | Interfaccia exchange |
-| `signal_scorer.py` | Calcolo score segnali |
-| `db_utils.py` | Funzioni database |
-| `indicators.py` | Indicatori tecnici |
-| `trading_agent.py` | Prompt AI e parsing risposta |
-| `trade_journal.py` | Logging trade per analisi |
-| `.env` | Configurazione parametri |
+### 10.1 Prima di Modificare
+- Leggere SEMPRE il file con Read tool
+- Verificare sintassi: `python3 -m py_compile file.py`
+- Testare logica prima di committare
 
----
+### 10.2 Ordini Hyperliquid
+- SEMPRE usare `frontend_open_orders()` per trigger orders
+- SEMPRE cancellare TUTTI gli ordini prima di piazzarne uno nuovo
+- Aggiungere delay tra cancellazioni
 
-## Note per Claude
+### 10.3 Score History
+- In sentinel.py: usa `_score_history` (in-memory)
+- In main.py: usa `db_utils.check_score_confirmation_db()` (database)
 
-1. **Prima di modificare**: Leggere sempre il file interessato
-2. **Test sintassi**: `python3 -m py_compile <file>.py`
-3. **Ordini Hyperliquid**: Usare sempre `frontend_open_orders()` per trigger orders
-4. **Score history**: In sentinel usa `_score_history`, in main.py usa DB
-5. **Commit**: Usare HEREDOC per messaggi multi-linea
-6. **Branch**: Sempre pushare sul branch specificato all'inizio sessione
+### 10.4 Commit
+- Usare HEREDOC per messaggi multi-linea
+- Branch: quello specificato a inizio sessione
+
+### 10.5 Variabili Critiche
+```python
+# Direzioni
+direction = "long" | "short"
+side (Hyperliquid) = "A" (sell/ask) | "B" (buy/bid)
+
+# Per chiudere LONG → vendi → side "A"
+# Per chiudere SHORT → compra → side "B"
+# Per SL su LONG → trigger sell → side "A"
+# Per SL su SHORT → trigger buy → side "B"
+```
 
 ---
 
 *Ultimo aggiornamento: 2025-11-30*
-*Autore: Claude + Nicola*
+*Versione: 2.0 - Documentazione Completa*
