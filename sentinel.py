@@ -665,6 +665,29 @@ def run_passive_sl_verification(bot, positions: list):
                 # Tenta di piazzare SL usando sl_pct già calcolato (include trailing)
                 log(f"   🔧 Tentativo piazzamento SL per {symbol} (mode={trading_mode}, sl={sl_pct:+.2f}%)...")
 
+                # IMPORTANTE: Prima cancella eventuali ordini SL esistenti per evitare duplicati
+                # (la ricerca potrebbe non averli trovati per latenza API)
+                try:
+                    try:
+                        all_orders = bot.info.frontend_open_orders(bot.account_address)
+                    except AttributeError:
+                        all_orders = bot.info.open_orders(bot.account_address)
+
+                    cancelled_count = 0
+                    for order in all_orders:
+                        if order.get("coin") == symbol and order.get("side") == expected_side:
+                            try:
+                                bot.exchange.cancel(symbol, order.get("oid"))
+                                cancelled_count += 1
+                                log(f"   🗑️ Cancellato ordine SL orfano OID={order.get('oid')}")
+                                time.sleep(0.1)
+                            except Exception as cancel_err:
+                                log(f"   ⚠️ Errore cancellazione ordine {order.get('oid')}: {cancel_err}")
+                    if cancelled_count > 0:
+                        time.sleep(0.3)  # Attendi sync API
+                except Exception as e:
+                    log(f"   ⚠️ Errore pulizia ordini esistenti: {e}")
+
                 # Usa expected_sl_price già calcolato sopra
                 sl_price = bot._round_to_tick(expected_sl_price, symbol)
                 is_buy = direction == "short"
@@ -1709,8 +1732,8 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
                             bot.exchange.cancel(symbol, order.get("oid"))
                             cancelled_count += 1
                             time.sleep(0.1)  # Piccolo delay tra cancellazioni
-                        except:
-                            pass
+                        except Exception as cancel_err:
+                            log(f"   ⚠️ Errore cancellazione OID={order.get('oid')}: {cancel_err}")
                 if cancelled_count > 0:
                     log(f"   🗑️ Cancellati {cancelled_count} ordini SL precedenti")
                     time.sleep(0.3)  # Attendi sync
@@ -1900,8 +1923,8 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
                             bot.exchange.cancel(symbol, order.get("oid"))
                             cancelled_count += 1
                             time.sleep(0.1)  # Piccolo delay tra cancellazioni
-                        except:
-                            pass
+                        except Exception as cancel_err:
+                            log(f"   ⚠️ Errore cancellazione OID={order.get('oid')}: {cancel_err}")
                 if cancelled_count > 0:
                     log(f"   🗑️ Cancellati {cancelled_count} ordini SL precedenti")
                     time.sleep(0.3)  # Attendi sync
@@ -2337,8 +2360,8 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
                             bot.exchange.cancel(symbol, order.get("oid"))
                             log(f"   🗑️ Cancellato ordine SL duplicato OID={order.get('oid')}")
                             time.sleep(0.2)
-                        except:
-                            pass
+                        except Exception as cancel_err:
+                            log(f"   ⚠️ Errore cancellazione duplicato OID={order.get('oid')}: {cancel_err}")
             except Exception as e:
                 log(f"   ❌ Errore cancellazione: {e}")
         else:
@@ -2359,10 +2382,10 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
                             bot.exchange.cancel(symbol, order.get("oid"))
                             log(f"   🗑️ Cancellato ordine SL orfano OID={order.get('oid')}")
                             time.sleep(0.2)
-                        except:
-                            pass
-            except:
-                pass
+                        except Exception as cancel_err:
+                            log(f"   ⚠️ Errore cancellazione orfano OID={order.get('oid')}: {cancel_err}")
+            except Exception as e:
+                log(f"   ⚠️ Errore pulizia ordini orfani: {e}")
 
         # Piazza nuovo ordine SL corretto
         log(f"   🔄 Piazzo nuovo SL per {symbol} (tentativo {attempt + 1}/{max_retries + 1})...")
