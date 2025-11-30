@@ -749,16 +749,20 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                     try:
                         open_trade = tj.get_open_trade(ticker_sym)
                         if open_trade:
-                            # Ottieni prezzo di chiusura
-                            current_status = bot.get_account_status()
-                            exit_price = 0
-                            for pos in current_status.get("open_positions", []):
-                                if pos.get("symbol") == ticker_sym:
-                                    exit_price = float(pos.get("mark_price", 0))
-                                    break
-                            if exit_price == 0:
-                                # Posizione già chiusa, usa ultimo prezzo noto
-                                exit_price = float(open_trade.get('entry_price', 0))
+                            # Usa mark_price catturato PRIMA della chiusura (da ticker_position)
+                            # Non possiamo prenderlo da open_positions perché la posizione è già chiusa!
+                            if ticker_position and 'mark_price' in ticker_position:
+                                exit_price = float(ticker_position.get('mark_price', 0))
+                                print(f"[JOURNAL] 📍 Exit price da ticker_position: ${exit_price:.2f}")
+                            else:
+                                # Fallback: prova a ottenere da tracking o entry
+                                tracking = db_utils.get_position_tracking(ticker_sym)
+                                if tracking and tracking.get('current_price'):
+                                    exit_price = float(tracking.get('current_price'))
+                                    print(f"[JOURNAL] 📍 Exit price da tracking: ${exit_price:.2f}")
+                                else:
+                                    exit_price = float(open_trade.get('entry_price', 0))
+                                    print(f"[JOURNAL] ⚠️ Exit price fallback a entry: ${exit_price:.2f}")
 
                             result_close = tj.close_trade(
                                 trade_uuid=open_trade['trade_uuid'],
