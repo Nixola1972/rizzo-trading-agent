@@ -56,6 +56,9 @@ MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))
 SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '15'))
 SCORE_THRESHOLD_NORMAL = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))  # Soglia per mode NORMAL
 
+# Score confirmation - richiede N cicli consecutivi sopra soglia prima di aprire
+SCORE_CONFIRMATION_CYCLES = int(os.getenv('SCORE_CONFIRMATION_CYCLES', '3'))
+
 # ===== NORMAL MODE TRAILING CONFIGURATION =====
 NORMAL_STOP_LOSS_PERCENT = float(os.getenv('NORMAL_STOP_LOSS_PERCENT', '5.0'))
 NORMAL_TRAILING_ACTIVATION = float(os.getenv('NORMAL_TRAILING_ACTIVATION', '2.0'))
@@ -733,6 +736,27 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                 # Determina trading mode per nuove posizioni
                 trading_mode = "NORMAL"
                 if out.get("operation") == "open":
+                    # === VERIFICA CONFERMA CICLI PRIMA DI APRIRE ===
+                    # Usa la soglia appropriata basata sul trading mode che useremmo
+                    confirmation_threshold = SCORE_THRESHOLD_NORMAL  # Default per NORMAL mode
+                    if MICRO_GAIN_ENABLED and abs(net_score) < SCORE_THRESHOLD_NORMAL:
+                        confirmation_threshold = SCORE_THRESHOLD_HOLD  # Più bassa per MICRO_GAIN
+
+                    confirmation = db_utils.check_score_confirmation_db(
+                        symbol=ticker_sym,
+                        threshold=confirmation_threshold,
+                        cycles_required=SCORE_CONFIRMATION_CYCLES
+                    )
+
+                    if not confirmation["confirmed"]:
+                        print(f"   ⏳ {ticker_sym} AI OPEN: waiting confirmation - {confirmation['reason']}")
+                        print(f"      Recent DB scores: {[f'{s:.1f}' for s in confirmation['scores']]}")
+                        out['operation'] = 'hold'
+                        out['reason'] = f"Score confirmation pending: {confirmation['reason']}"
+                        continue
+
+                    print(f"   ✅ {ticker_sym} AI OPEN: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
+
                     trading_mode = determine_trading_mode(net_score)
                     out['trading_mode'] = trading_mode
                     out['opening_score'] = net_score

@@ -171,6 +171,9 @@ _last_close_time = {}  # symbol -> timestamp
 SCORE_SMOOTHING_SAMPLES = int(os.getenv('SCORE_SMOOTHING_SAMPLES', '3'))  # Media ultimi 3 scores
 _score_history = {}  # symbol -> list of recent scores
 
+# Score confirmation - richiede N cicli consecutivi sopra soglia prima di aprire
+SCORE_CONFIRMATION_CYCLES = int(os.getenv('SCORE_CONFIRMATION_CYCLES', '3'))  # Cicli di conferma
+
 
 # ===== SMART SENTINEL CONFIGURATION =====
 # Wake AI Agent su tutte le chiusure (non solo TP)
@@ -620,6 +623,74 @@ def get_smoothed_score(symbol: str, raw_score: float) -> float:
         log(f"      📊 {symbol} scores: {[f'{s:.0f}' for s in _score_history[symbol]]} → avg={avg_score:.1f}")
 
     return avg_score
+
+
+def check_score_confirmation(symbol: str, threshold: float) -> dict:
+    """
+    Verifica se lo score è stato stabile sopra la soglia per N cicli consecutivi.
+
+    Questo filtro evita aperture su spike momentanei di score che poi
+    rientrano rapidamente sotto soglia.
+
+    Args:
+        symbol: Simbolo da verificare
+        threshold: Soglia minima (es. SCORE_THRESHOLD_HOLD)
+
+    Returns:
+        dict con:
+        - confirmed: True se tutti i cicli sono sopra soglia e stessa direzione
+        - reason: Motivo se non confermato
+        - cycles_above: Quanti cicli consecutivi sono sopra soglia
+        - direction: "long" o "short" basato sulla direzione consistente
+    """
+    global _score_history
+
+    result = {
+        "confirmed": False,
+        "reason": "",
+        "cycles_above": 0,
+        "direction": None,
+        "scores": []
+    }
+
+    if symbol not in _score_history or len(_score_history[symbol]) == 0:
+        result["reason"] = "No history"
+        return result
+
+    scores = _score_history[symbol]
+    result["scores"] = scores.copy()
+
+    # Verifica se abbiamo abbastanza campioni
+    if len(scores) < SCORE_CONFIRMATION_CYCLES:
+        result["reason"] = f"Need {SCORE_CONFIRMATION_CYCLES} cycles, have {len(scores)}"
+        result["cycles_above"] = len(scores)
+        return result
+
+    # Prendi gli ultimi N cicli
+    recent_scores = scores[-SCORE_CONFIRMATION_CYCLES:]
+
+    # Verifica che TUTTI siano sopra la soglia
+    all_above_threshold = all(abs(s) >= threshold for s in recent_scores)
+    if not all_above_threshold:
+        below_threshold = [s for s in recent_scores if abs(s) < threshold]
+        result["reason"] = f"Some scores below threshold: {[f'{s:.1f}' for s in below_threshold]}"
+        result["cycles_above"] = sum(1 for s in recent_scores if abs(s) >= threshold)
+        return result
+
+    # Verifica che TUTTI abbiano la stessa direzione (tutti positivi o tutti negativi)
+    all_positive = all(s > 0 for s in recent_scores)
+    all_negative = all(s < 0 for s in recent_scores)
+
+    if not (all_positive or all_negative):
+        result["reason"] = f"Mixed directions in last {SCORE_CONFIRMATION_CYCLES} cycles"
+        return result
+
+    # Confermato!
+    result["confirmed"] = True
+    result["direction"] = "long" if all_positive else "short"
+    result["cycles_above"] = SCORE_CONFIRMATION_CYCLES
+
+    return result
 
 
 def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
@@ -2815,7 +2886,16 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
         # Priority: MICRO_GAIN > MICRO_PAY (score più alto = più sicuro)
 
         if SCORE_THRESHOLD_HOLD <= abs_score < SCORE_THRESHOLD_OPEN:
-            # === MICRO_GAIN RANGE (15-20) ===
+            # === MICRO_GAIN RANGE ===
+            # Verifica conferma cicli prima di aprire
+            confirmation = check_score_confirmation(symbol, SCORE_THRESHOLD_HOLD)
+
+            if not confirmation["confirmed"]:
+                log(f"   ⏳ {symbol} MICRO_GAIN: waiting confirmation - {confirmation['reason']}")
+                log(f"      Recent scores: {[f'{s:.1f}' for s in confirmation['scores']]}")
+                continue
+
+            log(f"   ✅ {symbol} MICRO_GAIN: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
             result = open_micro_gain_position(bot, symbol, direction, score)
 
             if result.get("success"):
@@ -2823,9 +2903,16 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 existing_symbols.append(symbol)
 
         elif MICRO_PAY_ENABLED and MICRO_PAY_THRESHOLD <= abs_score < SCORE_THRESHOLD_HOLD:
-            # === MICRO_PAY RANGE (5-15) ===
-            log(f"   💵 {symbol} in range MICRO_PAY ({MICRO_PAY_THRESHOLD}-{SCORE_THRESHOLD_HOLD})")
+            # === MICRO_PAY RANGE ===
+            # Verifica conferma cicli prima di aprire
+            confirmation = check_score_confirmation(symbol, MICRO_PAY_THRESHOLD)
 
+            if not confirmation["confirmed"]:
+                log(f"   ⏳ {symbol} MICRO_PAY: waiting confirmation - {confirmation['reason']}")
+                log(f"      Recent scores: {[f'{s:.1f}' for s in confirmation['scores']]}")
+                continue
+
+            log(f"   ✅ {symbol} MICRO_PAY: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
             result = open_micro_pay_position(bot, symbol, direction, score)
 
             if result.get("success"):

@@ -584,6 +584,101 @@ def log_signal_score(
     return score_id
 
 
+def get_recent_scores(symbol: str, limit: int = 3, max_age_minutes: int = 10) -> list:
+    """Recupera gli ultimi N scores per un simbolo dalla tabella signal_scores.
+
+    Args:
+        symbol: Simbolo da cercare (BTC, ETH, SOL)
+        limit: Numero massimo di scores da recuperare
+        max_age_minutes: Considera solo scores non più vecchi di N minuti
+
+    Returns:
+        Lista di net_score ordinati dal più vecchio al più recente
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT net_score
+                FROM signal_scores
+                WHERE symbol = %s
+                  AND timestamp >= NOW() - INTERVAL '%s minutes'
+                ORDER BY timestamp DESC
+                LIMIT %s;
+                """,
+                (symbol, max_age_minutes, limit),
+            )
+            rows = cur.fetchall()
+
+    # Inverti per avere ordine cronologico (dal più vecchio al più recente)
+    return [row[0] for row in reversed(rows)]
+
+
+def check_score_confirmation_db(symbol: str, threshold: float, cycles_required: int = 3) -> dict:
+    """
+    Verifica se lo score è stato stabile sopra la soglia per N cicli consecutivi.
+
+    Usa i dati dal database per verificare la conferma, utile per main.py
+    che non ha accesso alla _score_history in memoria del sentinel.
+
+    Args:
+        symbol: Simbolo da verificare
+        threshold: Soglia minima (es. SCORE_THRESHOLD_OPEN)
+        cycles_required: Numero di cicli consecutivi richiesti
+
+    Returns:
+        dict con:
+        - confirmed: True se tutti i cicli sono sopra soglia e stessa direzione
+        - reason: Motivo se non confermato
+        - cycles_above: Quanti cicli sono sopra soglia
+        - direction: "long" o "short" basato sulla direzione consistente
+        - scores: Lista degli score recenti
+    """
+    result = {
+        "confirmed": False,
+        "reason": "",
+        "cycles_above": 0,
+        "direction": None,
+        "scores": []
+    }
+
+    # Recupera scores recenti (max 10 minuti fa, assumendo cicli da 30s = 20 cicli max)
+    scores = get_recent_scores(symbol, limit=cycles_required, max_age_minutes=10)
+    result["scores"] = scores
+
+    if len(scores) == 0:
+        result["reason"] = "No recent scores in DB"
+        return result
+
+    if len(scores) < cycles_required:
+        result["reason"] = f"Need {cycles_required} cycles, have {len(scores)}"
+        result["cycles_above"] = len(scores)
+        return result
+
+    # Verifica che TUTTI siano sopra la soglia
+    all_above_threshold = all(abs(s) >= threshold for s in scores)
+    if not all_above_threshold:
+        below_threshold = [s for s in scores if abs(s) < threshold]
+        result["reason"] = f"Some scores below threshold: {[f'{s:.1f}' for s in below_threshold]}"
+        result["cycles_above"] = sum(1 for s in scores if abs(s) >= threshold)
+        return result
+
+    # Verifica che TUTTI abbiano la stessa direzione
+    all_positive = all(s > 0 for s in scores)
+    all_negative = all(s < 0 for s in scores)
+
+    if not (all_positive or all_negative):
+        result["reason"] = f"Mixed directions in last {cycles_required} cycles"
+        return result
+
+    # Confermato!
+    result["confirmed"] = True
+    result["direction"] = "long" if all_positive else "short"
+    result["cycles_above"] = cycles_required
+
+    return result
+
+
 def log_account_status(account_status: Dict[str, Any]) -> int:
     """Logga lo stato dell'account e le posizioni aperte.
 
