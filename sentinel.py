@@ -2702,7 +2702,13 @@ def run_loop(interval: int = None):
 
     try:
         while True:
-            run_sentinel_check()
+            try:
+                run_sentinel_check()
+            except Exception as e:
+                log(f"⚠️ Errore nel ciclo sentinel: {e}")
+                import traceback
+                traceback.print_exc()
+                log("🔄 Riprovo al prossimo ciclo...")
             log(f"💤 Prossimo check tra {interval}s...")
             time.sleep(interval)
     except KeyboardInterrupt:
