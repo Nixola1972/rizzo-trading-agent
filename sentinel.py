@@ -603,15 +603,20 @@ def run_passive_sl_verification(bot, positions: list):
 
             trading_mode = tracking.get("trading_mode", "NORMAL")
 
-            # Determina SL atteso
+            # Determina SL atteso - USA current_sl_level se disponibile (trailing attivo)
             if trading_mode == "MICRO_GAIN":
-                expected_sl_pct = MICRO_GAIN_STOP_LOSS_PERCENT
                 leverage = MICRO_GAIN_LEVERAGE
+                # Usa current_sl_level se disponibile (trailing potrebbe averlo modificato)
+                sl_key = symbol
+                current_sl_level = _current_sl_level.get(sl_key)
+                if current_sl_level is not None:
+                    sl_pct = current_sl_level
+                else:
+                    sl_pct = -MICRO_GAIN_STOP_LOSS_PERCENT
             elif trading_mode == "MICRO_PAY":
-                expected_sl_pct = MICRO_PAY_STOP_LOSS_PERCENT
                 leverage = MICRO_PAY_LEVERAGE
+                sl_pct = -MICRO_PAY_STOP_LOSS_PERCENT
             else:
-                expected_sl_pct = NORMAL_STOP_LOSS_PERCENT
                 # Parse leverage dalla posizione
                 leverage_raw = pos.get("leverage", 1)
                 if isinstance(leverage_raw, str):
@@ -620,14 +625,23 @@ def run_passive_sl_verification(bot, positions: list):
                     leverage = float(match.group(1)) if match else 1.0
                 else:
                     leverage = float(leverage_raw)
+                # Usa current_sl_level se disponibile
+                sl_key = f"{symbol}_NORMAL"
+                current_sl_level = _current_sl_level.get(sl_key)
+                if current_sl_level is not None:
+                    sl_pct = current_sl_level
+                else:
+                    sl_pct = -NORMAL_STOP_LOSS_PERCENT
 
-            # Calcola prezzo SL atteso
-            price_change_pct = expected_sl_pct / leverage
+            # Calcola prezzo SL atteso basato su sl_pct (può essere positivo per trailing)
+            price_change_pct = sl_pct / leverage
             if direction == "long":
-                expected_sl_price = entry_price * (1 - price_change_pct / 100)
+                # Long: SL positivo = sopra entry (profit lock), negativo = sotto entry (loss)
+                expected_sl_price = entry_price * (1 + price_change_pct / 100)
                 expected_side = "A"  # Ask (sell)
             else:
-                expected_sl_price = entry_price * (1 + price_change_pct / 100)
+                # Short: SL positivo = sotto entry (profit lock), negativo = sopra entry (loss)
+                expected_sl_price = entry_price * (1 - price_change_pct / 100)
                 expected_side = "B"  # Bid (buy)
 
             # Cerca ordine SL per questo simbolo
