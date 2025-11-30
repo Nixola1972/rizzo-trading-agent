@@ -596,65 +596,275 @@ for order in open_orders:
 
 ---
 
-## 7. PARAMETRI .env CHIAVE
+## 7. PARAMETRI .env COMPLETI
 
-### 7.1 Score e Conferma
+> Ogni parametro è spiegato con significato, valore default e range consigliato.
+
+### 7.1 API Keys e Connessioni
 ```bash
-SCORE_THRESHOLD_HOLD=12              # Soglia MICRO_GAIN
-SCORE_THRESHOLD_OPEN=17              # Soglia NORMAL
-SCORE_CONFIRMATION_CYCLES=3          # Cicli conferma
-SCORE_SMOOTHING_SAMPLES=3            # Media mobile
+OPENROUTER_API_KEY=sk-xxx            # Chiave API OpenRouter per AI
+OPENROUTER_MODEL=deepseek/deepseek-r1  # Modello AI da usare
+DATABASE_URL=postgresql://user:pass@host:5432/db  # Connessione PostgreSQL
+PRIVATE_KEY=xxx                       # Chiave privata Hyperliquid
+WALLET_ADDRESS=0x...                  # Indirizzo wallet Hyperliquid
 ```
 
-### 7.2 MICRO_GAIN
+### 7.2 Bot Settings Generali
 ```bash
-MICRO_GAIN_ENABLED=true
-MICRO_GAIN_AUTO_OPEN=true
-MICRO_GAIN_TARGET_PERCENT=3.0
-MICRO_GAIN_STOP_LOSS_PERCENT=3.0
-MICRO_GAIN_LEVERAGE=4
-MICRO_GAIN_PORTION=0.3
-MICRO_GAIN_COOLDOWN_SECONDS=180
-MICRO_GAIN_MAX_POSITIONS=2
+TESTNET=false                         # true=testnet, false=mainnet (SOLDI VERI!)
+VERBOSE=true                          # Log dettagliati
+AI_PROVIDER=openrouter                # Provider AI
+
+# TESTING_MODE (default: false)
+# Quando true, l'AI NON usa le metriche storiche di performance.
+# Utile durante test per evitare che risultati negativi influenzino decisioni.
+TESTING_MODE=false
+
+# AI_FREE_MODE (default: false)
+# Quando true, l'AI viene SEMPRE chiamata indipendentemente dallo score.
+# Lo score è solo un suggerimento, non un filtro.
+AI_FREE_MODE=false
+
+# MAX_POSITIONS_PER_SYMBOL (default: 1)
+# Numero massimo posizioni per singolo simbolo.
+# 1 = una posizione per moneta, 2 = permette pyramiding
+MAX_POSITIONS_PER_SYMBOL=1
+```
+
+### 7.3 Timeouts
+```bash
+BOT_TIMEOUT_SECONDS=300               # Timeout totale ciclo bot
+DB_CONNECT_TIMEOUT=30                 # Timeout connessione DB
+DB_QUERY_TIMEOUT=60000                # Timeout query DB (ms)
+```
+
+### 7.4 Telegram
+```bash
+TELEGRAM_ENABLED=true                 # Abilita notifiche Telegram
+TELEGRAM_BOT_TOKEN=xxx                # Token bot Telegram
+TELEGRAM_CHAT_ID=xxx                  # Chat ID destinazione
+TELEGRAM_NOTIFY_HOLDS=false           # Notifica anche HOLD (rumoroso)
+SENTINEL_TELEGRAM_NOTIFY=true         # Notifiche da sentinel
+```
+
+### 7.5 Signal Scoring Weights (Pesi Segnali)
+> Ogni peso va da 0 a 20. Valore più alto = maggiore importanza. 0 = disabilitato.
+
+#### Segnali BEARISH (favoriscono SHORT)
+```bash
+# Fear & Greed < 30 (mercato in paura)
+# Logica: Paura = possibile continuazione ribasso
+WEIGHT_FEAR_GREED_FEAR=8              # Range: 5-12
+
+# RSI > 70 (ipercomprato)
+# Logica: RSI alto = probabile correzione al ribasso
+WEIGHT_RSI_OVERBOUGHT=15              # Range: 10-20 (molto affidabile)
+
+# Prezzo < EMA20 E MACD < 0 (trend ribassista confermato)
+# Logica: Due indicatori concordi = segnale forte
+WEIGHT_TREND_BEARISH=10               # Range: 8-15
+
+# Prophet prevede ribasso > 0.3%
+WEIGHT_FORECAST_NEGATIVE=6            # Range: 4-10
+
+# MACD < 0 (momentum negativo, senza conferma EMA)
+WEIGHT_MACD_NEGATIVE=5                # Range: 3-8
+
+# Volume Ask > Volume Bid * 1.5 (venditori dominano)
+WEIGHT_VOLUME_BEARISH=4               # Range: 2-8
+```
+
+#### Segnali BULLISH (favoriscono LONG)
+```bash
+# Fear & Greed > 60 (mercato euforico)
+# ATTENZIONE: Extreme Greed (>80) potrebbe indicare top
+WEIGHT_FEAR_GREED_GREED=8             # Range: 5-12
+
+# RSI < 30 (ipervenduto)
+# Logica: RSI basso = probabile rimbalzo
+WEIGHT_RSI_OVERSOLD=15                # Range: 10-20 (molto affidabile)
+
+# Prezzo > EMA20 E MACD > 0 (trend rialzista confermato)
+WEIGHT_TREND_BULLISH=10               # Range: 8-15
+
+# Prophet prevede rialzo > 0.3%
+WEIGHT_FORECAST_POSITIVE=6            # Range: 4-10
+
+# MACD > 0 (momentum positivo)
+WEIGHT_MACD_POSITIVE=5                # Range: 3-8
+
+# Volume Bid > Volume Ask * 1.5 (compratori dominano)
+WEIGHT_VOLUME_BULLISH=4               # Range: 2-8
+```
+
+### 7.6 Soglie Decisionali
+```bash
+# SCORE_THRESHOLD_OPEN: Score minimo per aprire posizione NORMAL
+# Net Score > +15 = LONG, < -15 = SHORT, |score| < 15 = HOLD
+SCORE_THRESHOLD_OPEN=15               # Range: 10-20
+
+# SCORE_THRESHOLD_STRONG: Score per segnale forte (più leva/size)
+SCORE_THRESHOLD_STRONG=25             # Range: 20-35
+
+# SCORE_THRESHOLD_HOLD: Sotto questo il segnale è troppo debole
+# Usato come soglia minima per MICRO_GAIN
+SCORE_THRESHOLD_HOLD=10               # Range: 5-15
+
+# SCORE_CONFIRMATION_CYCLES: Cicli consecutivi sopra soglia per confermare
+# Prima di aprire, verifica che N cicli consecutivi siano sopra soglia
+# e tutti nella stessa direzione
+SCORE_CONFIRMATION_CYCLES=3           # Range: 2-5
+
+# SCORE_SMOOTHING_SAMPLES: Campioni per media mobile score
+SCORE_SMOOTHING_SAMPLES=3             # Range: 2-5
+```
+
+### 7.7 Soglie Indicatori
+```bash
+RSI_OVERBOUGHT_THRESHOLD=70           # RSI sopra = ipercomprato (Range: 65-80)
+RSI_OVERSOLD_THRESHOLD=30             # RSI sotto = ipervenduto (Range: 20-35)
+FEAR_GREED_FEAR_THRESHOLD=30          # F&G sotto = paura (Range: 25-40)
+FEAR_GREED_GREED_THRESHOLD=60         # F&G sopra = avidità (Range: 55-70)
+FORECAST_MIN_CHANGE_PCT=0.3           # Minimo cambio % per forecast (Range: 0.2-0.5)
+```
+
+### 7.8 Anti-Overtrading
+```bash
+# Minimo movimento % atteso per aprire posizione
+MIN_PRICE_CHANGE_PCT=0.3              # Range: 0.2-0.5
+
+# Minuti minimi tra trade sullo stesso simbolo
+MIN_MINUTES_BETWEEN_TRADES=30         # Range: 15-60
+
+# MIN_HOLD_MINUTES: Tempo minimo prima che AI possa chiudere posizione
+# Evita chiusure premature appena aperto
+MIN_HOLD_MINUTES=10                   # Range: 5-30
+```
+
+### 7.9 Risk Management
+```bash
+# Percentuale massima portafoglio per singola operazione (PRIMA della leva)
+MAX_POSITION_SIZE_PCT=50              # Range: 25-75
+
+# Leva MASSIMA consentita (override su qualsiasi decisione)
+MAX_LEVERAGE=10                       # Range: 5-20
+```
+
+### 7.10 Trailing Stop Legacy (usato da main.py)
+```bash
+TRAILING_STOP_ENABLED=true            # Abilita trailing stop
+TRAILING_STOP_PERCENT=7               # % discesa da max per chiudere (Range: 5-10)
+TRAILING_STOP_ACTIVATION_PERCENT=3    # Profitto % per attivare trailing (Range: 2-5)
+INITIAL_STOP_LOSS_PERCENT=10          # SL fisso prima di trailing (Range: 5-15)
+```
+
+### 7.11 Protezione Chiusure
+```bash
+# Score minimo direzione opposta per chiudere posizione
+# Es: LONG con score < -10 = chiudi
+SCORE_THRESHOLD_CLOSE_REVERSAL=10     # Range: 8-15
+```
+
+### 7.12 Sentinel
+```bash
+SENTINEL_ENABLED=true                 # Abilita sentinel
+SENTINEL_INTERVAL_SECONDS=60          # Intervallo controllo (Range: 30-120)
+SENTINEL_TELEGRAM_NOTIFY=true         # Notifiche Telegram
+
+# Sveglia AI su tutte le chiusure (non solo TP)
+SENTINEL_WAKE_ON_ALL_CLOSES=true
+
+# Verifica SL passiva
+SENTINEL_SL_VERIFICATION=true
+SENTINEL_SL_VERIFICATION_INTERVAL=300 # Ogni 5 minuti
+```
+
+### 7.13 Take Profit
+```bash
+TAKE_PROFIT_ENABLED=true              # Abilita TP automatico
+TAKE_PROFIT_PERCENT=5                 # Target % P&L (Range: 3-10)
+TAKE_PROFIT_TRIGGER_BOT=true          # Dopo TP, lancia bot per rivalutare
+```
+
+### 7.14 MICRO_GAIN Mode
+```bash
+MICRO_GAIN_ENABLED=true               # Abilita modalità
+MICRO_GAIN_AUTO_OPEN=true             # Sentinel apre automaticamente
+
+# Target e Stop Loss (% P&L con leva)
+MICRO_GAIN_TARGET_PERCENT=3.0         # Range: 0.15-5.0
+MICRO_GAIN_STOP_LOSS_PERCENT=3.0      # Range: 1.0-5.0
+
+MICRO_GAIN_LEVERAGE=4                 # Leva (Range: 3-10)
+MICRO_GAIN_PORTION=0.3                # % balance per trade (Range: 0.2-0.5)
+MICRO_GAIN_COOLDOWN_SECONDS=180       # Attesa dopo chiusura (Range: 60-300)
+MICRO_GAIN_MAX_POSITIONS=2            # Max posizioni simultanee (Range: 1-3)
+
+# Trailing Mode: "steps", "continuous", "disable"
 MICRO_GAIN_TRAILING_MODE=steps
+# Formato: "pnl:sl,pnl:sl" - A P&L X%, metti SL a Y%
 MICRO_GAIN_TRAILING_STEPS=1:0,2:1,3:2
-MICRO_GAIN_REVERSAL_SCORE=15
+
+# Score per inversione (chiudi se score inverte oltre questo)
+MICRO_GAIN_REVERSAL_SCORE=15          # Range: 5-20
+
+# Piazza limit order TP su Hyperliquid
+MICRO_GAIN_USE_LIMIT_ORDER=true
 ```
 
-### 7.3 NORMAL Mode
+### 7.15 NORMAL Mode Trailing (gestito da Sentinel)
 ```bash
-NORMAL_TRAILING_ENABLED=true
-NORMAL_STOP_LOSS_PERCENT=5.0
+NORMAL_TRAILING_ENABLED=true          # Abilita trailing per NORMAL
+NORMAL_STOP_LOSS_PERCENT=5.0          # SL iniziale % P&L (Range: 3-8)
+NORMAL_TRAILING_ACTIVATION=2.0        # Attiva trailing a +X% P&L (Range: 1-5)
+NORMAL_TRAILING_GAP=1.5               # Gap tra P&L e SL (Range: 1-3)
+
+# Trailing Mode: "steps", "continuous", "disable"
 NORMAL_TRAILING_MODE=steps
 NORMAL_TRAILING_STEPS=3:0,5:2,8:5,12:8,15:10
 ```
 
-### 7.4 AI
+### 7.16 MICRO_PAY Mode (per segnali molto deboli)
 ```bash
-AI_FREE_MODE=false
-AI_CALL_INTERVAL_MINUTES=10
-MIN_HOLD_MINUTES=10
-OPENROUTER_API_KEY=sk-...
-OPENROUTER_MODEL=deepseek/deepseek-v3.1-terminus
+MICRO_PAY_ENABLED=false               # Disabilitato di default
+MICRO_PAY_THRESHOLD=5                 # Score minimo (Range: 3-8)
+MICRO_PAY_TARGET_PERCENT=1.2          # Target % P&L (Range: 0.8-2.0)
+MICRO_PAY_STOP_LOSS_PERCENT=1.2       # SL % P&L (Range: 1.0-2.0)
+MICRO_PAY_LEVERAGE=3                  # Leva (Range: 2-5)
+MICRO_PAY_PORTION=0.15                # % balance (Range: 0.10-0.25)
+MICRO_PAY_COOLDOWN_SECONDS=120        # Cooldown (Range: 60-300)
+MICRO_PAY_TRAILING_MODE=disable       # Nessun trailing per MICRO_PAY
 ```
 
-### 7.5 Features Extra
+### 7.17 AI Timing
 ```bash
-LEVERAGE_SCALING_ENABLED=true
-LEVERAGE_SCALING_MIN_PROTECTED_PROFIT=0.5
-LEVERAGE_SCALING_STEP=2
-LEVERAGE_SCALING_MAX=15
+# Intervallo minimo tra chiamate AI per stesso simbolo
+AI_CALL_INTERVAL_MINUTES=15           # Range: 10-30
 
-AUTO_TP_ENABLED=true
-AUTO_TP_PERCENT=0.4
-AUTO_TP_DELAY_MINUTES=15
+# Timeout singola chiamata AI
+AI_DECISION_TIMEOUT_SECONDS=60        # Range: 30-120
+
+# Tentativi se chiamata AI fallisce
+AI_MAX_RETRIES=2                      # Range: 1-3
+
+# Attesa tra tentativi
+AI_RETRY_DELAY_SECONDS=5              # Range: 3-10
 ```
 
-### 7.6 Telegram
+### 7.18 Leverage Scaling (aumenta leva su profitto protetto)
 ```bash
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
-SENTINEL_TELEGRAM_NOTIFY=true
+LEVERAGE_SCALING_ENABLED=true         # Abilita scaling
+LEVERAGE_SCALING_MIN_PROTECTED_PROFIT=0.5  # SL deve proteggere almeno X%
+LEVERAGE_SCALING_STEP=2               # Aumento leva per scaling (+2x)
+LEVERAGE_SCALING_MAX=15               # Leva massima raggiungibile
+LEVERAGE_SCALING_COOLDOWN_CYCLES=2    # Cicli attesa tra scaling
+```
+
+### 7.19 Auto Take Profit (piazza TP automatico dopo X minuti)
+```bash
+AUTO_TP_ENABLED=true                  # Abilita auto TP
+AUTO_TP_PERCENT=0.4                   # Target % P&L
+AUTO_TP_DELAY_MINUTES=15              # Piazza TP dopo X minuti dall'apertura
 ```
 
 ---
@@ -673,7 +883,30 @@ entrypoint.sh esegue:
 2. sentinel.py in loop (monitoring ogni 30s)
 ```
 
-### 8.2 Ricostruzione Completa
+### 8.2 Comandi Docker (COPIA-INCOLLA)
+
+#### Stop e Rimuovi Container
+```bash
+docker stop rizzo_sentinel && docker rm rizzo_sentinel
+```
+
+#### Avvia Container
+```bash
+docker run -d \
+  --name rizzo_sentinel \
+  --env-file /root/trading-bots/rizzo-trading-agent/.env \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  rizzo-sentinel:latest \
+  bash /app/entrypoint.sh
+```
+
+#### Visualizza Log
+```bash
+docker logs -f rizzo_sentinel
+```
+
+#### Ricostruzione Completa (dopo modifiche codice)
 ```bash
 cd /root/trading-bots/rizzo-trading-agent
 git pull origin <branch>
@@ -689,12 +922,7 @@ docker run -d \
 docker logs -f rizzo_sentinel
 ```
 
-### 8.3 Solo Restart
-```bash
-docker restart rizzo_sentinel
-```
-
-### 8.4 Accesso Database
+### 8.3 Accesso Database
 ```bash
 docker exec -it memory_postgres psql -U tradingbot -d rizzo_trading
 ```
