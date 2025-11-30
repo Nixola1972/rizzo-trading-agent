@@ -1736,7 +1736,25 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
                             log(f"   ⚠️ Errore cancellazione OID={order.get('oid')}: {cancel_err}")
                 if cancelled_count > 0:
                     log(f"   🗑️ Cancellati {cancelled_count} ordini SL precedenti")
-                    time.sleep(0.3)  # Attendi sync
+                    time.sleep(0.5)  # Attendi sync (aumentato)
+
+                    # Verifica che cancellazione sia effettiva
+                    try:
+                        verify_orders = bot.info.frontend_open_orders(bot.account_address)
+                    except AttributeError:
+                        verify_orders = bot.info.open_orders(bot.account_address)
+
+                    remaining = [o for o in verify_orders if o.get("coin") == symbol and o.get("side") == expected_side]
+                    if remaining:
+                        log(f"   ⚠️ {len(remaining)} ordini ancora presenti, riprovo cancellazione...")
+                        for order in remaining:
+                            try:
+                                bot.exchange.cancel(symbol, order.get("oid"))
+                                log(f"   🗑️ Ri-cancellato OID={order.get('oid')}")
+                                time.sleep(0.2)
+                            except:
+                                pass
+                        time.sleep(0.5)
             except Exception as e:
                 log(f"   ⚠️ Errore cancellazione: {e}")
 
@@ -1927,7 +1945,25 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
                             log(f"   ⚠️ Errore cancellazione OID={order.get('oid')}: {cancel_err}")
                 if cancelled_count > 0:
                     log(f"   🗑️ Cancellati {cancelled_count} ordini SL precedenti")
-                    time.sleep(0.3)  # Attendi sync
+                    time.sleep(0.5)  # Attendi sync (aumentato)
+
+                    # Verifica che cancellazione sia effettiva
+                    try:
+                        verify_orders = bot.info.frontend_open_orders(bot.account_address)
+                    except AttributeError:
+                        verify_orders = bot.info.open_orders(bot.account_address)
+
+                    remaining = [o for o in verify_orders if o.get("coin") == symbol and o.get("side") == expected_side]
+                    if remaining:
+                        log(f"   ⚠️ {len(remaining)} ordini ancora presenti, riprovo cancellazione...")
+                        for order in remaining:
+                            try:
+                                bot.exchange.cancel(symbol, order.get("oid"))
+                                log(f"   🗑️ Ri-cancellato OID={order.get('oid')}")
+                                time.sleep(0.2)
+                            except:
+                                pass
+                        time.sleep(0.5)
             except Exception as e:
                 log(f"   ⚠️ Errore cancellazione: {e}")
 
@@ -2386,6 +2422,31 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
                             log(f"   ⚠️ Errore cancellazione orfano OID={order.get('oid')}: {cancel_err}")
             except Exception as e:
                 log(f"   ⚠️ Errore pulizia ordini orfani: {e}")
+
+        # IMPORTANTE: Verifica che tutti gli ordini siano stati effettivamente cancellati
+        # Aspetta e ricontrolla per evitare race condition con API
+        time.sleep(0.5)
+        try:
+            try:
+                verify_orders = bot.info.frontend_open_orders(bot.account_address)
+            except AttributeError:
+                verify_orders = bot.info.open_orders(bot.account_address)
+
+            expected_side = "B" if direction == "short" else "A"
+            remaining_orders = [o for o in verify_orders if o.get("coin") == symbol and o.get("side") == expected_side]
+
+            if remaining_orders:
+                log(f"   ⚠️ Trovati {len(remaining_orders)} ordini SL ancora presenti, riprovo cancellazione...")
+                for order in remaining_orders:
+                    try:
+                        bot.exchange.cancel(symbol, order.get("oid"))
+                        log(f"   🗑️ Ri-cancellato OID={order.get('oid')}")
+                        time.sleep(0.2)
+                    except Exception as cancel_err:
+                        log(f"   ⚠️ Errore ri-cancellazione: {cancel_err}")
+                time.sleep(0.5)  # Aspetta ancora dopo la ri-cancellazione
+        except Exception as e:
+            log(f"   ⚠️ Errore verifica cancellazione: {e}")
 
         # Piazza nuovo ordine SL corretto
         log(f"   🔄 Piazzo nuovo SL per {symbol} (tentativo {attempt + 1}/{max_retries + 1})...")
