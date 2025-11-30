@@ -1422,19 +1422,26 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
 
             new_sl_price = bot._round_to_tick(new_sl_price, symbol)
 
-            # Cancella ordini SL esistenti (usa frontend_open_orders per vedere trigger orders!)
+            # Cancella TUTTI gli ordini SL esistenti (usa frontend_open_orders per vedere trigger orders!)
             try:
                 try:
                     open_orders = bot.info.frontend_open_orders(bot.account_address)
                 except AttributeError:
                     open_orders = bot.info.open_orders(bot.account_address)
+
+                expected_side = "B" if direction == "short" else "A"
+                cancelled_count = 0
                 for order in open_orders:
-                    if order.get("coin") == symbol:
-                        # Cancella solo ordini SL (lato opposto alla posizione)
-                        expected_side = "B" if direction == "short" else "A"
-                        if order.get("side") == expected_side:
+                    if order.get("coin") == symbol and order.get("side") == expected_side:
+                        try:
                             bot.exchange.cancel(symbol, order.get("oid"))
-                            log(f"   🗑️ Cancellato SL precedente OID={order.get('oid')}")
+                            cancelled_count += 1
+                            time.sleep(0.1)  # Piccolo delay tra cancellazioni
+                        except:
+                            pass
+                if cancelled_count > 0:
+                    log(f"   🗑️ Cancellati {cancelled_count} ordini SL precedenti")
+                    time.sleep(0.3)  # Attendi sync
             except Exception as e:
                 log(f"   ⚠️ Errore cancellazione: {e}")
 
@@ -1606,19 +1613,26 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
 
             new_sl_price = bot._round_to_tick(new_sl_price, symbol)
 
-            # Cancella ordini SL esistenti (usa frontend_open_orders per vedere trigger orders!)
+            # Cancella TUTTI gli ordini SL esistenti (usa frontend_open_orders per vedere trigger orders!)
             try:
                 try:
                     open_orders = bot.info.frontend_open_orders(bot.account_address)
                 except AttributeError:
                     open_orders = bot.info.open_orders(bot.account_address)
+
+                expected_side = "B" if direction == "short" else "A"
+                cancelled_count = 0
                 for order in open_orders:
-                    if order.get("coin") == symbol:
-                        # Cancella solo ordini SL (lato opposto alla posizione)
-                        expected_side = "B" if direction == "short" else "A"
-                        if order.get("side") == expected_side:
+                    if order.get("coin") == symbol and order.get("side") == expected_side:
+                        try:
                             bot.exchange.cancel(symbol, order.get("oid"))
-                            log(f"   🗑️ Cancellato SL precedente OID={order.get('oid')}")
+                            cancelled_count += 1
+                            time.sleep(0.1)  # Piccolo delay tra cancellazioni
+                        except:
+                            pass
+                if cancelled_count > 0:
+                    log(f"   🗑️ Cancellati {cancelled_count} ordini SL precedenti")
+                    time.sleep(0.3)  # Attendi sync
             except Exception as e:
                 log(f"   ⚠️ Errore cancellazione: {e}")
 
@@ -2030,17 +2044,53 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
                 for issue in check["issues"]:
                     log(f"   ⚠️ {symbol} {issue}")
 
-            # Cancella ordine sbagliato
+            # Cancella TUTTI gli ordini SL esistenti per questo simbolo (previene duplicati!)
             log(f"   🗑️ Cancello ordine errato per {symbol}...")
             try:
+                # Prima cancella quello trovato
                 bot.exchange.cancel(symbol, check["order"].get("oid"))
                 log(f"   ✅ Ordine cancellato")
-                time.sleep(0.5)
+                time.sleep(0.3)
+
+                # Poi cancella eventuali altri ordini SL duplicati
+                try:
+                    all_orders = bot.info.frontend_open_orders(bot.account_address)
+                except AttributeError:
+                    all_orders = bot.info.open_orders(bot.account_address)
+
+                expected_side = "B" if direction == "short" else "A"
+                for order in all_orders:
+                    if order.get("coin") == symbol and order.get("side") == expected_side:
+                        try:
+                            bot.exchange.cancel(symbol, order.get("oid"))
+                            log(f"   🗑️ Cancellato ordine SL duplicato OID={order.get('oid')}")
+                            time.sleep(0.2)
+                        except:
+                            pass
             except Exception as e:
                 log(f"   ❌ Errore cancellazione: {e}")
         else:
             result["was_missing"] = True
             log(f"   ⚠️ {symbol} SL mancante")
+
+            # Anche se mancante, cancella eventuali ordini SL duplicati/orfani
+            try:
+                try:
+                    all_orders = bot.info.frontend_open_orders(bot.account_address)
+                except AttributeError:
+                    all_orders = bot.info.open_orders(bot.account_address)
+
+                expected_side = "B" if direction == "short" else "A"
+                for order in all_orders:
+                    if order.get("coin") == symbol and order.get("side") == expected_side:
+                        try:
+                            bot.exchange.cancel(symbol, order.get("oid"))
+                            log(f"   🗑️ Cancellato ordine SL orfano OID={order.get('oid')}")
+                            time.sleep(0.2)
+                        except:
+                            pass
+            except:
+                pass
 
         # Piazza nuovo ordine SL corretto
         log(f"   🔄 Piazzo nuovo SL per {symbol} (tentativo {attempt + 1}/{max_retries + 1})...")
