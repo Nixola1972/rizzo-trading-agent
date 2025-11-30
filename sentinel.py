@@ -924,14 +924,23 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                 # Notifica Telegram
                 if SENTINEL_TELEGRAM_NOTIFY:
                     try:
+                        # Calcoli per messaggio dettagliato
+                        value_usd = position_size * entry_price
+                        target_profit = value_usd * (MICRO_GAIN_TARGET_PERCENT / 100) * MICRO_GAIN_LEVERAGE
+                        sl_loss = value_usd * (MICRO_GAIN_STOP_LOSS_PERCENT / 100) * MICRO_GAIN_LEVERAGE
+                        fees_estimate = value_usd * 0.0007 * MICRO_GAIN_LEVERAGE  # ~0.07% open+close
+
                         tg.send_telegram_message(
                             f"🎯 <b>MICRO_GAIN OPEN</b>\n\n"
                             f"<b>Symbol:</b> {symbol}\n"
                             f"<b>Direction:</b> {direction.upper()}\n"
                             f"<b>Entry:</b> ${entry_price:.2f}\n"
-                            f"<b>Score:</b> {score:.1f}\n"
-                            f"<b>TP Target:</b> +{MICRO_GAIN_TARGET_PERCENT}%\n"
-                            f"<b>SL:</b> -{MICRO_GAIN_STOP_LOSS_PERCENT}%"
+                            f"<b>Size:</b> {position_size:.6f} {symbol} (${value_usd:.2f})\n"
+                            f"<b>Leverage:</b> {MICRO_GAIN_LEVERAGE}x\n"
+                            f"<b>Score:</b> {score:.1f}\n\n"
+                            f"📊 <b>Target:</b> +{MICRO_GAIN_TARGET_PERCENT}% (${target_profit:.2f})\n"
+                            f"🛑 <b>Stop Loss:</b> -{MICRO_GAIN_STOP_LOSS_PERCENT}% (${sl_loss:.2f})\n"
+                            f"💸 <b>Fees stimate:</b> ~${fees_estimate:.2f}"
                         )
                     except Exception as e:
                         log(f"   ⚠️ Errore Telegram: {e}")
@@ -2375,14 +2384,26 @@ def execute_leverage_scaling(
         # Notifica Telegram
         if SENTINEL_TELEGRAM_NOTIFY:
             try:
+                # Calcola P&L corrente e potenziale
+                if direction == "long":
+                    price_change_pct = ((mark_price - entry_price) / entry_price) * 100
+                else:
+                    price_change_pct = ((entry_price - mark_price) / entry_price) * 100
+                current_pnl_pct = price_change_pct * new_leverage  # Con nuova leva
+
+                value_usd = size * entry_price
+
                 tg.send_telegram_message(
                     f"🚀 <b>LEVERAGE SCALING</b>\n\n"
                     f"<b>Symbol:</b> {symbol}\n"
                     f"<b>Direction:</b> {direction.upper()}\n"
-                    f"<b>Leva:</b> {current_leverage}x → {new_leverage}x\n"
-                    f"<b>SL protegge:</b> {current_sl_level:+.2f}%\n"
-                    f"<b>Nuovo SL @:</b> ${new_sl_price:.4f}\n\n"
-                    f"✅ Scaling completato con successo!"
+                    f"<b>Entry:</b> ${entry_price:.2f}\n"
+                    f"<b>Mark:</b> ${mark_price:.2f}\n"
+                    f"<b>Size:</b> {size:.6f} {symbol} (${value_usd:.2f})\n\n"
+                    f"📈 <b>Leva:</b> {int(current_leverage)}x → {int(new_leverage)}x\n"
+                    f"🛡️ <b>SL protegge:</b> {current_sl_level:+.2f}%\n"
+                    f"📍 <b>Nuovo SL @:</b> ${new_sl_price:.4f}\n\n"
+                    f"✅ Scaling completato!"
                 )
             except Exception as e:
                 log(f"   ⚠️ Errore notifica Telegram: {e}")
@@ -2565,15 +2586,24 @@ def check_and_place_auto_tp(bot, pos: dict, tracking_data: dict):
                     # Notifica Telegram
                     if SENTINEL_TELEGRAM_NOTIFY:
                         try:
+                            # Calcoli per messaggio dettagliato
+                            value_usd = size * entry_price
+                            target_profit = value_usd * (AUTO_TP_PERCENT / 100) * leverage
+                            fees_estimate = value_usd * 0.0007 * leverage  # ~0.07%
+                            net_profit_estimate = target_profit - fees_estimate
+
                             tg.send_telegram_message(
-                                f"🎯 <b>AUTO TAKE PROFIT</b>\n\n"
+                                f"🎯 <b>AUTO TAKE PROFIT PIAZZATO</b>\n\n"
                                 f"<b>Symbol:</b> {symbol}\n"
                                 f"<b>Direction:</b> {direction.upper()}\n"
                                 f"<b>Entry:</b> ${entry_price:.2f}\n"
-                                f"<b>TP Price:</b> ${tp_price:.4f}\n"
-                                f"<b>Target P&L:</b> +{AUTO_TP_PERCENT}%\n"
-                                f"<b>Leverage:</b> {leverage}x\n\n"
-                                f"✅ Ordine LIMIT piazzato dopo {duration_minutes:.0f} min"
+                                f"<b>Size:</b> {size:.6f} {symbol} (${value_usd:.2f})\n"
+                                f"<b>Leverage:</b> {int(leverage)}x\n\n"
+                                f"🎯 <b>TP Price:</b> ${tp_price:.4f}\n"
+                                f"📊 <b>Target P&L:</b> +{AUTO_TP_PERCENT}% (${target_profit:.2f})\n"
+                                f"💸 <b>Fees stimate:</b> ~${fees_estimate:.2f}\n"
+                                f"✅ <b>Net stimato:</b> ~${net_profit_estimate:.2f}\n\n"
+                                f"⏱️ Ordine LIMIT piazzato dopo {duration_minutes:.0f} min"
                             )
                         except Exception as e:
                             log(f"   ⚠️ Errore Telegram: {e}")
@@ -3132,16 +3162,60 @@ def run_sentinel_check():
 
                     # Notifica Telegram
                     if SENTINEL_TELEGRAM_NOTIFY:
-                        emoji = "💰" if action_taken == "CLOSE_TAKE_PROFIT" else "🛑"
                         try:
+                            # Calcoli per messaggio dettagliato
+                            value_usd = position_size * entry_price
+                            fees_estimate = value_usd * 0.0007 * pos_leverage  # ~0.07% open+close
+                            net_pnl = pnl - fees_estimate
+                            net_pnl_pct = pnl_pct - 0.07  # Sottrai fees %
+
+                            # Calcola durata se tracking disponibile
+                            duration_str = ""
+                            if tracking_data and tracking_data.get("created_at"):
+                                try:
+                                    from datetime import datetime
+                                    created = tracking_data["created_at"]
+                                    if isinstance(created, str):
+                                        created = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                                    duration_mins = (datetime.now(created.tzinfo) - created).total_seconds() / 60
+                                    if duration_mins >= 60:
+                                        hours = int(duration_mins // 60)
+                                        mins = int(duration_mins % 60)
+                                        duration_str = f"\n<b>Durata:</b> {hours}h {mins}m"
+                                    else:
+                                        duration_str = f"\n<b>Durata:</b> {int(duration_mins)} min"
+                                except:
+                                    pass
+
+                            # Emoji e titolo basato su tipo chiusura
+                            if action_taken == "CLOSE_TAKE_PROFIT":
+                                emoji = "💰"
+                                title = "TAKE PROFIT"
+                            elif action_taken == "CLOSE_STOP_LOSS":
+                                emoji = "🛑"
+                                title = "STOP LOSS"
+                            elif action_taken == "CLOSE_TRAILING_STOP":
+                                emoji = "📈"
+                                title = "TRAILING STOP"
+                            else:
+                                emoji = "🔄"
+                                title = "CHIUSURA"
+
+                            # Emoji risultato
+                            result_emoji = "✅" if net_pnl >= 0 else "❌"
+
                             tg.send_telegram_message(
-                                f"{emoji} <b>SENTINEL CLOSE</b>\n\n"
+                                f"{emoji} <b>TRADE CHIUSO - {title}</b>\n\n"
                                 f"<b>Symbol:</b> {symbol}\n"
-                                f"<b>Direction:</b> {direction.upper()}\n"
-                                f"<b>Reason:</b> {close_reason}\n"
-                                f"<b>Entry:</b> ${entry_price:.2f}\n"
-                                f"<b>Exit:</b> ${mark_price:.2f}\n"
-                                f"<b>PnL:</b> ${pnl:.2f} ({pnl_pct:+.2f}%)"
+                                f"<b>Direction:</b> {direction.upper()}{duration_str}\n\n"
+                                f"📈 <b>Entry:</b> ${entry_price:.2f}\n"
+                                f"📉 <b>Exit:</b> ${mark_price:.2f}\n"
+                                f"<b>Size:</b> {position_size:.6f} {symbol}\n"
+                                f"<b>Leverage:</b> {int(pos_leverage)}x\n\n"
+                                f"💵 <b>P&L Lordo:</b> ${pnl:.2f} ({pnl_pct:+.2f}%)\n"
+                                f"💸 <b>Fees:</b> -${fees_estimate:.2f} (~0.07%)\n"
+                                f"━━━━━━━━━━━━━━━━\n"
+                                f"{result_emoji} <b>NET P&L:</b> ${net_pnl:.2f} ({net_pnl_pct:+.2f}%)"
                             )
                         except Exception as e:
                             log(f"   ⚠️ Errore Telegram: {e}")
