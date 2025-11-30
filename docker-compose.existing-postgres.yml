@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rizzo_sentinel
+    restart: unless-stopped
+    env_file:
+      - .env
+    # NON specificare command qui! Usa l'entrypoint.sh del Dockerfile
+    # che avvia ENTRAMBI main.py e sentinel.py correttamente
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - trading-network
+
+networks:
+  trading-network:
+    external: true
+    name: postgres_network  # Usa la rete esistente di PostgreSQL
