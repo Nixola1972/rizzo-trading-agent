@@ -662,14 +662,26 @@ def run_passive_sl_verification(bot, positions: list):
                 })
                 log(f"   ⚠️ {symbol}: SL mancante! Mode={trading_mode}")
 
-                # Tenta di piazzare SL
-                log(f"   🔧 Tentativo piazzamento SL per {symbol}...")
-                if trading_mode == "MICRO_GAIN":
-                    place_micro_gain_sl_order(bot, symbol, direction, entry_price, size)
-                elif trading_mode == "MICRO_PAY":
-                    place_micro_pay_sl_order(bot, symbol, direction, entry_price, size)
+                # Tenta di piazzare SL usando sl_pct già calcolato (include trailing)
+                log(f"   🔧 Tentativo piazzamento SL per {symbol} (mode={trading_mode}, sl={sl_pct:+.2f}%)...")
+
+                # Usa expected_sl_price già calcolato sopra
+                sl_price = bot._round_to_tick(expected_sl_price, symbol)
+                is_buy = direction == "short"
+
+                sl_order_result = bot.exchange.order(
+                    symbol,
+                    is_buy,
+                    size,
+                    sl_price,
+                    {"trigger": {"triggerPx": sl_price, "isMarket": True, "tpsl": "sl"}},
+                    reduce_only=True
+                )
+
+                if sl_order_result.get("status") == "ok":
+                    log(f"   ✅ SL piazzato @ ${sl_price:.2f} ({sl_pct:+.1f}%)")
                 else:
-                    place_normal_initial_sl(bot, symbol, direction, entry_price, size, leverage)
+                    log(f"   ❌ Errore piazzamento SL: {sl_order_result}")
 
             else:
                 # Verifica prezzo SL
