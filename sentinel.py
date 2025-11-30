@@ -79,6 +79,10 @@ MICRO_GAIN_COOLDOWN_SECONDS = int(os.getenv('MICRO_GAIN_COOLDOWN_SECONDS', '300'
 MICRO_GAIN_MAX_POSITIONS = int(os.getenv('MICRO_GAIN_MAX_POSITIONS', '3'))  # Max posizioni contemporanee
 SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '10'))
 SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))
+
+# AI_FREE_MODE: se true, AI decide liberamente (score come suggerimento)
+AI_FREE_MODE = os.getenv('AI_FREE_MODE', 'false').lower() == 'true'
+
 MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
 MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # % balance per posizione
 
@@ -289,6 +293,111 @@ def wake_ai_agent(symbol: str, reason: str):
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+def should_wake_ai_for_symbol(symbol: str, score: float, existing_positions: list) -> dict:
+    """
+    Decide se svegliare l'AI per un simbolo in base a AI_FREE_MODE e condizioni.
+
+    LOGICA:
+    - AI_FREE_MODE=true: NON svegliare per score (AI gira su schedule, sveglia solo su eventi)
+    - AI_FREE_MODE=false:
+        * Se NO posizione + score >= SCORE_THRESHOLD_OPEN (confermato) → Sveglia
+        * Se posizione in direzione OPPOSTA allo score → Sveglia
+        * Se posizione in STESSA direzione → NON svegliare
+        * Se score sotto soglia → NON svegliare
+
+    Args:
+        symbol: Simbolo da verificare (BTC, ETH, SOL)
+        score: Score attuale (positivo=bullish, negativo=bearish)
+        existing_positions: Lista di posizioni aperte [{symbol, side}, ...]
+
+    Returns:
+        dict con:
+        - should_wake: True/False
+        - reason: Motivo della decisione
+    """
+    result = {
+        "should_wake": False,
+        "reason": ""
+    }
+
+    # AI_FREE_MODE: AI gira su schedule, non svegliare per score
+    if AI_FREE_MODE:
+        result["reason"] = "AI_FREE_MODE: AI runs on schedule, no proactive wake"
+        return result
+
+    # Trova posizione per questo simbolo
+    position = None
+    for pos in existing_positions:
+        if pos.get("symbol") == symbol:
+            position = pos
+            break
+
+    abs_score = abs(score)
+    score_direction = "long" if score > 0 else "short"
+
+    # CASO 1: Nessuna posizione aperta
+    if position is None:
+        # Verifica conferma cicli
+        confirmation = check_score_confirmation(symbol, SCORE_THRESHOLD_OPEN)
+
+        if not confirmation["confirmed"]:
+            result["reason"] = f"No position, score not confirmed: {confirmation['reason']}"
+            return result
+
+        if abs_score >= SCORE_THRESHOLD_OPEN:
+            result["should_wake"] = True
+            result["reason"] = f"No position, score {score:.1f} >= {SCORE_THRESHOLD_OPEN} (confirmed)"
+            return result
+        else:
+            result["reason"] = f"No position, score {score:.1f} < {SCORE_THRESHOLD_OPEN}"
+            return result
+
+    # CASO 2: Posizione aperta
+    position_direction = position.get("side", "").lower()
+
+    # Posizione in direzione OPPOSTA allo score
+    if (position_direction == "long" and score < 0) or (position_direction == "short" and score > 0):
+        # Verifica che lo score sia abbastanza forte per considerare reverse
+        if abs_score >= SCORE_THRESHOLD_HOLD:
+            result["should_wake"] = True
+            result["reason"] = f"Position {position_direction}, score {score:.1f} suggests opposite → potential close/reverse"
+            return result
+        else:
+            result["reason"] = f"Position {position_direction}, opposite score {score:.1f} too weak"
+            return result
+
+    # Posizione in STESSA direzione dello score
+    result["reason"] = f"Position {position_direction} aligned with score {score:.1f} → no action needed"
+    return result
+
+
+def should_wake_ai_for_event(event_type: str) -> bool:
+    """
+    Decide se svegliare l'AI per un evento specifico.
+
+    Sveglia sempre per:
+    - Chiusure (SL, TP, trailing)
+    - Volatility spike
+
+    Args:
+        event_type: Tipo di evento (stop_loss, take_profit, trailing_stop, volatility_spike, etc.)
+
+    Returns:
+        True se deve svegliare AI
+    """
+    # Eventi che svegliano sempre l'AI (indipendentemente da AI_FREE_MODE)
+    wake_events = {
+        "stop_loss",
+        "trailing_stop",
+        "take_profit",
+        "volatility_spike",
+        "reversal",
+        "sl_mismatch"
+    }
+
+    return event_type in wake_events
 
 
 # ============================================================================
@@ -2920,6 +3029,60 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 existing_symbols.append(symbol)
 
 
+def check_and_wake_ai_for_normal(bot, existing_positions: list):
+    """
+    Controlla se svegliare l'AI per score in range NORMAL (>= SCORE_THRESHOLD_OPEN).
+
+    Con AI_FREE_MODE=false:
+    - Se score >= SCORE_THRESHOLD_OPEN (confermato) e no posizione → Sveglia AI
+    - Se score in direzione opposta alla posizione → Sveglia AI
+
+    Con AI_FREE_MODE=true:
+    - NON sveglia per score (AI gira su suo schedule)
+
+    Args:
+        bot: HyperLiquidTrader instance
+        existing_positions: Lista posizioni aperte
+    """
+    # Se AI_FREE_MODE, non fare wake proattivi per score
+    if AI_FREE_MODE:
+        return
+
+    symbols_to_check = ['BTC', 'ETH', 'SOL']
+    existing_symbols = [p.get("symbol") for p in existing_positions]
+
+    for symbol in symbols_to_check:
+        # Calcola score (già calcolato in check_and_open_micro_gain, ma serve qui)
+        # Usiamo lo score già in _score_history se disponibile
+        if symbol in _score_history and len(_score_history[symbol]) > 0:
+            score = _score_history[symbol][-1]  # Ultimo score raw
+        else:
+            # Score non disponibile, skip
+            continue
+
+        abs_score = abs(score)
+
+        # Solo range NORMAL (>= SCORE_THRESHOLD_OPEN)
+        if abs_score < SCORE_THRESHOLD_OPEN:
+            continue
+
+        # Verifica se dovremmo svegliare AI
+        wake_check = should_wake_ai_for_symbol(symbol, score, existing_positions)
+
+        if wake_check["should_wake"]:
+            log(f"   🤖 {symbol} NORMAL range: {wake_check['reason']}")
+            log(f"      → Waking AI for potential trade")
+            wake_result = wake_ai_agent(symbol, "score_signal")
+            if wake_result.get("success"):
+                log(f"   ✅ AI Agent avviato (PID: {wake_result.get('pid')})")
+            else:
+                log(f"   ⚠️ Fallito wake AI: {wake_result.get('error')}")
+        else:
+            # Log solo se score è alto ma non svegliamo
+            if abs_score >= SCORE_THRESHOLD_OPEN:
+                log(f"   🔇 {symbol} score={score:.1f}: {wake_check['reason']}")
+
+
 def check_take_profit(position: dict) -> dict:
     """
     Controlla se take profit è triggerato.
@@ -3115,6 +3278,9 @@ def run_sentinel_check():
             if MICRO_GAIN_AUTO_OPEN:
                 log("🔍 Controllo opportunità MICRO_GAIN...")
                 check_and_open_micro_gain(bot, existing_symbols)
+            # === CHECK AI WAKE FOR NORMAL RANGE (score >= SCORE_THRESHOLD_OPEN) ===
+            log("🤖 Controllo wake AI per range NORMAL...")
+            check_and_wake_ai_for_normal(bot, [])  # No positions
             return
 
         log(f"Controllo {len(positions)} posizioni...")
@@ -3123,6 +3289,9 @@ def run_sentinel_check():
         if MICRO_GAIN_AUTO_OPEN and len(positions) < MICRO_GAIN_MAX_POSITIONS:
             log(f"🔍 Controllo opportunità MICRO_GAIN ({len(positions)}/{MICRO_GAIN_MAX_POSITIONS} posizioni)...")
             check_and_open_micro_gain(bot, existing_symbols)
+
+        # === CHECK AI WAKE FOR NORMAL RANGE (score in opposite direction) ===
+        check_and_wake_ai_for_normal(bot, positions)
 
         for pos in positions:
             symbol = pos.get("symbol", "")
@@ -3366,16 +3535,11 @@ def run_sentinel_check():
                         "CLOSE_MICRO_GAIN_REVERSAL": "reversal",
                     }
 
-                    # Determina se svegliare l'AI
-                    should_wake_ai = False
                     wake_reason = wake_reason_map.get(action_taken, "position_closed")
 
-                    if action_taken == "CLOSE_TAKE_PROFIT" and TAKE_PROFIT_TRIGGER_BOT:
-                        should_wake_ai = True
-                    elif SENTINEL_WAKE_ON_ALL_CLOSES and action_taken in wake_reason_map:
-                        should_wake_ai = True
-
-                    if should_wake_ai:
+                    # Usa should_wake_ai_for_event per decidere
+                    # Eventi (chiusure) svegliano sempre, indipendentemente da AI_FREE_MODE
+                    if should_wake_ai_for_event(wake_reason) and SENTINEL_WAKE_ON_ALL_CLOSES:
                         log(f"   🚀 Wake AI Agent per {symbol} (reason: {wake_reason})...")
                         wake_result = wake_ai_agent(symbol, wake_reason)
                         if wake_result.get("success"):
@@ -3456,8 +3620,9 @@ def run_sentinel_check():
                         except Exception:
                             pass
 
-                    # Wake AI Agent per rivalutare
-                    wake_ai_agent(symbol, "volatility_spike")
+                    # Wake AI Agent per rivalutare (volatility è sempre un evento valido)
+                    if should_wake_ai_for_event("volatility_spike"):
+                        wake_ai_agent(symbol, "volatility_spike")
 
     except Exception as e:
         log(f"❌ Errore sentinel: {e}")
