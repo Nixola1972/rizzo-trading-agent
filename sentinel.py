@@ -827,26 +827,32 @@ def check_score_confirmation(symbol: str, threshold: float) -> dict:
     # Prendi gli ultimi N cicli
     recent_scores = scores[-SCORE_CONFIRMATION_CYCLES:]
 
-    # Verifica che TUTTI siano sopra la soglia
-    all_above_threshold = all(abs(s) >= threshold for s in recent_scores)
-    if not all_above_threshold:
-        below_threshold = [s for s in recent_scores if abs(s) < threshold]
-        result["reason"] = f"Some scores below threshold: {[f'{s:.1f}' for s in below_threshold]}"
-        result["cycles_above"] = sum(1 for s in recent_scores if abs(s) >= threshold)
+    # NUOVA LOGICA: Usa la MEDIA invece di controllare ogni singolo score
+    avg_score = sum(recent_scores) / len(recent_scores)
+    abs_avg = abs(avg_score)
+
+    # Verifica che la MEDIA sia sopra la soglia minima
+    if abs_avg < threshold:
+        result["reason"] = f"Avg score {avg_score:.1f} below threshold {threshold}"
+        result["cycles_above"] = 0
         return result
 
-    # Verifica che TUTTI abbiano la stessa direzione (tutti positivi o tutti negativi)
-    all_positive = all(s > 0 for s in recent_scores)
-    all_negative = all(s < 0 for s in recent_scores)
+    # Verifica direzione consistente (maggioranza nella stessa direzione)
+    positive_count = sum(1 for s in recent_scores if s > 0)
+    negative_count = sum(1 for s in recent_scores if s < 0)
 
-    if not (all_positive or all_negative):
-        result["reason"] = f"Mixed directions in last {SCORE_CONFIRMATION_CYCLES} cycles"
+    # Almeno 2/3 devono essere nella stessa direzione
+    min_same_direction = max(2, SCORE_CONFIRMATION_CYCLES * 2 // 3)
+
+    if positive_count < min_same_direction and negative_count < min_same_direction:
+        result["reason"] = f"Direction not consistent: {positive_count} long, {negative_count} short (need {min_same_direction})"
         return result
 
-    # Confermato!
+    # Confermato! Usa la direzione della media
     result["confirmed"] = True
-    result["direction"] = "long" if all_positive else "short"
+    result["direction"] = "long" if avg_score > 0 else "short"
     result["cycles_above"] = SCORE_CONFIRMATION_CYCLES
+    result["avg_score"] = avg_score
 
     return result
 
