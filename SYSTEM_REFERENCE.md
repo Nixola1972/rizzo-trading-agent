@@ -554,16 +554,58 @@ should_wake_ai_for_symbol(symbol, score, positions):
     # 4. Score sotto soglia → NO wake
 ```
 
-### 5.3 Score Confirmation
-```python
-SCORE_CONFIRMATION_CYCLES = 3  # Richiesti N cicli
+### 5.3 Score Confirmation (NUOVA LOGICA - usa MEDIA)
 
-check_score_confirmation(symbol, threshold):
-    # Verifica che negli ultimi N cicli:
-    # 1. TUTTI gli score siano >= threshold
-    # 2. TUTTI abbiano la stessa direzione (+ o -)
-    # Se confermato → può aprire
-    # Se no → aspetta ancora
+```
+                    SCORE CONFIRMATION FLOW
+                    ══════════════════════
+
+  Ogni 30 secondi (1 ciclo):
+  ┌─────────────────────────────────────────────────────────┐
+  │ 1. Calcola score RAW dagli indicatori (RSI, MACD, etc.) │
+  │    Esempio: -23                                         │
+  │                                                         │
+  │ 2. SMOOTHING: media ultimi N raw scores                 │
+  │    SCORE_SMOOTHING_SAMPLES=3                            │
+  │    Esempio: media(-20, -8, -23) = -17.0                 │
+  │    Scopo: riduce volatilità singolo score               │
+  │                                                         │
+  │ 3. Salva score "smooth" nella history                   │
+  └─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ 4. CONFIRMATION: controlla se aprire trade              │
+  │    SCORE_CONFIRMATION_CYCLES=3                          │
+  │                                                         │
+  │    Prende ultimi 3 smooth scores: [-20, -17, -15]       │
+  │    Calcola MEDIA: (-20 + -17 + -15) / 3 = -17.3         │
+  │                                                         │
+  │    Verifica:                                            │
+  │    ✓ Media nel range MICRO_GAIN (13-18)? → -17.3 ✅     │
+  │    ✓ Almeno 2/3 stessa direzione? → 3/3 short ✅        │
+  │                                                         │
+  │    → CONFERMATO! Apre posizione SHORT                   │
+  └─────────────────────────────────────────────────────────┘
+
+  ESEMPIO PRATICO:
+  ┌────────┬───────────┬─────────────────┬──────────────────┐
+  │ Ciclo  │ Score RAW │ Smooth (media 3)│ Confirmation     │
+  ├────────┼───────────┼─────────────────┼──────────────────┤
+  │   1    │   -20     │  -20            │ Need 3, have 1   │
+  │   2    │   -8      │  -14            │ Need 3, have 2   │
+  │   3    │   -25     │  -17.7          │ Avg=-17.2 ✅ APRI│
+  └────────┴───────────┴─────────────────┴──────────────────┘
+```
+
+```python
+# VECCHIA LOGICA (troppo rigida):
+# ALL individual scores must be in range
+# [-7, -23, -15] → ❌ blocked (il -7 è fuori range 13-18)
+
+# NUOVA LOGICA (usa media):
+# AVERAGE of scores must be in range + 2/3 same direction
+# [-7, -23, -15] → avg=-15.0 ✅ nel range + tutti negativi ✅
 ```
 
 ---
@@ -710,13 +752,28 @@ SCORE_THRESHOLD_STRONG=25             # Range: 20-35
 # Usato come soglia minima per MICRO_GAIN
 SCORE_THRESHOLD_HOLD=10               # Range: 5-15
 
-# SCORE_CONFIRMATION_CYCLES: Cicli consecutivi sopra soglia per confermare
-# Prima di aprire, verifica che N cicli consecutivi siano sopra soglia
-# e tutti nella stessa direzione
-SCORE_CONFIRMATION_CYCLES=3           # Range: 2-5
+# ═══════════════════════════════════════════════════════════════
+# SCORE CONFIRMATION E SMOOTHING (vedi sezione 5.3 per dettagli)
+# ═══════════════════════════════════════════════════════════════
 
-# SCORE_SMOOTHING_SAMPLES: Campioni per media mobile score
-SCORE_SMOOTHING_SAMPLES=3             # Range: 2-5
+# SCORE_SMOOTHING_SAMPLES: Campioni per media mobile score RAW
+# Ogni ciclo (30s) calcola la media degli ultimi N score raw
+# Scopo: ridurre volatilità dello score singolo
+# Più alto = score più stabile ma meno reattivo
+SCORE_SMOOTHING_SAMPLES=3             # Range: 2-7
+# Esempio: 3 = media 90 secondi di dati raw
+
+# SCORE_CONFIRMATION_CYCLES: Cicli per confermare apertura trade
+# Prima di aprire, calcola la MEDIA degli ultimi N score smooth
+# Se media è nel range target + 2/3 stessa direzione → apri
+# Più alto = trend più confermato ma più lento ad aprire
+SCORE_CONFIRMATION_CYCLES=3           # Range: 2-10
+# Esempio: 3 cicli × 30 sec = 1.5 minuti di conferma
+
+# COMBINAZIONE CONSIGLIATA:
+# Reattivo:    SMOOTHING=3, CONFIRMATION=3 (1.5 min)
+# Bilanciato:  SMOOTHING=5, CONFIRMATION=5 (2.5 min)
+# Conservativo: SMOOTHING=5, CONFIRMATION=10 (5 min)
 ```
 
 ### 7.7 Soglie Indicatori
