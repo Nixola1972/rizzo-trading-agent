@@ -73,21 +73,20 @@ def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
 # ============================================
 
 def notify_trade_open(symbol: str, direction: str, leverage: float,
-                      target_pct: float, reason: str) -> bool:
-    """Notifica apertura posizione."""
-    # Escape HTML characters in reason to prevent parsing errors
-    safe_reason = html.escape(reason[:500])
-    message = f"""🟢 <b>TRADE APERTO</b>
+                      target_pct: float, reason: str,
+                      entry_price: Optional[float] = None,
+                      size: Optional[float] = None,
+                      value_usd: Optional[float] = None) -> bool:
+    """Notifica apertura posizione (messaggio breve)."""
 
-<b>Symbol:</b> {symbol}
-<b>Direction:</b> {direction.upper()}
-<b>Leverage:</b> {leverage}x
-<b>Size:</b> {target_pct * 100:.1f}% del balance
+    # Formato breve per apertura
+    price_str = f" @ ${entry_price:,.2f}" if entry_price else ""
+    size_str = f" ({size} {symbol})" if size else ""
+    value_str = f" [${value_usd:.2f}]" if value_usd else ""
 
-<b>Motivo AI:</b>
-<i>{safe_reason}</i>
+    message = f"""🟢 <b>APERTO</b> {symbol} {direction.upper()} {leverage}x{price_str}{size_str}{value_str}
 
-🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+🕐 {datetime.now().strftime('%H:%M:%S')}"""
 
     return send_telegram_message(message)
 
@@ -114,6 +113,120 @@ def notify_trade_close(symbol: str, direction: str, reason: str,
 <i>{safe_reason}</i>
 
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+
+    return send_telegram_message(message)
+
+
+def notify_trade_summary(
+    symbol: str,
+    direction: str,
+    leverage: float,
+    # Apertura
+    entry_price: float,
+    entry_time: datetime,
+    size: float,
+    value_usd: float,
+    margin: float,
+    # Chiusura
+    exit_price: float,
+    exit_time: datetime,
+    close_reason: str,
+    # P&L
+    pnl_usd: float,
+    pnl_pct: float,
+    # Stats opzionali
+    max_pnl_usd: Optional[float] = None,
+    max_pnl_pct: Optional[float] = None,
+    min_pnl_usd: Optional[float] = None,
+    min_pnl_pct: Optional[float] = None,
+    score_open: Optional[float] = None,
+    score_close: Optional[float] = None,
+    # Balance
+    balance: Optional[float] = None,
+    pnl_today: Optional[float] = None,
+    pnl_week: Optional[float] = None,
+) -> bool:
+    """
+    Notifica riassuntiva completa di un trade chiuso.
+    Include tutte le info di apertura, chiusura e performance.
+    """
+
+    # Determina se profit o loss
+    is_profit = pnl_usd >= 0
+    result_emoji = "✅" if is_profit else "❌"
+    result_label = "GUADAGNO" if is_profit else "PERDITA"
+    pnl_emoji = "💰" if is_profit else "💸"
+
+    # Calcola durata
+    duration = exit_time - entry_time
+    hours = int(duration.total_seconds() // 3600)
+    minutes = int((duration.total_seconds() % 3600) // 60)
+    if hours > 0:
+        duration_str = f"{hours}h {minutes}m"
+    else:
+        duration_str = f"{minutes}m"
+
+    # Escape close reason
+    safe_reason = html.escape(close_reason[:100]) if close_reason else "N/A"
+
+    # Stats section (opzionale)
+    stats_section = ""
+    if max_pnl_usd is not None or score_open is not None:
+        stats_lines = []
+        if max_pnl_usd is not None and max_pnl_pct is not None:
+            stats_lines.append(f"├─ Max P&L: +${max_pnl_usd:.2f} (+{max_pnl_pct:.1f}%)")
+        if min_pnl_usd is not None and min_pnl_pct is not None:
+            stats_lines.append(f"├─ Min P&L: ${min_pnl_usd:.2f} ({min_pnl_pct:.1f}%)")
+        if score_open is not None and score_close is not None:
+            stats_lines.append(f"└─ Score: {score_open:.1f} → {score_close:.1f}")
+        elif score_open is not None:
+            stats_lines.append(f"└─ Score apertura: {score_open:.1f}")
+
+        if stats_lines:
+            # Fix last line to use └─
+            if len(stats_lines) > 0:
+                stats_lines[-1] = stats_lines[-1].replace("├─", "└─")
+            stats_section = f"""
+📊 <b>STATS</b>
+{chr(10).join(stats_lines)}
+"""
+
+    # Balance section (opzionale)
+    balance_section = ""
+    if balance is not None:
+        balance_change = f" ({'+' if pnl_usd >= 0 else ''}{pnl_usd:.2f})"
+        balance_lines = [f"💼 Balance: ${balance:,.2f}{balance_change}"]
+        if pnl_today is not None or pnl_week is not None:
+            extra = []
+            if pnl_today is not None:
+                extra.append(f"Oggi: ${pnl_today:+.2f}")
+            if pnl_week is not None:
+                extra.append(f"Week: ${pnl_week:+.2f}")
+            if extra:
+                balance_lines.append(f"📈 {' | '.join(extra)}")
+        balance_section = f"""
+══════════════════════════════
+{chr(10).join(balance_lines)}"""
+
+    message = f"""📊 <b>TRADE COMPLETATO</b> {result_emoji}
+
+══════════════════════════════
+{pnl_emoji} <b>{result_label}:</b> ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
+══════════════════════════════
+
+📈 <b>APERTURA</b>
+├─ {symbol} {direction.upper()} {leverage}x
+├─ Entry: ${entry_price:,.2f}
+├─ Size: {size} {symbol}
+├─ Valore: ${value_usd:.2f}
+├─ Margine: ${margin:.2f}
+└─ 🕐 {entry_time.strftime('%d/%m %H:%M')}
+
+📉 <b>CHIUSURA</b>
+├─ Exit: ${exit_price:,.2f}
+├─ Motivo: {safe_reason}
+├─ Durata: {duration_str}
+└─ 🕐 {exit_time.strftime('%d/%m %H:%M')}{stats_section}{balance_section}"""
 
     return send_telegram_message(message)
 

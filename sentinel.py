@@ -3694,62 +3694,97 @@ def run_sentinel_check():
                     except Exception as e:
                         log(f"   ⚠️ Errore cancellazione ordini residui: {e}")
 
-                    # Notifica Telegram
+                    # Notifica Telegram con riassunto completo
                     if SENTINEL_TELEGRAM_NOTIFY:
                         try:
+                            from datetime import datetime as dt
+
                             # Calcoli per messaggio dettagliato
                             value_usd = position_size * entry_price
+                            margin = value_usd / pos_leverage
                             fees_estimate = value_usd * 0.0007 * pos_leverage  # ~0.07% open+close
                             net_pnl = pnl - fees_estimate
                             net_pnl_pct = pnl_pct - 0.07  # Sottrai fees %
 
-                            # Calcola durata se tracking disponibile
-                            duration_str = ""
+                            # Entry time da tracking
+                            entry_time = dt.now()
                             if tracking_data and tracking_data.get("created_at"):
                                 try:
-                                    from datetime import datetime
                                     created = tracking_data["created_at"]
                                     if isinstance(created, str):
-                                        created = datetime.fromisoformat(created.replace('Z', '+00:00'))
-                                    duration_mins = (datetime.now(created.tzinfo) - created).total_seconds() / 60
-                                    if duration_mins >= 60:
-                                        hours = int(duration_mins // 60)
-                                        mins = int(duration_mins % 60)
-                                        duration_str = f"\n<b>Durata:</b> {hours}h {mins}m"
+                                        entry_time = dt.fromisoformat(created.replace('Z', '+00:00').replace('+00:00', ''))
                                     else:
-                                        duration_str = f"\n<b>Durata:</b> {int(duration_mins)} min"
+                                        entry_time = created.replace(tzinfo=None) if hasattr(created, 'replace') else created
                                 except:
                                     pass
 
-                            # Emoji e titolo basato su tipo chiusura
-                            if action_taken == "CLOSE_TAKE_PROFIT":
-                                emoji = "💰"
-                                title = "TAKE PROFIT"
-                            elif action_taken == "CLOSE_STOP_LOSS":
-                                emoji = "🛑"
-                                title = "STOP LOSS"
-                            elif action_taken == "CLOSE_TRAILING_STOP":
-                                emoji = "📈"
-                                title = "TRAILING STOP"
-                            else:
-                                emoji = "🔄"
-                                title = "CHIUSURA"
+                            exit_time = dt.now()
 
-                            # Emoji risultato
-                            result_emoji = "✅" if net_pnl >= 0 else "❌"
+                            # Motivo chiusura
+                            close_reason_map = {
+                                "CLOSE_TAKE_PROFIT": "Take Profit",
+                                "CLOSE_STOP_LOSS": "Stop Loss",
+                                "CLOSE_TRAILING_STOP": f"Trailing Stop",
+                                "CLOSE_MICRO_GAIN_REVERSAL": "Reversal Score",
+                            }
+                            close_reason = close_reason_map.get(action_taken, "Chiusura Manuale")
 
-                            tg.send_telegram_message(
-                                f"{emoji} <b>TRADE CHIUSO - {title}</b>\n\n"
-                                f"<b>Symbol:</b> {symbol}\n"
-                                f"<b>Direction:</b> {direction.upper()}{duration_str}\n\n"
-                                f"📈 <b>Entry:</b> ${entry_price:.2f}\n"
-                                f"📉 <b>Exit:</b> ${mark_price:.2f}\n"
-                                f"<b>Size:</b> {position_size:.6f} {symbol}\n"
-                                f"<b>Leverage:</b> {int(pos_leverage)}x\n\n"
-                                f"💵 <b>P&L Lordo:</b> ${pnl:.2f} ({pnl_pct:+.2f}%)\n"
-                                f"💸 <b>Fees:</b> -${fees_estimate:.2f} (~0.07%)\n"
-                                f"━━━━━━━━━━━━━━━━\n"
-                                f"{result_emoji} <b>NET P&L:</b> ${net_pnl:.2f} ({net_pnl_pct:+.2f}%)"
+                            # Aggiungi livello SL se trailing
+                            if action_taken == "CLOSE_TRAILING_STOP":
+                                sl_key = symbol if trading_mode == "MICRO_GAIN" else f"{symbol}_NORMAL"
+                                current_sl = _current_sl_level.get(sl_key, 0)
+                                if current_sl != 0:
+                                    close_reason = f"Trailing Stop {current_sl:+.1f}%"
+
+                            # Recupera balance e stats
+                            balance = None
+                            pnl_today = None
+                            pnl_week = None
+                            try:
+                                account_state = bot.info.user_state(bot.account_address)
+                                balance = float(account_state.get("marginSummary", {}).get("accountValue", 0))
+
+                                # P&L oggi/settimana dal database
+                                stats = db_utils.get_performance_stats(hours=168)  # 7 giorni
+                                if stats:
+                                    pnl_week = stats.get("net_pnl_usd", 0)
+                                stats_today = db_utils.get_performance_stats(hours=24)
+                                if stats_today:
+                                    pnl_today = stats_today.get("net_pnl_usd", 0)
+                            except:
+                                pass
+
+                            # Score di apertura/chiusura
+                            score_open = None
+                            score_close = None
+                            try:
+                                if tracking_data:
+                                    score_open = tracking_data.get("open_score")
+                                # Score corrente come score chiusura
+                                score_close = micro_gain_result.get("quick_score") if trading_mode == "MICRO_GAIN" else None
+                            except:
+                                pass
+
+                            # Invia riassunto
+                            tg.notify_trade_summary(
+                                symbol=symbol,
+                                direction=direction,
+                                leverage=int(pos_leverage),
+                                entry_price=entry_price,
+                                entry_time=entry_time,
+                                size=position_size,
+                                value_usd=value_usd,
+                                margin=margin,
+                                exit_price=mark_price,
+                                exit_time=exit_time,
+                                close_reason=close_reason,
+                                pnl_usd=net_pnl,
+                                pnl_pct=net_pnl_pct,
+                                score_open=score_open,
+                                score_close=score_close,
+                                balance=balance,
+                                pnl_today=pnl_today,
+                                pnl_week=pnl_week,
                             )
                         except Exception as e:
                             log(f"   ⚠️ Errore Telegram: {e}")
