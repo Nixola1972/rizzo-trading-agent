@@ -58,6 +58,14 @@ FEAR_GREED_FEAR_THRESHOLD = get_weight('FEAR_GREED_FEAR_THRESHOLD', 30.0)
 FEAR_GREED_GREED_THRESHOLD = get_weight('FEAR_GREED_GREED_THRESHOLD', 60.0)
 FORECAST_MIN_CHANGE_PCT = get_weight('FORECAST_MIN_CHANGE_PCT', 0.3)
 
+# Volume Smoothing (Opzione D - riduce rumore)
+VOLUME_SMOOTHING_CYCLES = int(get_weight('VOLUME_SMOOTHING_CYCLES', 3))  # Media ultimi N cicli
+VOLUME_RATIO_BULLISH_THRESHOLD = get_weight('VOLUME_RATIO_BULLISH_THRESHOLD', 1.5)  # Bid/Ask > 1.5
+VOLUME_RATIO_BEARISH_THRESHOLD = get_weight('VOLUME_RATIO_BEARISH_THRESHOLD', 0.67)  # Bid/Ask < 0.67
+
+# History per volume smoothing (per simbolo)
+_volume_ratio_history = {}
+
 
 def calculate_signal_score(
     price: float,
@@ -67,7 +75,8 @@ def calculate_signal_score(
     fear_greed: int,
     forecast_change_pct: float,
     volume_bid: float = 0,
-    volume_ask: float = 0
+    volume_ask: float = 0,
+    symbol: str = "UNKNOWN"
 ) -> dict:
     """
     Calcola lo score dei segnali per una singola coin.
@@ -81,10 +90,12 @@ def calculate_signal_score(
         forecast_change_pct: Previsione cambio % da Prophet
         volume_bid: Volume bid
         volume_ask: Volume ask
+        symbol: Simbolo (per volume smoothing history)
 
     Returns:
         dict con score_bullish, score_bearish, net_score, signals, direction
     """
+    global _volume_ratio_history
 
     score_bullish = 0.0
     score_bearish = 0.0
@@ -276,37 +287,65 @@ def calculate_signal_score(
         })
 
     # ============================================
-    # 5. VOLUME (Bid vs Ask)
+    # 5. VOLUME (Bid vs Ask) - CON SMOOTHING
     # ============================================
+    # Opzione D: Media mobile del ratio per ridurre rumore
     if volume_bid > 0 and volume_ask > 0:
-        volume_ratio = volume_bid / volume_ask
-        if volume_ratio > 1.5:
-            # Più compratori che venditori → Bullish
-            intensity = min((volume_ratio - 1) / 2, 1.0)
+        current_ratio = volume_bid / volume_ask
+
+        # Inizializza history per questo simbolo se non esiste
+        if symbol not in _volume_ratio_history:
+            _volume_ratio_history[symbol] = []
+
+        # Aggiungi ratio corrente alla history
+        _volume_ratio_history[symbol].append(current_ratio)
+
+        # Mantieni solo gli ultimi N cicli
+        if len(_volume_ratio_history[symbol]) > VOLUME_SMOOTHING_CYCLES:
+            _volume_ratio_history[symbol] = _volume_ratio_history[symbol][-VOLUME_SMOOTHING_CYCLES:]
+
+        # Calcola la MEDIA del ratio (smoothed)
+        avg_ratio = sum(_volume_ratio_history[symbol]) / len(_volume_ratio_history[symbol])
+
+        # Usa la media smoothed per le decisioni
+        if avg_ratio > VOLUME_RATIO_BULLISH_THRESHOLD:
+            # Più compratori che venditori (media confermata) → Bullish
+            intensity = min((avg_ratio - 1) / 2, 1.0)
             contribution = WEIGHT_VOLUME_BULLISH * intensity
             score_bullish += contribution
             signals.append({
                 'indicator': 'Volume',
-                'value': f'Bid/Ask={volume_ratio:.2f}',
+                'value': f'Bid/Ask={avg_ratio:.2f} (smooth {len(_volume_ratio_history[symbol])} cycles)',
                 'direction': 'BULLISH',
                 'weight': WEIGHT_VOLUME_BULLISH,
                 'intensity': round(intensity, 2),
                 'contribution': round(contribution, 2),
-                'reason': f'Volume Bid/Ask={volume_ratio:.2f} (Buyers dominant)'
+                'reason': f'Volume Avg Ratio={avg_ratio:.2f} > {VOLUME_RATIO_BULLISH_THRESHOLD} (Buyers dominant)'
             })
-        elif volume_ratio < 0.67:
-            # Più venditori che compratori → Bearish
-            intensity = min((1 - volume_ratio) / 0.5, 1.0)
+        elif avg_ratio < VOLUME_RATIO_BEARISH_THRESHOLD:
+            # Più venditori che compratori (media confermata) → Bearish
+            intensity = min((1 - avg_ratio) / 0.5, 1.0)
             contribution = WEIGHT_VOLUME_BEARISH * intensity
             score_bearish += contribution
             signals.append({
                 'indicator': 'Volume',
-                'value': f'Bid/Ask={volume_ratio:.2f}',
+                'value': f'Bid/Ask={avg_ratio:.2f} (smooth {len(_volume_ratio_history[symbol])} cycles)',
                 'direction': 'BEARISH',
                 'weight': WEIGHT_VOLUME_BEARISH,
                 'intensity': round(intensity, 2),
                 'contribution': round(contribution, 2),
-                'reason': f'Volume Bid/Ask={volume_ratio:.2f} (Sellers dominant)'
+                'reason': f'Volume Avg Ratio={avg_ratio:.2f} < {VOLUME_RATIO_BEARISH_THRESHOLD} (Sellers dominant)'
+            })
+        else:
+            # Zona neutra - il volume non contribuisce (rumore filtrato)
+            signals.append({
+                'indicator': 'Volume',
+                'value': f'Bid/Ask={avg_ratio:.2f} (smooth {len(_volume_ratio_history[symbol])} cycles)',
+                'direction': 'NEUTRAL',
+                'weight': 0,
+                'intensity': 0,
+                'contribution': 0,
+                'reason': f'Volume Avg Ratio={avg_ratio:.2f} in neutral zone (noise filtered)'
             })
 
     # ============================================

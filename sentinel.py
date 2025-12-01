@@ -955,7 +955,8 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
             fear_greed=fear_greed,
             forecast_change_pct=0.0,  # Skip forecast nel sentinel
             volume_bid=volume_bid,
-            volume_ask=volume_ask
+            volume_ask=volume_ask,
+            symbol=symbol  # Per volume smoothing history
         )
 
         net_score = score_result.get('net_score', 0.0)

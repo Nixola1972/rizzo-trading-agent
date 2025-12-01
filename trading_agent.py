@@ -644,7 +644,8 @@ def calculate_scores_for_symbols(indicators_data: list, sentiment_data: dict, fo
                     fear_greed=int(fear_greed),
                     forecast_change_pct=float(forecast_change),
                     volume_bid=float(volume_bid),
-                    volume_ask=float(volume_ask)
+                    volume_ask=float(volume_ask),
+                    symbol=ticker  # Per volume smoothing history
                 )
                 scores[ticker] = score_result
                 print(f"   📊 {ticker} Score: BULL={score_result['score_bullish']:.1f} "
