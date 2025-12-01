@@ -285,7 +285,12 @@ def run_analysis_cycle(
     }
 
     from datetime import datetime, timezone
+    import time as time_module
     result["timestamp"] = datetime.now(timezone.utc).isoformat()
+    cycle_start_time = time_module.time()  # Per calcolare durata ciclo
+
+    # Lista per raccogliere tutte le decisioni (per riassunto Telegram)
+    all_decisions = []
 
     # Setup timeout per questo ciclo
     effective_timeout = timeout_seconds or BOT_TIMEOUT_SECONDS
@@ -482,8 +487,14 @@ def run_analysis_cycle(
                 except Exception as e:
                     print(f"[TRACKING] ⚠️ Errore creazione tracking MICRO_GAIN: {e}")
 
-                # Notifica e salva
-                tg.notify_trading_decision(out)
+                # Aggiungi a decisioni per riassunto + notifica apertura
+                all_decisions.append({
+                    "symbol": out.get("symbol"),
+                    "operation": out.get("operation"),
+                    "direction": out.get("direction", ""),
+                    "reason": "MICRO_GAIN auto-open",
+                })
+                tg.notify_trading_decision(out)  # Notifica apertura
                 op_id = db_utils.log_bot_operation(
                     out,
                     system_prompt="MICRO_GAIN auto-open",
@@ -863,8 +874,17 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                     except Exception as e:
                         print(f"[TRACKING] ⚠️ Errore creazione tracking: {e}")
 
-            # Notifica Telegram
-            tg.notify_trading_decision(out)
+            # Raccogli decisione per riassunto (notifica singola solo per OPEN)
+            all_decisions.append({
+                "symbol": out.get("symbol"),
+                "operation": out.get("operation"),
+                "direction": out.get("direction", ""),
+                "reason": out.get("reason", "")[:100],
+            })
+
+            # Notifica singola SOLO per aperture (importanti da sapere subito)
+            if out.get("operation") == "open":
+                tg.notify_trading_decision(out)
 
             # Salva operazione nel DB
             op_id = db_utils.log_bot_operation(
@@ -901,6 +921,42 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
 
         result["success"] = True
         result["actions_taken"] = actions_taken
+
+        # === NOTIFICA RIASSUNTO CICLO AI ===
+        try:
+            cycle_duration = time_module.time() - cycle_start_time
+
+            # Prepara scores per il riassunto
+            scores_for_summary = {}
+            if SCORING_ENABLED and scores:
+                for sym, score_data in scores.items():
+                    scores_for_summary[sym] = {
+                        "net": score_data.get("net_score", 0),
+                        "bull": score_data.get("bull_score", 0),
+                        "bear": score_data.get("bear_score", 0),
+                    }
+
+            # Recupera info account
+            try:
+                account_status = bot.get_account_status()
+                balance = account_status.get("balance", 0)
+                open_pos_count = len(account_status.get("open_positions", []))
+            except:
+                balance = None
+                open_pos_count = None
+
+            # Invia riassunto
+            tg.notify_ai_cycle_summary(
+                reason=reason,
+                tickers_analyzed=tickers,
+                decisions=all_decisions,
+                scores=scores_for_summary,
+                duration_seconds=cycle_duration,
+                balance=balance,
+                open_positions=open_pos_count,
+            )
+        except Exception as e:
+            print(f"[TELEGRAM] ⚠️ Errore invio riassunto: {e}")
 
     except TimeoutError:
         result["errors"].append(f"Cycle timeout after {effective_timeout}s")

@@ -231,6 +231,131 @@ def notify_trade_summary(
     return send_telegram_message(message)
 
 
+def notify_ai_cycle_summary(
+    reason: str,
+    tickers_analyzed: list,
+    decisions: list,
+    scores: dict = None,
+    duration_seconds: float = None,
+    balance: float = None,
+    open_positions: int = None,
+) -> bool:
+    """
+    Notifica riassuntiva di un ciclo AI completato.
+
+    Args:
+        reason: Motivo del trigger (scheduled, take_profit, stop_loss, etc.)
+        tickers_analyzed: Lista ticker analizzati
+        decisions: Lista di decisioni [{symbol, operation, direction, reason}, ...]
+        scores: Dict di score per simbolo {BTC: {net: -5.2, bull: 3, bear: 8}, ...}
+        duration_seconds: Durata del ciclo in secondi
+        balance: Balance attuale
+        open_positions: Numero posizioni aperte
+    """
+    # Emoji per reason
+    reason_emoji_map = {
+        "scheduled": "⏰",
+        "take_profit": "💰",
+        "stop_loss": "🛑",
+        "trailing_stop": "📉",
+        "reversal": "🔄",
+        "volatility_spike": "⚡",
+        "position_closed": "🔒",
+        "manual": "👤",
+        "score_signal": "📊",
+    }
+    reason_emoji = reason_emoji_map.get(reason, "🤖")
+
+    # Formatta reason in italiano
+    reason_label_map = {
+        "scheduled": "Ciclo programmato",
+        "take_profit": "Take Profit raggiunto",
+        "stop_loss": "Stop Loss triggerato",
+        "trailing_stop": "Trailing Stop",
+        "reversal": "Score reversal",
+        "volatility_spike": "Spike volatilità",
+        "position_closed": "Posizione chiusa",
+        "manual": "Manuale",
+        "score_signal": "Segnale score",
+    }
+    reason_label = reason_label_map.get(reason, reason)
+
+    # Durata
+    duration_str = ""
+    if duration_seconds:
+        if duration_seconds >= 60:
+            mins = int(duration_seconds // 60)
+            secs = int(duration_seconds % 60)
+            duration_str = f" ({mins}m {secs}s)"
+        else:
+            duration_str = f" ({int(duration_seconds)}s)"
+
+    # Conta azioni
+    opens = [d for d in decisions if d.get("operation") == "open"]
+    closes = [d for d in decisions if d.get("operation") == "close"]
+    holds = [d for d in decisions if d.get("operation") == "hold"]
+
+    # Costruisci sezione decisioni
+    decisions_lines = []
+    for d in decisions:
+        op = d.get("operation", "?")
+        sym = d.get("symbol", "?")
+        direction = d.get("direction", "")
+        ai_reason = d.get("reason", "")[:50]  # Troncato
+
+        if op == "open":
+            op_emoji = "🟢"
+            op_text = f"OPEN {direction.upper()}"
+        elif op == "close":
+            op_emoji = "🔴"
+            op_text = "CLOSE"
+        else:
+            op_emoji = "⚪"
+            op_text = "HOLD"
+
+        # Score per questo simbolo
+        score_str = ""
+        if scores and sym in scores:
+            net = scores[sym].get("net", 0)
+            score_str = f" [score: {net:+.1f}]"
+
+        decisions_lines.append(f"{op_emoji} <b>{sym}</b>: {op_text}{score_str}")
+        if ai_reason and op != "hold":
+            decisions_lines.append(f"   <i>{html.escape(ai_reason)}</i>")
+
+    # Se nessuna azione, mostra che tutto è HOLD
+    if not decisions_lines:
+        decisions_lines = ["⚪ Nessuna azione (tutte HOLD)"]
+
+    # Account info
+    account_info = ""
+    if balance is not None or open_positions is not None:
+        parts = []
+        if balance is not None:
+            parts.append(f"💼 ${balance:,.2f}")
+        if open_positions is not None:
+            parts.append(f"📈 {open_positions} pos")
+        account_info = f"\n{' | '.join(parts)}"
+
+    # Statistiche ciclo
+    stats = f"✅ {len(opens)} open | 🔴 {len(closes)} close | ⚪ {len(holds)} hold"
+
+    message = f"""🤖 <b>AI CYCLE COMPLETATO</b>{duration_str}
+
+{reason_emoji} <b>Trigger:</b> {reason_label}
+📋 <b>Ticker:</b> {', '.join(tickers_analyzed)}
+
+━━━━━━━━━━━━━━━━
+<b>DECISIONI:</b>
+{chr(10).join(decisions_lines)}
+━━━━━━━━━━━━━━━━
+{stats}{account_info}
+
+🕐 {datetime.now().strftime('%H:%M:%S')}"""
+
+    return send_telegram_message(message)
+
+
 def notify_hold(symbol: str, reason: str) -> bool:
     """Notifica decisione HOLD (opzionale, può essere disabilitata)."""
     # Di default non notifichiamo gli HOLD per non spammare
