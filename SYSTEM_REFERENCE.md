@@ -608,6 +608,66 @@ should_wake_ai_for_symbol(symbol, score, positions):
 # [-7, -23, -15] → avg=-15.0 ✅ nel range + tutti negativi ✅
 ```
 
+### 5.4 Sentinel Score Passing (NUOVO)
+
+```
+               SENTINEL → AI COMMUNICATION FLOW
+               ════════════════════════════════
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │ SENTINEL calcola score (ogni 30 sec)                        │
+  │                                                             │
+  │ Se score >= SCORE_THRESHOLD_OPEN:                           │
+  │   wake_ai_agent(symbol, "score_signal", sentinel_score=22)  │
+  │                                                             │
+  │ Lancia: python main.py --ticker BTC --priority high         │
+  │                        --sentinel-score 22.0                │
+  └─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │ MAIN.PY riceve lo score dalla sentinel                      │
+  │                                                             │
+  │ • NON ricalcola lo score (evita discrepanze)               │
+  │ • Usa sentinel_score per le decisioni                       │
+  │ • Aggiunge contesto extra al prompt AI:                     │
+  │                                                             │
+  │   "SENTINEL TRIGGER - ADDITIONAL CONTEXT                    │
+  │    Sentinel Score: 22.0                                     │
+  │    Suggested Direction: LONG                                │
+  │    The sentinel score is informational only.                │
+  │    You have full autonomy to decide."                       │
+  └─────────────────────────────────────────────────────────────┘
+
+  DIFFERENZA TRA CHIAMATE:
+  ┌────────────────────┬────────────────────┬────────────────────┐
+  │                    │ SENTINEL TRIGGER   │ LOOP AUTOMATICO    │
+  ├────────────────────┼────────────────────┼────────────────────┤
+  │ Score              │ Passato da sentinel│ Ricalcolato        │
+  │ Prompt             │ + context sentinel │ Standard           │
+  │ priority           │ high               │ normal             │
+  │ Interval check     │ Skipped            │ Applied            │
+  └────────────────────┴────────────────────┴────────────────────┘
+```
+
+### 5.5 DOUBLE_CHECK_AI (Preparato, disabilitato)
+
+```python
+# DOUBLE_CHECK_AI_ENABLED=false (default)
+#
+# Quando abilitato:
+# - Le aperture automatiche MICRO_GAIN passano attraverso AI
+# - L'AI può validare o bloccare l'apertura
+#
+# ATTENZIONE: Attivare SOLO dopo aver verificato che l'AI non sia
+# troppo conservativa, altrimenti bloccherà tutti i trade.
+#
+# Flusso con DOUBLE_CHECK=true:
+# 1. Sentinel rileva score in range MICRO_GAIN
+# 2. Invece di aprire automaticamente, chiama AI
+# 3. AI valuta e decide se aprire o HOLD
+```
+
 ---
 
 ## 6. ORDINI SU HYPERLIQUID
@@ -867,6 +927,10 @@ MICRO_GAIN_REVERSAL_SCORE=15          # Range: 5-20
 
 # Piazza limit order TP su Hyperliquid
 MICRO_GAIN_USE_LIMIT_ORDER=true
+
+# DOUBLE_CHECK_AI: Se true, MICRO_GAIN passa attraverso AI per validazione
+# ATTENZIONE: Attivare solo dopo aver verificato che AI non sia troppo conservativa
+DOUBLE_CHECK_AI_ENABLED=false         # Default: false
 ```
 
 ### 7.15 NORMAL Mode Trailing (gestito da Sentinel)
