@@ -62,6 +62,27 @@ DOUBLE_CHECK_AI_ENABLED = os.getenv('DOUBLE_CHECK_AI_ENABLED', 'false').lower() 
 if DOUBLE_CHECK_AI_ENABLED:
     print("🔍 DOUBLE_CHECK_AI: Aperture automatiche validate da AI")
 
+# ===== SMART EXIT CONFIGURATION =====
+# Sistema di exit intelligenti basato su regole (EMA invalidation, Score decay, Time stop)
+SMART_EXIT_ENABLED = os.getenv('SMART_EXIT_ENABLED', 'true').lower() == 'true'
+SMART_EXIT_MODE = os.getenv('SMART_EXIT_MODE', 'warn')  # 'warn' = solo warning, 'hybrid' = warn + confirm
+SMART_EXIT_EMA_CHECK = os.getenv('SMART_EXIT_EMA_CHECK', 'true').lower() == 'true'
+SMART_EXIT_SCORE_DECAY_CHECK = os.getenv('SMART_EXIT_SCORE_DECAY_CHECK', 'true').lower() == 'true'
+SMART_EXIT_TIME_STOP_MINUTES = int(os.getenv('SMART_EXIT_TIME_STOP_MINUTES', '60'))  # 0 = disabilitato
+SMART_EXIT_CONFIRM_CYCLES = int(os.getenv('SMART_EXIT_CONFIRM_CYCLES', '2'))  # cicli per conferma in hybrid mode
+
+if SMART_EXIT_ENABLED:
+    mode_desc = "WARN-ONLY" if SMART_EXIT_MODE == 'warn' else "HYBRID (warn + confirm)"
+    print(f"🚨 SMART_EXIT: {mode_desc}")
+    checks = []
+    if SMART_EXIT_EMA_CHECK:
+        checks.append("EMA")
+    if SMART_EXIT_SCORE_DECAY_CHECK:
+        checks.append("ScoreDecay")
+    if SMART_EXIT_TIME_STOP_MINUTES > 0:
+        checks.append(f"TimeStop({SMART_EXIT_TIME_STOP_MINUTES}min)")
+    print(f"   Checks attivi: {', '.join(checks)}")
+
 # Score confirmation - richiede N cicli consecutivi sopra soglia prima di aprire
 SCORE_CONFIRMATION_CYCLES = int(os.getenv('SCORE_CONFIRMATION_CYCLES', '3'))
 
@@ -247,6 +268,178 @@ def should_skip_ai_call(symbol: str) -> tuple:
     except Exception as e:
         print(f"[AI_INTERVAL] ⚠️ Errore controllo intervallo per {symbol}: {e}")
         return (False, f"Errore: {e}", 0)
+
+
+# ===== SMART EXIT WARNING TRACKER =====
+# Traccia i warning consecutivi per ogni simbolo (per hybrid mode)
+_smart_exit_warning_counts = {}  # {symbol: {warning_type: count}}
+
+
+def generate_smart_exit_warnings(
+    symbol: str,
+    position: dict,
+    position_context: dict,
+    ticker_indicators: dict,
+    net_score: float
+) -> list:
+    """
+    Genera warning di Smart Exit per posizioni aperte.
+
+    Args:
+        symbol: Simbolo della posizione
+        position: Dati posizione da Hyperliquid
+        position_context: Contesto posizione da tracking DB
+        ticker_indicators: Indicatori tecnici per questo simbolo
+        net_score: Score attuale calcolato
+
+    Returns:
+        Lista di warning dict: [{"type": "EMA_INVALIDATION", "message": "...", "severity": "warning|critical"}]
+    """
+    global _smart_exit_warning_counts
+
+    if not SMART_EXIT_ENABLED:
+        return []
+
+    warnings = []
+    direction = position.get("side", "long").lower()
+
+    # Inizializza tracker per questo simbolo se non esiste
+    if symbol not in _smart_exit_warning_counts:
+        _smart_exit_warning_counts[symbol] = {}
+
+    # === RULE 1: EMA INVALIDATION ===
+    if SMART_EXIT_EMA_CHECK and ticker_indicators:
+        try:
+            current_price = ticker_indicators.get("current", {}).get("price")
+            ema20 = ticker_indicators.get("current", {}).get("ema20")
+
+            if current_price and ema20:
+                ema_warning = None
+
+                if direction == "long" and current_price < ema20:
+                    pct_below = ((ema20 - current_price) / ema20) * 100
+                    ema_warning = {
+                        "type": "EMA_INVALIDATION",
+                        "message": f"LONG position: Price ${current_price:.2f} is {pct_below:.2f}% BELOW EMA20 (${ema20:.2f})",
+                        "severity": "critical" if pct_below > 1.0 else "warning"
+                    }
+                elif direction == "short" and current_price > ema20:
+                    pct_above = ((current_price - ema20) / ema20) * 100
+                    ema_warning = {
+                        "type": "EMA_INVALIDATION",
+                        "message": f"SHORT position: Price ${current_price:.2f} is {pct_above:.2f}% ABOVE EMA20 (${ema20:.2f})",
+                        "severity": "critical" if pct_above > 1.0 else "warning"
+                    }
+
+                if ema_warning:
+                    warnings.append(ema_warning)
+                    # Track consecutive warnings
+                    _smart_exit_warning_counts[symbol]["EMA_INVALIDATION"] = \
+                        _smart_exit_warning_counts[symbol].get("EMA_INVALIDATION", 0) + 1
+                else:
+                    # Reset counter if no warning
+                    _smart_exit_warning_counts[symbol]["EMA_INVALIDATION"] = 0
+
+        except Exception as e:
+            print(f"[SMART_EXIT] EMA check error for {symbol}: {e}")
+
+    # === RULE 2: SCORE DECAY ===
+    if SMART_EXIT_SCORE_DECAY_CHECK:
+        try:
+            opening_score = None
+            if position_context:
+                opening_score = position_context.get("opening_score")
+
+            score_warning = None
+
+            # Score decay: score cambiato segno rispetto alla posizione
+            if direction == "long" and net_score < 0:
+                score_warning = {
+                    "type": "SCORE_DECAY",
+                    "message": f"LONG position but score turned NEGATIVE: {net_score:.1f}",
+                    "severity": "critical" if net_score < -10 else "warning"
+                }
+            elif direction == "short" and net_score > 0:
+                score_warning = {
+                    "type": "SCORE_DECAY",
+                    "message": f"SHORT position but score turned POSITIVE: {net_score:.1f}",
+                    "severity": "critical" if net_score > 10 else "warning"
+                }
+            # Score decay significativo rispetto all'apertura
+            elif opening_score is not None:
+                if direction == "long" and opening_score > 0:
+                    decay_pct = ((opening_score - net_score) / abs(opening_score)) * 100 if opening_score != 0 else 0
+                    if decay_pct > 50:
+                        score_warning = {
+                            "type": "SCORE_DECAY",
+                            "message": f"LONG: Score decayed {decay_pct:.0f}% from opening ({opening_score:.1f} → {net_score:.1f})",
+                            "severity": "warning"
+                        }
+                elif direction == "short" and opening_score < 0:
+                    decay_pct = ((abs(opening_score) - abs(net_score)) / abs(opening_score)) * 100 if opening_score != 0 else 0
+                    if decay_pct > 50:
+                        score_warning = {
+                            "type": "SCORE_DECAY",
+                            "message": f"SHORT: Score decayed {decay_pct:.0f}% from opening ({opening_score:.1f} → {net_score:.1f})",
+                            "severity": "warning"
+                        }
+
+            if score_warning:
+                warnings.append(score_warning)
+                _smart_exit_warning_counts[symbol]["SCORE_DECAY"] = \
+                    _smart_exit_warning_counts[symbol].get("SCORE_DECAY", 0) + 1
+            else:
+                _smart_exit_warning_counts[symbol]["SCORE_DECAY"] = 0
+
+        except Exception as e:
+            print(f"[SMART_EXIT] Score decay check error for {symbol}: {e}")
+
+    # === RULE 3: TIME STOP ===
+    if SMART_EXIT_TIME_STOP_MINUTES > 0 and position_context:
+        try:
+            duration_minutes = position_context.get("duration_minutes", 0)
+
+            if duration_minutes > SMART_EXIT_TIME_STOP_MINUTES:
+                # Controlla il P&L per valutare severità
+                pnl_pct = position_context.get("unrealized_pnl_pct") or 0
+
+                if pnl_pct < 1.0:  # Meno dell'1% di profitto dopo tanto tempo
+                    severity = "critical" if duration_minutes > SMART_EXIT_TIME_STOP_MINUTES * 2 else "warning"
+                    time_warning = {
+                        "type": "TIME_STOP",
+                        "message": f"Position open for {duration_minutes} minutes (limit: {SMART_EXIT_TIME_STOP_MINUTES}) with only {pnl_pct:.2f}% P&L",
+                        "severity": severity
+                    }
+                    warnings.append(time_warning)
+                    _smart_exit_warning_counts[symbol]["TIME_STOP"] = \
+                        _smart_exit_warning_counts[symbol].get("TIME_STOP", 0) + 1
+                else:
+                    _smart_exit_warning_counts[symbol]["TIME_STOP"] = 0
+
+        except Exception as e:
+            print(f"[SMART_EXIT] Time stop check error for {symbol}: {e}")
+
+    # === CHECK HYBRID MODE: Conferma dopo N cicli consecutivi ===
+    confirmed_exits = []
+    if SMART_EXIT_MODE == 'hybrid' and warnings:
+        for warning in warnings:
+            warning_type = warning["type"]
+            consecutive_count = _smart_exit_warning_counts[symbol].get(warning_type, 0)
+
+            if consecutive_count >= SMART_EXIT_CONFIRM_CYCLES:
+                warning["confirmed"] = True
+                warning["consecutive_cycles"] = consecutive_count
+                confirmed_exits.append(warning)
+                print(f"[SMART_EXIT] 🔴 CONFIRMED: {symbol} {warning_type} after {consecutive_count} cycles")
+
+    return warnings
+
+
+def clear_smart_exit_warnings(symbol: str):
+    """Resetta i warning per un simbolo (chiamare quando posizione chiusa)."""
+    global _smart_exit_warning_counts
+    if symbol in _smart_exit_warning_counts:
+        del _smart_exit_warning_counts[symbol]
 
 
 # ===== TIMEOUT HANDLER =====
@@ -608,6 +801,57 @@ def run_analysis_cycle(
                 msg_info
             )
 
+            # === SMART EXIT WARNINGS: Genera warning per posizioni aperte ===
+            smart_exit_warnings = []
+            if has_position and ticker_position and SMART_EXIT_ENABLED:
+                smart_exit_warnings = generate_smart_exit_warnings(
+                    symbol=ticker_sym,
+                    position=ticker_position,
+                    position_context=position_context,
+                    ticker_indicators=ticker_indicators[0] if ticker_indicators else {},
+                    net_score=net_score
+                )
+
+                if smart_exit_warnings:
+                    # Costruisci sezione warning per il prompt
+                    warning_lines = []
+                    has_critical = any(w.get("severity") == "critical" for w in smart_exit_warnings)
+                    has_confirmed = any(w.get("confirmed") for w in smart_exit_warnings)
+
+                    warning_lines.append("")
+                    warning_lines.append("## ⚠️ SMART EXIT WARNINGS")
+                    warning_lines.append("")
+
+                    for w in smart_exit_warnings:
+                        severity_icon = "🔴" if w.get("severity") == "critical" else "🟡"
+                        confirmed_tag = " [CONFIRMED]" if w.get("confirmed") else ""
+                        warning_lines.append(f"{severity_icon} **{w['type']}**{confirmed_tag}: {w['message']}")
+
+                    warning_lines.append("")
+                    warning_lines.append("### What these warnings mean:")
+                    warning_lines.append("- **EMA_INVALIDATION**: Price has crossed the EMA20 against your position direction")
+                    warning_lines.append("- **SCORE_DECAY**: The trading score has weakened or reversed")
+                    warning_lines.append("- **TIME_STOP**: Position open too long with minimal profit")
+                    warning_lines.append("")
+
+                    if has_confirmed:
+                        warning_lines.append("### ⚠️ CONFIRMED SIGNALS:")
+                        warning_lines.append("Some warnings have been confirmed over multiple cycles.")
+                        warning_lines.append("This increases the probability that the exit signal is valid.")
+                        warning_lines.append("")
+
+                    warning_lines.append("### Your task:")
+                    warning_lines.append("Evaluate these warnings alongside other factors (P&L, trend, etc.)")
+                    warning_lines.append("and decide whether to CLOSE or HOLD the position.")
+                    warning_lines.append("The warnings are informational - you make the final decision.")
+
+                    system_prompt += "\n".join(warning_lines)
+
+                    # Log warnings
+                    print(f"   ⚠️ SMART_EXIT: {len(smart_exit_warnings)} warning(s) for {ticker_sym}")
+                    for w in smart_exit_warnings:
+                        print(f"      - {w['type']}: {w['message'][:60]}...")
+
             # === AI_FREE_MODE: Aggiungi istruzioni per libertà decisionale ===
             if AI_FREE_MODE:
                 free_mode_instructions = """
@@ -847,6 +1091,10 @@ You have full autonomy to decide. The sentinel score is informational only.
                 print(f"[EXEC] Esecuzione {out.get('operation')} su {ticker_sym} (mode: {trading_mode})...")
                 bot.execute_signal(out)
                 actions_taken.append(out)
+
+                # Clear Smart Exit warnings quando posizione viene chiusa
+                if out.get("operation") == "close":
+                    clear_smart_exit_warnings(ticker_sym)
 
                 # Trade Journal: registra chiusura PRIMA di eliminare tracking
                 if out.get("operation") == "close" and TRADE_JOURNAL_ENABLED:

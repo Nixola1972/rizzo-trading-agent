@@ -87,10 +87,20 @@ CREATE TABLE IF NOT EXISTS trades (
     open_macd               NUMERIC(20, 8),
     open_fg                 INTEGER,  -- Fear & Greed
     open_volume_ratio       NUMERIC(10, 4),  -- bid/ask ratio
+    -- Nuovi campi per Smart Exit analysis
+    open_price_vs_ema20     NUMERIC(10, 4),  -- % distance from EMA20 at open
+    open_ema_alignment      TEXT,            -- bullish/bearish/neutral at open
+    open_trend_direction    TEXT,            -- UP/DOWN/SIDEWAYS at open
+    open_atr                NUMERIC(20, 8),  -- ATR at open time
 
     -- Indicatori alla chiusura
     close_score             NUMERIC(10, 2),
     close_rsi               NUMERIC(10, 4),
+    close_price_vs_ema20    NUMERIC(10, 4),  -- % distance from EMA20 at close
+
+    -- Smart Exit tracking
+    exit_warnings           JSONB,           -- warnings active at close time
+    cycles_open             INTEGER,         -- number of analysis cycles position was open
 
     -- Parametri usati
     sl_percent_config       NUMERIC(10, 4),  -- SL configurato
@@ -289,6 +299,11 @@ def open_trade(
     tp_percent: float = None,
     trailing_activation: float = None,
     trailing_gap: float = None,
+    # Nuovi parametri per Smart Exit analysis
+    price_vs_ema20: float = None,
+    ema_alignment: str = None,
+    trend_direction: str = None,
+    atr: float = None,
     metadata: dict = None
 ) -> str:
     """
@@ -311,6 +326,7 @@ def open_trade(
                     entry_price, size, leverage, notional_value, margin_used,
                     fee_open, fee_total,
                     open_score, open_rsi, open_macd, open_fg, open_volume_ratio,
+                    open_price_vs_ema20, open_ema_alignment, open_trend_direction, open_atr,
                     sl_percent_config, tp_percent_config, trailing_activation, trailing_gap,
                     peak_price, metadata
                 ) VALUES (
@@ -319,6 +335,7 @@ def open_trade(
                     %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
+                    %s, %s, %s, %s,
                     %s, %s
                 )
             """, (
@@ -326,6 +343,7 @@ def open_trade(
                 entry_price_dec, size_dec, leverage, notional, margin,
                 fee_open, fee_open,
                 score, rsi, macd, fg, volume_ratio,
+                price_vs_ema20, ema_alignment, trend_direction, atr,
                 sl_percent, tp_percent, trailing_activation, trailing_gap,
                 entry_price_dec,  # peak starts at entry
                 Json(metadata or {})
@@ -359,7 +377,11 @@ def close_trade(
     close_reason: str,
     close_score: float = None,
     close_rsi: float = None,
-    funding_fees: float = 0
+    funding_fees: float = 0,
+    # Nuovi parametri per Smart Exit analysis
+    close_price_vs_ema20: float = None,
+    exit_warnings: list = None,
+    cycles_open: int = None
 ) -> dict:
     """
     Close a trade and calculate final P&L.
@@ -428,7 +450,10 @@ def close_trade(
                     profitable = %s,
                     close_reason = %s,
                     close_score = %s,
-                    close_rsi = %s
+                    close_rsi = %s,
+                    close_price_vs_ema20 = %s,
+                    exit_warnings = %s,
+                    cycles_open = %s
                 WHERE trade_uuid = %s
             """, (
                 exit_price_dec, closed_at, duration,
@@ -436,6 +461,9 @@ def close_trade(
                 fee_close, fee_funding, fee_total,
                 net_pnl_usd, net_pnl_percent, profitable,
                 close_reason, close_score, close_rsi,
+                close_price_vs_ema20,
+                Json(exit_warnings) if exit_warnings else None,
+                cycles_open,
                 trade_uuid
             ))
         conn.commit()
@@ -954,12 +982,84 @@ def get_suggestions() -> List[str]:
 
 
 # =====================
+# Database Migration
+# =====================
+
+MIGRATION_V2_SMART_EXIT = """
+-- Migration V2: Add Smart Exit tracking columns
+-- Run this only once to upgrade existing databases
+
+-- Add new columns to trades table (only if they don't exist)
+DO $$
+BEGIN
+    -- Open indicators columns
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='trades' AND column_name='open_price_vs_ema20') THEN
+        ALTER TABLE trades ADD COLUMN open_price_vs_ema20 NUMERIC(10, 4);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='trades' AND column_name='open_ema_alignment') THEN
+        ALTER TABLE trades ADD COLUMN open_ema_alignment TEXT;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='trades' AND column_name='open_trend_direction') THEN
+        ALTER TABLE trades ADD COLUMN open_trend_direction TEXT;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='trades' AND column_name='open_atr') THEN
+        ALTER TABLE trades ADD COLUMN open_atr NUMERIC(20, 8);
+    END IF;
+
+    -- Close indicators columns
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='trades' AND column_name='close_price_vs_ema20') THEN
+        ALTER TABLE trades ADD COLUMN close_price_vs_ema20 NUMERIC(10, 4);
+    END IF;
+
+    -- Smart Exit tracking columns
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='trades' AND column_name='exit_warnings') THEN
+        ALTER TABLE trades ADD COLUMN exit_warnings JSONB;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='trades' AND column_name='cycles_open') THEN
+        ALTER TABLE trades ADD COLUMN cycles_open INTEGER;
+    END IF;
+END $$;
+"""
+
+
+def run_migration_v2():
+    """
+    Run migration V2 to add Smart Exit tracking columns.
+    Safe to run multiple times - columns won't be added if they already exist.
+    """
+    with get_journal_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(MIGRATION_V2_SMART_EXIT)
+        conn.commit()
+    print("[TradeJournal] Migration V2 (Smart Exit) completed")
+
+
+def check_and_run_migrations():
+    """
+    Check for pending migrations and run them.
+    Call this at startup to ensure database schema is up to date.
+    """
+    try:
+        run_migration_v2()
+    except Exception as e:
+        print(f"[TradeJournal] Migration error: {e}")
+
+
+# =====================
 # Main / Test
 # =====================
 
 if __name__ == "__main__":
     print("Initializing Trade Journal schema...")
     init_trade_journal_schema()
+    print("Done!")
+
+    print("\nRunning migrations...")
+    check_and_run_migrations()
     print("Done!")
 
     # Test summary

@@ -668,6 +668,102 @@ should_wake_ai_for_symbol(symbol, score, positions):
 # 3. AI valuta e decide se aprire o HOLD
 ```
 
+### 5.6 SMART EXIT Warning System (NUOVO)
+
+```
+              SMART EXIT - SISTEMA DI WARNING INTELLIGENTI
+              ═════════════════════════════════════════════
+
+  SCOPO:
+  Fornire all'AI warning strutturati quando le condizioni di mercato
+  suggeriscono di valutare la chiusura di una posizione aperta.
+
+  MODALITÀ:
+  ┌────────────────┬─────────────────────────────────────────────────┐
+  │ WARN-ONLY      │ I warning vengono solo passati all'AI           │
+  │ (default)      │ L'AI decide liberamente se chiudere o holdare   │
+  │                │ Nessuna chiusura automatica                     │
+  ├────────────────┼─────────────────────────────────────────────────┤
+  │ HYBRID         │ Warning passati all'AI + tracking cicli         │
+  │ (futuro)       │ Se stesso warning confermato N cicli → segnala  │
+  │                │ "CONFIRMED" ma ancora AI decide                 │
+  └────────────────┴─────────────────────────────────────────────────┘
+
+  REGOLE IMPLEMENTATE:
+  ┌─────────────────────┬───────────────────────────────────────────┐
+  │ EMA_INVALIDATION    │ Prezzo ha attraversato EMA20 contro       │
+  │                     │ direzione posizione                       │
+  │                     │ LONG: price < EMA20                       │
+  │                     │ SHORT: price > EMA20                      │
+  ├─────────────────────┼───────────────────────────────────────────┤
+  │ SCORE_DECAY         │ Lo score si è indebolito o invertito:     │
+  │                     │ - Score cambiato segno                    │
+  │                     │ - Score decaduto >50% da apertura         │
+  ├─────────────────────┼───────────────────────────────────────────┤
+  │ TIME_STOP           │ Posizione aperta troppo a lungo con       │
+  │                     │ profitto minimo (<1% P&L)                 │
+  │                     │ Default: 60 minuti                        │
+  └─────────────────────┴───────────────────────────────────────────┘
+
+  SEVERITY LEVELS:
+  - warning (🟡): Condizione potenzialmente problematica
+  - critical (🔴): Condizione seria, considerare azione
+
+  ESEMPIO PROMPT AI CON WARNING:
+  ┌──────────────────────────────────────────────────────────────┐
+  │ ## ⚠️ SMART EXIT WARNINGS                                    │
+  │                                                              │
+  │ 🔴 **EMA_INVALIDATION**: LONG position: Price $95,123        │
+  │    is 0.42% BELOW EMA20 ($95,523)                            │
+  │                                                              │
+  │ 🟡 **SCORE_DECAY**: LONG: Score decayed 65% from opening     │
+  │    (18.0 → 6.3)                                              │
+  │                                                              │
+  │ ### Your task:                                               │
+  │ Evaluate these warnings alongside other factors and          │
+  │ decide whether to CLOSE or HOLD. The warnings are            │
+  │ informational - you make the final decision.                 │
+  └──────────────────────────────────────────────────────────────┘
+```
+
+```python
+# CONFIGURAZIONE ENV:
+SMART_EXIT_ENABLED=true           # Abilita sistema (default: true)
+SMART_EXIT_MODE=warn              # 'warn' o 'hybrid' (default: warn)
+SMART_EXIT_EMA_CHECK=true         # Check EMA invalidation
+SMART_EXIT_SCORE_DECAY_CHECK=true # Check score decay
+SMART_EXIT_TIME_STOP_MINUTES=60   # Time stop (0 = disabilitato)
+SMART_EXIT_CONFIRM_CYCLES=2       # Cicli per conferma in hybrid mode
+```
+
+### 5.7 Data Collection per Backtesting (Trade Journal V2)
+
+```
+              NUOVI CAMPI TRADE JOURNAL
+              ═════════════════════════
+
+  Campi aggiunti per analisi Smart Exit e backtesting:
+
+  ALL'APERTURA (per correlazione con successo trade):
+  ┌──────────────────────┬────────────────────────────────────────┐
+  │ open_price_vs_ema20  │ % distanza prezzo da EMA20             │
+  │ open_ema_alignment   │ "bullish", "bearish", "neutral"        │
+  │ open_trend_direction │ "UP", "DOWN", "SIDEWAYS"               │
+  │ open_atr             │ Average True Range al momento apertura │
+  └──────────────────────┴────────────────────────────────────────┘
+
+  ALLA CHIUSURA (per analisi exit):
+  ┌──────────────────────┬────────────────────────────────────────┐
+  │ close_price_vs_ema20 │ % distanza prezzo da EMA20             │
+  │ exit_warnings        │ JSON array dei warning attivi          │
+  │ cycles_open          │ Numero cicli posizione aperta          │
+  └──────────────────────┴────────────────────────────────────────┘
+
+  MIGRAZIONE:
+  La migrazione è automatica al primo avvio dopo l'update.
+  Eseguire manualmente: python trade_journal.py
+```
+
 ---
 
 ## 6. ORDINI SU HYPERLIQUID
@@ -988,6 +1084,21 @@ AUTO_TP_PERCENT=0.4                   # Target % P&L
 AUTO_TP_DELAY_MINUTES=15              # Piazza TP dopo X minuti dall'apertura
 ```
 
+### 7.20 Smart Exit Warning System (NUOVO)
+```bash
+# Sistema di warning intelligenti per exit
+SMART_EXIT_ENABLED=true               # Abilita sistema (default: true)
+SMART_EXIT_MODE=warn                  # 'warn' o 'hybrid' (default: warn)
+
+# Regole individuali
+SMART_EXIT_EMA_CHECK=true             # Check EMA invalidation (default: true)
+SMART_EXIT_SCORE_DECAY_CHECK=true     # Check score decay (default: true)
+SMART_EXIT_TIME_STOP_MINUTES=60       # Time stop in minuti (0 = disabilitato)
+
+# Hybrid mode settings
+SMART_EXIT_CONFIRM_CYCLES=2           # Cicli consecutivi per conferma
+```
+
 ---
 
 ## 8. DEPLOY E COMANDI DOCKER
@@ -1113,5 +1224,5 @@ side (Hyperliquid) = "A" (sell/ask) | "B" (buy/bid)
 
 ---
 
-*Ultimo aggiornamento: 2025-11-30*
-*Versione: 2.0 - Documentazione Completa*
+*Ultimo aggiornamento: 2025-12-02*
+*Versione: 2.1 - Smart Exit + Prompt Libero + Data Collection*

@@ -44,34 +44,74 @@ How Fear & Greed sentiment is changing over time:
 - change: numeric change in sentiment value (positive = toward greed)
 USE THIS TO: Increasing sentiment confirms bullish moves. Decreasing sentiment confirms bearish moves. Divergence (price up but sentiment down) is warning sign.
 
-## DECISION RULES
+### technical_advanced (enriched indicators)
+Advanced technical analysis including:
+- ema_alignment: "bullish" (EMA20 > EMA50), "bearish" (EMA20 < EMA50), or "neutral"
+- price_vs_ema20_pct: How far price is from EMA20 (positive = above, negative = below)
+- rsi_zone: "overbought" (>70), "oversold" (<30), or "neutral"
+- rsi_trend: "rising", "falling", or "stable"
+- atr_percentile: "high" (volatile), "normal", or "low" (calm)
+- volume_trend: "high", "normal", or "low"
+USE THIS TO: Make comprehensive technical decisions
+
+## UNDERSTANDING THE SCORE
+
+The "score" in the context is a composite signal indicator:
+- **Positive scores** indicate bullish momentum (the higher, the stronger)
+- **Negative scores** indicate bearish momentum (the lower, the stronger)
+- **Magnitude matters**: |score| of 25 is stronger than |score| of 15
+
+The score combines: RSI divergence, MACD trend, EMA alignment, volume, sentiment, and forecasts.
+
+**IMPORTANT**: The score is ONE factor among many. You should also consider:
+1. Technical alignment (RSI, MACD, EMA all agreeing?)
+2. Volume confirmation (high volume = stronger signal)
+3. Market context (BTC trend, sentiment)
+4. Risk metrics (exposure, drawdown)
+5. Historical performance on this symbol
+
+## DECISION GUIDELINES
 
 ### 🚨 CRITICAL RULES - READ FIRST:
 1. **NEVER close a position with P&L between -0.5% and +0.5%** - This is the "dead zone". Wait for movement!
-2. **Require STRONG signals** - Don't act on weak or borderline scores
+2. **Analyze MULTIPLE factors** - Don't rely on score alone
 3. **Be PATIENT** - Small score fluctuations are noise, not signal
 4. **Fees eat profits** - A 0.3% profit becomes ~0% after fees. Aim for at least +0.5% profit before closing
 
 ### If you HAVE a position on this coin:
-- **HOLD by default** - Only close if you have a STRONG reason
+- **Evaluate exit conditions**: Is the trade thesis still valid?
 - If P&L is between -0.5% and +0.5% → **ALWAYS HOLD** (wait for movement)
-- If signal REVERSED with score > 15 in opposite direction → consider CLOSE
-- If signal just weakened (score near 0) → **HOLD**, don't close on neutral signals
-- If in significant profit (>3%) → consider taking profit (CLOSE)
-- If in significant loss (>-8%) → consider cutting loss (CLOSE)
-- If position_context.duration_minutes > 300 and profit is small (<1%) → consider CLOSE
+- Consider CLOSE if:
+  - Signal clearly REVERSED (score changed sign significantly)
+  - Technical indicators diverge from position direction
+  - Price broke below EMA20 (for LONG) or above EMA20 (for SHORT)
+  - Position open very long (>300 min) with minimal profit
+- Consider HOLD if:
+  - Trade thesis intact
+  - Trailing stop is active and protecting profits
+  - Score just weakened but didn't reverse
 
 ### If you DON'T have a position on this coin:
-- If score > 20 (strong signal) → OPEN LONG
-- If score < -20 (strong signal) → OPEN SHORT
-- If score is between -20 and +20 → **HOLD** - signal too weak
-- If symbol_historical_stats.win_rate < 40% → require score > 25 (extra strong)
-- Look for confirmation: RSI, EMA trend, and volume should agree with direction
+- **Look for confluence**: Score + Technical + Volume + Sentiment aligned
+- Consider OPEN LONG if:
+  - Score is positive and reasonably strong
+  - Technical alignment is bullish (price > EMA20, RSI not overbought)
+  - Volume supports the move
+  - BTC context is not strongly bearish
+- Consider OPEN SHORT if:
+  - Score is negative and reasonably strong
+  - Technical alignment is bearish (price < EMA20, RSI not oversold)
+  - Volume supports the move
+  - BTC context is not strongly bullish
+- Consider HOLD if:
+  - Mixed signals or weak conviction
+  - High volatility without clear direction
+  - Risk metrics show high exposure already
 
 ### IMPORTANT CONSTRAINTS
 - Maximum 3 positions total (check open_positions_count)
 - Recommended 20-30% of balance per position (target_portion_of_balance: 0.2-0.3)
-- Use leverage 1-3x for normal signals, 5-7x for strong signals
+- Use leverage 1-3x for moderate signals, 5-7x for strong conviction
 - If bot_overall_performance shows recent losses, reduce leverage and position size
 
 ## RESPONSE FORMAT
@@ -91,4 +131,4 @@ IMPORTANT:
 - "symbol" MUST match the coin in the context
 - For "hold" with existing position: keep monitoring
 - For "hold" without position: no action needed
-- Always provide a clear "reason"
+- Always provide a clear "reason" explaining your decision logic
