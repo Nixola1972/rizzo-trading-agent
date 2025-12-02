@@ -239,6 +239,9 @@ def notify_ai_cycle_summary(
     duration_seconds: float = None,
     balance: float = None,
     open_positions: int = None,
+    positions_detail: list = None,
+    smart_exit_warnings: dict = None,
+    cycle_number: int = None,
 ) -> bool:
     """
     Notifica riassuntiva di un ciclo AI completato.
@@ -251,6 +254,9 @@ def notify_ai_cycle_summary(
         duration_seconds: Durata del ciclo in secondi
         balance: Balance attuale
         open_positions: Numero posizioni aperte
+        positions_detail: Lista posizioni [{symbol, direction, pnl_pct, pnl_usd, duration_min}, ...]
+        smart_exit_warnings: Dict warnings per simbolo {BTC: ["EMA_INVALIDATION", "SCORE_DECAY"], ...}
+        cycle_number: Numero ciclo giornaliero
     """
     # Emoji per reason
     reason_emoji_map = {
@@ -340,7 +346,53 @@ def notify_ai_cycle_summary(
     # Statistiche ciclo
     stats = f"✅ {len(opens)} open | 🔴 {len(closes)} close | ⚪ {len(holds)} hold"
 
-    message = f"""🤖 <b>AI CYCLE COMPLETATO</b>{duration_str}
+    # Sezione posizioni aperte (dettaglio)
+    positions_section = ""
+    if positions_detail:
+        pos_lines = []
+        for pos in positions_detail:
+            sym = pos.get("symbol", "?")
+            direction = pos.get("direction", "?").upper()
+            pnl_pct = pos.get("pnl_pct", 0)
+            pnl_usd = pos.get("pnl_usd", 0)
+            duration = pos.get("duration_min", 0)
+
+            # Emoji P&L
+            pnl_emoji = "📈" if pnl_usd >= 0 else "📉"
+
+            # Warnings per questa posizione
+            warn_str = ""
+            if smart_exit_warnings and sym in smart_exit_warnings:
+                warns = smart_exit_warnings[sym]
+                if warns:
+                    warn_str = f" ⚠️{len(warns)}"
+
+            pos_lines.append(f"├─ {sym} {direction}: {pnl_emoji} ${pnl_usd:+.2f} ({pnl_pct:+.1f}%) • {duration}m{warn_str}")
+
+        if pos_lines:
+            pos_lines[-1] = pos_lines[-1].replace("├─", "└─")  # Fix ultimo elemento
+            positions_section = f"\n\n📊 <b>POSIZIONI APERTE:</b>\n{chr(10).join(pos_lines)}"
+
+    # Sezione Smart Exit warnings
+    warnings_section = ""
+    if smart_exit_warnings:
+        warn_lines = []
+        for sym, warns in smart_exit_warnings.items():
+            if warns:
+                warn_labels = {
+                    "EMA_INVALIDATION": "EMA↓",
+                    "SCORE_DECAY": "Score↓",
+                    "TIME_STOP": "Time⏱️"
+                }
+                warn_text = ", ".join([warn_labels.get(w, w) for w in warns])
+                warn_lines.append(f"⚠️ {sym}: {warn_text}")
+        if warn_lines:
+            warnings_section = f"\n\n🚨 <b>SMART EXIT ALERTS:</b>\n{chr(10).join(warn_lines)}"
+
+    # Numero ciclo
+    cycle_str = f" #{cycle_number}" if cycle_number else ""
+
+    message = f"""🤖 <b>AI CYCLE{cycle_str} COMPLETATO</b>{duration_str}
 
 {reason_emoji} <b>Trigger:</b> {reason_label}
 📋 <b>Ticker:</b> {', '.join(tickers_analyzed)}
@@ -349,7 +401,7 @@ def notify_ai_cycle_summary(
 <b>DECISIONI:</b>
 {chr(10).join(decisions_lines)}
 ━━━━━━━━━━━━━━━━
-{stats}{account_info}
+{stats}{account_info}{positions_section}{warnings_section}
 
 🕐 {datetime.now().strftime('%H:%M:%S')}"""
 

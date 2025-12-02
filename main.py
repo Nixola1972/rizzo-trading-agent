@@ -442,6 +442,14 @@ def clear_smart_exit_warnings(symbol: str):
         del _smart_exit_warning_counts[symbol]
 
 
+def get_smart_exit_warnings(symbol: str) -> list:
+    """Ritorna lista di warning attivi per un simbolo."""
+    global _smart_exit_warning_counts
+    if symbol not in _smart_exit_warning_counts:
+        return []
+    return list(_smart_exit_warning_counts[symbol].keys())
+
+
 # ===== TIMEOUT HANDLER =====
 _cycle_timeout_triggered = False
 
@@ -1123,6 +1131,71 @@ You have full autonomy to decide. The sentinel score is informational only.
                                 close_score=net_score if net_score else None
                             )
                             print(f"[JOURNAL] 📒 Trade chiuso: Net P&L ${result_close['net_pnl_usd']:.2f}")
+
+                            # === TELEGRAM: Notifica chiusura AI ===
+                            try:
+                                from datetime import datetime as dt
+
+                                # Recupera dati per messaggio
+                                entry_price = float(open_trade.get('entry_price', 0))
+                                position_size = float(open_trade.get('size', 0))
+                                direction = open_trade.get('direction', 'LONG').lower()
+                                leverage = int(open_trade.get('leverage', 1))
+                                value_usd = position_size * entry_price
+                                margin = value_usd / leverage if leverage > 0 else value_usd
+
+                                # Entry time da tracking o journal
+                                entry_time = dt.now()
+                                if position_context and position_context.get('open_timestamp'):
+                                    try:
+                                        entry_time = dt.fromisoformat(str(position_context['open_timestamp']).replace('Z', ''))
+                                    except:
+                                        pass
+                                elif open_trade.get('created_at'):
+                                    try:
+                                        created = open_trade['created_at']
+                                        if isinstance(created, str):
+                                            entry_time = dt.fromisoformat(created.replace('Z', '+00:00').replace('+00:00', ''))
+                                        else:
+                                            entry_time = created.replace(tzinfo=None) if hasattr(created, 'replace') else created
+                                    except:
+                                        pass
+
+                                exit_time = dt.now()
+
+                                # Recupera balance attuale
+                                balance = None
+                                try:
+                                    account_state = bot.exchange.info.user_state(bot.exchange.account_address)
+                                    balance = float(account_state.get("marginSummary", {}).get("accountValue", 0))
+                                except:
+                                    pass
+
+                                # Motivo chiusura
+                                close_reason_text = out.get('reason', 'AI Decision')[:100]
+
+                                # Invia messaggio
+                                tg.notify_trade_summary(
+                                    symbol=ticker_sym,
+                                    direction=direction,
+                                    leverage=leverage,
+                                    entry_price=entry_price,
+                                    entry_time=entry_time,
+                                    size=position_size,
+                                    value_usd=value_usd,
+                                    margin=margin,
+                                    exit_price=exit_price,
+                                    exit_time=exit_time,
+                                    close_reason=close_reason_text,
+                                    pnl_usd=result_close['net_pnl_usd'],
+                                    pnl_pct=result_close['net_pnl_pct'],
+                                    score_open=float(open_trade.get('open_score', 0)) if open_trade.get('open_score') else None,
+                                    score_close=net_score,
+                                    balance=balance
+                                )
+                                print(f"[TELEGRAM] ✅ Notifica chiusura inviata")
+                            except Exception as te:
+                                print(f"[TELEGRAM] ⚠️ Errore notifica: {te}")
                     except Exception as je:
                         print(f"[JOURNAL] ⚠️ Errore chiusura trade: {je}")
 
@@ -1253,14 +1326,50 @@ You have full autonomy to decide. The sentinel score is informational only.
                         "bear": score_data.get("bear_score", 0),
                     }
 
-            # Recupera info account
+            # Recupera info account e dettaglio posizioni
+            positions_detail = []
             try:
                 account_status = bot.get_account_status()
                 balance = account_status.get("balance", 0)
-                open_pos_count = len(account_status.get("open_positions", []))
+                open_positions_list = account_status.get("open_positions", [])
+                open_pos_count = len(open_positions_list)
+
+                # Costruisci dettaglio posizioni
+                for pos in open_positions_list:
+                    sym = pos.get("symbol", "?")
+                    # Recupera tracking per durata
+                    tracking = db_utils.get_position_tracking(sym)
+                    duration_min = 0
+                    if tracking and tracking.get("created_at"):
+                        try:
+                            from datetime import datetime as dt
+                            created = tracking["created_at"]
+                            if isinstance(created, str):
+                                created = dt.fromisoformat(created.replace('Z', '+00:00').replace('+00:00', ''))
+                            duration_min = int((dt.now() - created.replace(tzinfo=None)).total_seconds() / 60)
+                        except:
+                            pass
+
+                    positions_detail.append({
+                        "symbol": sym,
+                        "direction": pos.get("side", "?"),
+                        "pnl_pct": float(pos.get("unrealized_pnl_pct", 0)),
+                        "pnl_usd": float(pos.get("unrealized_pnl", 0)),
+                        "duration_min": duration_min
+                    })
             except:
                 balance = None
                 open_pos_count = None
+
+            # Recupera Smart Exit warnings attive
+            smart_exit_warnings = {}
+            try:
+                for sym in tickers:
+                    warns = get_smart_exit_warnings(sym)
+                    if warns:
+                        smart_exit_warnings[sym] = warns
+            except:
+                pass
 
             # Invia riassunto
             tg.notify_ai_cycle_summary(
@@ -1271,6 +1380,8 @@ You have full autonomy to decide. The sentinel score is informational only.
                 duration_seconds=cycle_duration,
                 balance=balance,
                 open_positions=open_pos_count,
+                positions_detail=positions_detail if positions_detail else None,
+                smart_exit_warnings=smart_exit_warnings if smart_exit_warnings else None,
             )
         except Exception as e:
             print(f"[TELEGRAM] ⚠️ Errore invio riassunto: {e}")

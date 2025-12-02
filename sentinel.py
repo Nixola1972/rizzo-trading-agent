@@ -1171,20 +1171,26 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                     try:
                         # Calcoli per messaggio dettagliato
                         value_usd = position_size * entry_price
-                        target_profit = value_usd * (MICRO_GAIN_TARGET_PERCENT / 100) * MICRO_GAIN_LEVERAGE
-                        sl_loss = value_usd * (MICRO_GAIN_STOP_LOSS_PERCENT / 100) * MICRO_GAIN_LEVERAGE
-                        fees_estimate = value_usd * 0.0007 * MICRO_GAIN_LEVERAGE  # ~0.07% open+close
+                        margin = value_usd / MICRO_GAIN_LEVERAGE
+                        # P&L è sul valore posizione, NON moltiplicato per leverage!
+                        target_profit = value_usd * (MICRO_GAIN_TARGET_PERCENT / 100)
+                        sl_loss = value_usd * (MICRO_GAIN_STOP_LOSS_PERCENT / 100)
+                        # ROI% sul margine = target_pct * leverage
+                        target_roi_pct = MICRO_GAIN_TARGET_PERCENT * MICRO_GAIN_LEVERAGE
+                        sl_roi_pct = MICRO_GAIN_STOP_LOSS_PERCENT * MICRO_GAIN_LEVERAGE
+                        fees_estimate = value_usd * 0.0007  # ~0.07% open+close
 
                         tg.send_telegram_message(
                             f"🎯 <b>MICRO_GAIN OPEN</b>\n\n"
                             f"<b>Symbol:</b> {symbol}\n"
                             f"<b>Direction:</b> {direction.upper()}\n"
                             f"<b>Entry:</b> ${entry_price:.2f}\n"
-                            f"<b>Size:</b> {position_size:.6f} {symbol} (${value_usd:.2f})\n"
-                            f"<b>Leverage:</b> {MICRO_GAIN_LEVERAGE}x\n"
+                            f"<b>Size:</b> {position_size:.6f} {symbol}\n"
+                            f"<b>Valore:</b> ${value_usd:.2f}\n"
+                            f"<b>Margine:</b> ${margin:.2f} ({MICRO_GAIN_LEVERAGE}x)\n"
                             f"<b>Score:</b> {score:.1f}\n\n"
-                            f"📊 <b>Target:</b> +{MICRO_GAIN_TARGET_PERCENT}% (${target_profit:.2f})\n"
-                            f"🛑 <b>Stop Loss:</b> -{MICRO_GAIN_STOP_LOSS_PERCENT}% (${sl_loss:.2f})\n"
+                            f"📊 <b>Target:</b> +{MICRO_GAIN_TARGET_PERCENT}% → ${target_profit:.2f} (ROI {target_roi_pct:.0f}%)\n"
+                            f"🛑 <b>Stop Loss:</b> -{MICRO_GAIN_STOP_LOSS_PERCENT}% → ${sl_loss:.2f} (ROI -{sl_roi_pct:.0f}%)\n"
                             f"💸 <b>Fees stimate:</b> ~${fees_estimate:.2f}"
                         )
                     except Exception as e:
