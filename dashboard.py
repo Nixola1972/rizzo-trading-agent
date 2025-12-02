@@ -17,8 +17,8 @@ st.set_page_config(
 )
 
 # Connessione database
-@st.cache_resource
 def get_db_connection():
+    """Crea una nuova connessione al database"""
     database_url = os.getenv('DATABASE_URL')
     if not database_url:
         st.error("DATABASE_URL non configurato nel file .env")
@@ -27,13 +27,20 @@ def get_db_connection():
 
 def query_db(query, params=None):
     """Esegue una query e restituisce un DataFrame"""
-    conn = get_db_connection()
+    conn = None
     try:
+        conn = get_db_connection()
         df = pd.read_sql_query(query, conn, params=params)
         return df
     except Exception as e:
         st.error(f"Errore query database: {e}")
         return pd.DataFrame()
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 # Header
 st.title("🤖 Trading Agent Dashboard")
