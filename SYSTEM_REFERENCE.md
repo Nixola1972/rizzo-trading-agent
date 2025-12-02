@@ -1086,17 +1086,80 @@ AUTO_TP_DELAY_MINUTES=15              # Piazza TP dopo X minuti dall'apertura
 
 ### 7.20 Smart Exit Warning System (NUOVO)
 ```bash
-# Sistema di warning intelligenti per exit
-SMART_EXIT_ENABLED=true               # Abilita sistema (default: true)
-SMART_EXIT_MODE=warn                  # 'warn' o 'hybrid' (default: warn)
+# ═══════════════════════════════════════════════════════════════
+# SMART EXIT - Sistema di warning intelligenti per chiusura posizioni
+# ═══════════════════════════════════════════════════════════════
 
-# Regole individuali
-SMART_EXIT_EMA_CHECK=true             # Check EMA invalidation (default: true)
-SMART_EXIT_SCORE_DECAY_CHECK=true     # Check score decay (default: true)
-SMART_EXIT_TIME_STOP_MINUTES=60       # Time stop in minuti (0 = disabilitato)
+# SMART_EXIT_ENABLED: Abilita/disabilita l'intero sistema
+# Quando true, genera warning per posizioni aperte e li passa all'AI
+# L'AI rimane LIBERA di decidere se chiudere o holdare
+SMART_EXIT_ENABLED=true               # Default: true
 
-# Hybrid mode settings
-SMART_EXIT_CONFIRM_CYCLES=2           # Cicli consecutivi per conferma
+# SMART_EXIT_MODE: Modalità operativa del sistema
+# - 'warn': Solo warning passati all'AI (CONSIGLIATO inizialmente)
+#           L'AI vede i warning ma decide liberamente
+# - 'hybrid': Warning + tracking cicli consecutivi
+#             Se stesso warning ripetuto N volte → marcato [CONFIRMED]
+#             Ancora l'AI decide, ma ha info sulla persistenza del segnale
+SMART_EXIT_MODE=warn                  # Default: warn
+
+# ═══════════════════════════════════════════════════════════════
+# REGOLE INDIVIDUALI (puoi abilitare/disabilitare singolarmente)
+# ═══════════════════════════════════════════════════════════════
+
+# SMART_EXIT_EMA_CHECK: Controlla invalidazione EMA20
+# LONG: warning se prezzo < EMA20 (trend invalidato)
+# SHORT: warning se prezzo > EMA20 (trend invalidato)
+# Severity: warning se <1%, critical se >1% distanza
+SMART_EXIT_EMA_CHECK=true             # Default: true
+
+# SMART_EXIT_SCORE_DECAY_CHECK: Controlla indebolimento score
+# Warning se:
+# - Score cambia segno rispetto alla posizione (LONG ma score negativo)
+# - Score decade >50% rispetto all'apertura
+# Severity: warning normale, critical se score opposto >10
+SMART_EXIT_SCORE_DECAY_CHECK=true     # Default: true
+
+# SMART_EXIT_TIME_STOP_MINUTES: Time stop in minuti
+# Warning se posizione aperta > X minuti con P&L < 1%
+# Logica: se dopo tanto tempo non hai profitto, forse è meglio uscire
+# 0 = disabilitato
+# Severity: warning fino a 2x tempo, poi critical
+SMART_EXIT_TIME_STOP_MINUTES=60       # Default: 60 (0 = disabilitato)
+
+# ═══════════════════════════════════════════════════════════════
+# HYBRID MODE SETTINGS (solo se SMART_EXIT_MODE=hybrid)
+# ═══════════════════════════════════════════════════════════════
+
+# SMART_EXIT_CONFIRM_CYCLES: Cicli consecutivi per conferma
+# Quando un warning si ripete per N cicli consecutivi:
+# - Viene marcato come [CONFIRMED] nel prompt
+# - L'AI riceve info aggiuntiva sulla persistenza del segnale
+# Esempio: EMA_INVALIDATION per 3 cicli = segnale più affidabile
+SMART_EXIT_CONFIRM_CYCLES=2           # Default: 2
+
+# ═══════════════════════════════════════════════════════════════
+# ESEMPI CONFIGURAZIONE
+# ═══════════════════════════════════════════════════════════════
+
+# CONSERVATIVA (default - per iniziare):
+# SMART_EXIT_ENABLED=true
+# SMART_EXIT_MODE=warn
+# SMART_EXIT_TIME_STOP_MINUTES=60
+
+# MODERATA (dopo 1-2 settimane di dati):
+# SMART_EXIT_MODE=hybrid
+# SMART_EXIT_CONFIRM_CYCLES=2
+# SMART_EXIT_TIME_STOP_MINUTES=45
+
+# AGGRESSIVA (dopo validazione backtesting):
+# SMART_EXIT_MODE=hybrid
+# SMART_EXIT_CONFIRM_CYCLES=1
+# SMART_EXIT_TIME_STOP_MINUTES=30
+
+# SOLO EMA (disabilita altre regole):
+# SMART_EXIT_SCORE_DECAY_CHECK=false
+# SMART_EXIT_TIME_STOP_MINUTES=0
 ```
 
 ---
