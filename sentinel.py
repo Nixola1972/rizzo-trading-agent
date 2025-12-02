@@ -236,7 +236,7 @@ def log(msg: str):
 # SMART SENTINEL: WAKE AI AGENT
 # ============================================================================
 
-def wake_ai_agent(symbol: str, reason: str):
+def wake_ai_agent(symbol: str, reason: str, sentinel_score: float = None):
     """
     Sveglia l'AI agent per rivalutare un simbolo.
 
@@ -245,18 +245,25 @@ def wake_ai_agent(symbol: str, reason: str):
     Args:
         symbol: Simbolo da analizzare (BTC, ETH, SOL)
         reason: Motivo del trigger (stop_loss, trailing_stop, volatility_spike, etc.)
+        sentinel_score: Score calcolato dalla sentinel (passato all'AI per evitare ricalcolo)
     """
     import telegram_notifier as tg
 
-    log(f"🚀 Triggering AI agent per {symbol} (reason: {reason})...")
+    score_info = f", score={sentinel_score:.1f}" if sentinel_score is not None else ""
+    log(f"🚀 Triggering AI agent per {symbol} (reason: {reason}{score_info})...")
 
     try:
         # Prepara il comando
         log_file = f"/tmp/ai_wake_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
+        # Costruisci comando con score opzionale
+        cmd = [sys.executable, "main.py", "--ticker", symbol, "--reason", reason, "--priority", "high"]
+        if sentinel_score is not None:
+            cmd.extend(["--sentinel-score", str(sentinel_score)])
+
         with open(log_file, 'w') as f_out:
             process = subprocess.Popen(
-                [sys.executable, "main.py", "--ticker", symbol, "--reason", reason, "--priority", "high"],
+                cmd,
                 stdout=f_out,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -275,12 +282,14 @@ def wake_ai_agent(symbol: str, reason: str):
                     "volatility_spike": "⚡",
                     "reversal": "🔄",
                     "sl_mismatch": "⚠️",
+                    "score_signal": "📊",
                 }
                 emoji = emoji_map.get(reason, "🤖")
+                score_msg = f"\n<b>Score:</b> {sentinel_score:.1f}" if sentinel_score is not None else ""
                 tg.send_telegram_message(
                     f"{emoji} <b>AI Wake Trigger</b>\n\n"
                     f"<b>Symbol:</b> {symbol}\n"
-                    f"<b>Reason:</b> {reason}\n"
+                    f"<b>Reason:</b> {reason}{score_msg}\n"
                     f"<b>PID:</b> {process.pid}"
                 )
             except Exception:
@@ -3302,8 +3311,8 @@ def check_and_wake_ai_for_normal(bot, existing_positions: list):
 
         if wake_check["should_wake"]:
             log(f"   🤖 {symbol} NORMAL range: {wake_check['reason']}")
-            log(f"      → Waking AI for potential trade")
-            wake_result = wake_ai_agent(symbol, "score_signal")
+            log(f"      → Waking AI for potential trade (score={score:.1f})")
+            wake_result = wake_ai_agent(symbol, "score_signal", sentinel_score=score)
             if wake_result.get("success"):
                 log(f"   ✅ AI Agent avviato (PID: {wake_result.get('pid')})")
             else:

@@ -56,6 +56,12 @@ MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))
 SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '15'))
 SCORE_THRESHOLD_NORMAL = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))  # Soglia per mode NORMAL
 
+# ===== DOUBLE_CHECK AI CONFIGURATION =====
+# Quando abilitato, le aperture automatiche (MICRO_GAIN) passano attraverso AI per validazione
+DOUBLE_CHECK_AI_ENABLED = os.getenv('DOUBLE_CHECK_AI_ENABLED', 'false').lower() == 'true'
+if DOUBLE_CHECK_AI_ENABLED:
+    print("🔍 DOUBLE_CHECK_AI: Aperture automatiche validate da AI")
+
 # Score confirmation - richiede N cicli consecutivi sopra soglia prima di aprire
 SCORE_CONFIRMATION_CYCLES = int(os.getenv('SCORE_CONFIRMATION_CYCLES', '3'))
 
@@ -259,7 +265,8 @@ def run_analysis_cycle(
     ticker: str = None,
     reason: str = "scheduled",
     priority: str = "normal",
-    timeout_seconds: int = None
+    timeout_seconds: int = None,
+    sentinel_score: float = None
 ) -> dict:
     """
     Esegue un singolo ciclo di analisi trading.
@@ -269,12 +276,16 @@ def run_analysis_cycle(
         reason: Motivo del trigger (scheduled, take_profit, manual, etc.)
         priority: Priorità esecuzione (normal, high)
         timeout_seconds: Timeout per questo ciclo (default: BOT_TIMEOUT_SECONDS)
+        sentinel_score: Score già calcolato dalla sentinel (evita ricalcolo, usa prompt libero)
 
     Returns:
         dict con risultato del ciclo (actions_taken, errors, etc.)
     """
     global _cycle_timeout_triggered
     _cycle_timeout_triggered = False
+
+    # Flag per determinare se usare prompt "libero" (chiamata da sentinel)
+    is_sentinel_triggered = sentinel_score is not None and priority == "high"
 
     result = {
         "success": False,
@@ -299,7 +310,11 @@ def run_analysis_cycle(
 
     try:
         if priority == "high":
-            print(f"🚀 PRIORITY EXECUTION: {reason}")
+            if sentinel_score is not None:
+                print(f"🚀 SENTINEL TRIGGER: {reason} (score={sentinel_score:.1f})")
+                print(f"   📊 Using SENTINEL score - AI will receive liberated prompt")
+            else:
+                print(f"🚀 PRIORITY EXECUTION: {reason}")
 
         # Verifica credenziali
         if not PRIVATE_KEY or not WALLET_ADDRESS:
@@ -401,10 +416,18 @@ def run_analysis_cycle(
             net_score = score_data.get('net_score', 0)
             direction = score_data.get('direction', 'HOLD')
 
+            # Se sentinel trigger per questo ticker, usa sentinel_score
+            if is_sentinel_triggered and ticker and ticker.upper() == ticker_sym:
+                net_score = sentinel_score
+                direction = "LONG" if sentinel_score > 0 else "SHORT" if sentinel_score < 0 else "HOLD"
+                print(f"\n{'='*50}")
+                print(f"🚀 SENTINEL: {ticker_sym} usando score sentinel={sentinel_score:.1f} invece di ricalcolato")
+            else:
+                print(f"\n{'='*50}")
+
             # Verifica se c'è già una posizione aperta su questo simbolo
             has_position = ticker_sym in open_symbols
 
-            print(f"\n{'='*50}")
             print(f"📈 Valutazione {ticker_sym}: score={net_score:.1f}, direction={direction}, position={'YES' if has_position else 'NO'}")
 
             # Se c'è già una posizione, gestiscila (HOLD o CLOSE)
@@ -426,7 +449,17 @@ def run_analysis_cycle(
                     is_micro_gain_candidate = True
                     print(f"   🎯 {ticker_sym}: score {net_score:.1f} in range MICRO_GAIN ({SCORE_THRESHOLD_HOLD}-{SCORE_THRESHOLD_OPEN})")
 
-            # === MICRO_GAIN: Forza OPEN senza chiedere all'AI ===
+            # === MICRO_GAIN: Forza OPEN senza chiedere all'AI (a meno che DOUBLE_CHECK sia attivo) ===
+            if is_micro_gain_candidate:
+                micro_direction = "long" if net_score > 0 else "short"
+
+                # Se DOUBLE_CHECK è attivo, passa all'AI invece di aprire direttamente
+                if DOUBLE_CHECK_AI_ENABLED:
+                    print(f"   🔍 DOUBLE_CHECK: {ticker_sym} MICRO_GAIN passa a AI per validazione")
+                    is_micro_gain_candidate = False  # Disabilita auto-open, farà decidere AI
+                    # NON fare continue, lascia proseguire all'AI call sotto
+
+            # Esegue auto-open solo se ancora candidato (DOUBLE_CHECK non attivo)
             if is_micro_gain_candidate:
                 micro_direction = "long" if net_score > 0 else "short"
                 print(f"   🎯 MICRO_GAIN AUTO-OPEN: {ticker_sym} {micro_direction.upper()} (score={net_score:.1f})")
@@ -605,6 +638,43 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
 """
                 system_prompt += free_mode_instructions
                 print(f"   🆓 AI_FREE_MODE: Prompt modificato per libertà decisionale")
+
+            # === SENTINEL TRIGGER: Prompt libero quando chiamato dalla sentinel ===
+            if is_sentinel_triggered:
+                sentinel_direction = "LONG" if sentinel_score > 0 else "SHORT"
+                sentinel_instructions = f"""
+
+## 🚀 SENTINEL TRIGGER - SEGNALE PRE-VALIDATO
+
+**ATTENZIONE**: Sei stato chiamato dalla SENTINEL perché ha rilevato un segnale FORTE.
+
+### DATI DAL SENTINEL:
+- **Score pre-calcolato**: {sentinel_score:.1f}
+- **Direzione suggerita**: {sentinel_direction}
+- **Motivo chiamata**: {reason}
+
+### ISTRUZIONI SPECIALI:
+Il sistema ha GIÀ validato questo segnale. NON devi ri-verificare le soglie numeriche.
+
+**Invece, concentrati su:**
+1. Gli indicatori tecnici (RSI, MACD, EMA) sono ALLINEATI con la direzione {sentinel_direction}?
+2. C'è qualche CONTRADDIZIONE grave che dovrebbe fermarti?
+3. Il volume supporta il movimento?
+
+### REGOLE SEMPLIFICATE:
+- ✅ Se gli indicatori sono allineati → **APRI** in direzione {sentinel_direction}
+- ✅ Se non c'è contraddizione evidente → **AGISCI**
+- ❌ Solo se vedi un segnale CONTRARIO forte → HOLD
+
+### NON FARE:
+- ❌ NON dire "score troppo basso" - il sentinel ha già validato
+- ❌ NON richiedere soglie arbitrarie (>20, >25, etc.)
+- ❌ NON essere eccessivamente conservativo
+
+**IL SENTINEL TI HA CHIAMATO PER UN MOTIVO. AGISCI.**
+"""
+                system_prompt += sentinel_instructions
+                print(f"   🚀 SENTINEL MODE: Prompt libero (score={sentinel_score:.1f}, dir={sentinel_direction})")
 
             # === PROFIT-TAKING RULES: Aggiungi pressione per prendere profitti ===
             if has_position and ticker_position:
@@ -1076,6 +1146,7 @@ Esempi:
     parser.add_argument("--loop", action="store_true", help="Esegui in loop autonomo continuo")
     parser.add_argument("--interval", type=int, default=None, help="Intervallo loop in minuti (default: AI_CALL_INTERVAL_MINUTES)")
     parser.add_argument("--priority", type=str, default="normal", choices=["normal", "high"], help="Priorità esecuzione")
+    parser.add_argument("--sentinel-score", type=float, default=None, help="Score calcolato dalla sentinel (evita ricalcolo)")
 
     args = parser.parse_args()
 
@@ -1093,10 +1164,12 @@ Esempi:
         run_autonomous_loop(interval_minutes=args.interval)
     else:
         # Modalità single run
+        sentinel_score = getattr(args, 'sentinel_score', None)
         result = run_analysis_cycle(
             ticker=args.ticker,
             reason=args.reason,
-            priority=args.priority
+            priority=args.priority,
+            sentinel_score=sentinel_score
         )
 
         if not result["success"]:
