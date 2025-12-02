@@ -639,42 +639,41 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                 system_prompt += free_mode_instructions
                 print(f"   🆓 AI_FREE_MODE: Prompt modificato per libertà decisionale")
 
-            # === SENTINEL TRIGGER: Prompt libero quando chiamato dalla sentinel ===
+            # === SENTINEL TRIGGER: Additional context when called by sentinel ===
             if is_sentinel_triggered:
                 sentinel_direction = "LONG" if sentinel_score > 0 else "SHORT"
                 sentinel_instructions = f"""
 
-## 🚀 SENTINEL TRIGGER - SEGNALE PRE-VALIDATO
+## SENTINEL TRIGGER - ADDITIONAL CONTEXT
 
-**ATTENZIONE**: Sei stato chiamato dalla SENTINEL perché ha rilevato un segnale FORTE.
+You have been called by the SENTINEL monitoring system because it detected a potentially significant signal.
 
-### DATI DAL SENTINEL:
-- **Score pre-calcolato**: {sentinel_score:.1f}
-- **Direzione suggerita**: {sentinel_direction}
-- **Motivo chiamata**: {reason}
+### PRE-CALCULATED DATA FROM SENTINEL:
+- **Sentinel Score**: {sentinel_score:.1f}
+- **Suggested Direction**: {sentinel_direction}
+- **Trigger Reason**: {reason}
 
-### ISTRUZIONI SPECIALI:
-Il sistema ha GIÀ validato questo segnale. NON devi ri-verificare le soglie numeriche.
+### CONTEXT:
+This score was calculated by the sentinel using real-time market data.
+It is provided as additional information for your analysis.
 
-**Invece, concentrati su:**
-1. Gli indicatori tecnici (RSI, MACD, EMA) sono ALLINEATI con la direzione {sentinel_direction}?
-2. C'è qualche CONTRADDIZIONE grave che dovrebbe fermarti?
-3. Il volume supporta il movimento?
+### YOUR TASK:
+Analyze the full context (indicators, sentiment, volume, etc.) and make your own independent decision.
+The sentinel score is just one data point to consider - you are free to:
+- Agree with the suggested direction and OPEN
+- Disagree if you see contradicting signals and HOLD
+- Make any decision you believe is correct based on your analysis
 
-### REGOLE SEMPLIFICATE:
-- ✅ Se gli indicatori sono allineati → **APRI** in direzione {sentinel_direction}
-- ✅ Se non c'è contraddizione evidente → **AGISCI**
-- ❌ Solo se vedi un segnale CONTRARIO forte → HOLD
+### KEY QUESTIONS TO CONSIDER:
+1. Do the technical indicators (RSI, MACD, EMA) support the {sentinel_direction} direction?
+2. Is there any significant contradiction in the data?
+3. What does the volume pattern suggest?
+4. Is the risk/reward favorable?
 
-### NON FARE:
-- ❌ NON dire "score troppo basso" - il sentinel ha già validato
-- ❌ NON richiedere soglie arbitrarie (>20, >25, etc.)
-- ❌ NON essere eccessivamente conservativo
-
-**IL SENTINEL TI HA CHIAMATO PER UN MOTIVO. AGISCI.**
+You have full autonomy to decide. The sentinel score is informational only.
 """
                 system_prompt += sentinel_instructions
-                print(f"   🚀 SENTINEL MODE: Prompt libero (score={sentinel_score:.1f}, dir={sentinel_direction})")
+                print(f"   🚀 SENTINEL MODE: Additional context provided (score={sentinel_score:.1f}, dir={sentinel_direction})")
 
             # === PROFIT-TAKING RULES: Aggiungi pressione per prendere profitti ===
             if has_position and ticker_position:
