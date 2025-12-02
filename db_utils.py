@@ -276,6 +276,23 @@ CREATE TABLE IF NOT EXISTS sentiment_cache (
 
 CREATE INDEX IF NOT EXISTS idx_sentiment_cache_created_at
     ON sentiment_cache(created_at);
+
+-- Log completo prompt/risposta AI per analisi
+CREATE TABLE IF NOT EXISTS ai_prompt_logs (
+    id              BIGSERIAL PRIMARY KEY,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol          TEXT NOT NULL,
+    full_prompt     TEXT NOT NULL,
+    ai_raw_response TEXT,
+    parsed_decision JSONB,
+    model_used      TEXT,
+    duration_ms     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_created_at
+    ON ai_prompt_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_symbol
+    ON ai_prompt_logs(symbol);
 """
 
 
@@ -458,6 +475,55 @@ def _normalize_for_json(value: Any) -> Any:
         return num
 
     return value
+
+
+def log_ai_prompt(
+    symbol: str,
+    full_prompt: str,
+    ai_raw_response: str = None,
+    parsed_decision: Dict[str, Any] = None,
+    model_used: str = None,
+    duration_ms: int = None,
+) -> int:
+    """Salva il prompt completo e la risposta AI per analisi.
+
+    Parametri:
+    - symbol: simbolo analizzato (BTC, ETH, SOL)
+    - full_prompt: prompt completo inviato all'AI
+    - ai_raw_response: risposta grezza dell'AI
+    - parsed_decision: decisione parsata come dict
+    - model_used: modello AI utilizzato
+    - duration_ms: durata della chiamata in millisecondi
+
+    Restituisce l'ID del log creato.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ai_prompt_logs (
+                    symbol,
+                    full_prompt,
+                    ai_raw_response,
+                    parsed_decision,
+                    model_used,
+                    duration_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    symbol,
+                    full_prompt,
+                    ai_raw_response,
+                    Json(parsed_decision) if parsed_decision else None,
+                    model_used,
+                    duration_ms,
+                ),
+            )
+            log_id = cur.fetchone()[0]
+            conn.commit()
+            return log_id
 
 
 def log_error(

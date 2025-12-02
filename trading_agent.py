@@ -217,7 +217,7 @@ def validate_trading_decision(result, signal_scores=None):
     return result
 
 
-def call_ai_api(prompt, use_json_format=True, max_retries=None, signal_scores=None):
+def call_ai_api(prompt, use_json_format=True, max_retries=None, signal_scores=None, symbol=None):
     """
     Chiama l'API AI con retry logic, timeout e gestione flessibile del JSON.
 
@@ -226,6 +226,7 @@ def call_ai_api(prompt, use_json_format=True, max_retries=None, signal_scores=No
         use_json_format: Se usare response_format=json_object (solo per modelli compatibili)
         max_retries: Numero massimo di tentativi (default da AI_MAX_RETRIES)
         signal_scores: Dizionario con score calcolati per ogni symbol (per validazione)
+        symbol: Simbolo analizzato (per logging)
     """
     if max_retries is None:
         max_retries = AI_MAX_RETRIES
@@ -258,8 +259,10 @@ def call_ai_api(prompt, use_json_format=True, max_retries=None, signal_scores=No
                 if attempt == 0:
                     print(f"   📝 Usando parsing JSON manuale (modello: {MODEL})")
 
-            # Chiamata API
+            # Chiamata API con timing
+            start_time = time.time()
             response = client.chat.completions.create(**call_params)
+            duration_ms = int((time.time() - start_time) * 1000)
             response_text = response.choices[0].message.content
 
             # Estrai JSON dalla risposta
@@ -275,6 +278,21 @@ def call_ai_api(prompt, use_json_format=True, max_retries=None, signal_scores=No
 
             # Valida e normalizza il risultato (passa signal_scores per direction)
             result = validate_trading_decision(result, signal_scores=signal_scores)
+
+            # === LOG PROMPT E RISPOSTA AI ===
+            try:
+                import db_utils
+                log_symbol = symbol or result.get("symbol", "UNKNOWN")
+                db_utils.log_ai_prompt(
+                    symbol=log_symbol,
+                    full_prompt=prompt,
+                    ai_raw_response=response_text,
+                    parsed_decision=result,
+                    model_used=MODEL,
+                    duration_ms=duration_ms
+                )
+            except Exception as log_err:
+                print(f"   ⚠️ Errore log AI prompt: {log_err}")
 
             return result
 
