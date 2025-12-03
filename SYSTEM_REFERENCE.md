@@ -668,7 +668,7 @@ should_wake_ai_for_symbol(symbol, score, positions):
 # 3. AI valuta e decide se aprire o HOLD
 ```
 
-### 5.6 SMART EXIT Warning System (NUOVO)
+### 5.6 SMART EXIT Warning System
 
 ```
               SMART EXIT - SISTEMA DI WARNING INTELLIGENTI
@@ -678,16 +678,29 @@ should_wake_ai_for_symbol(symbol, score, positions):
   Fornire all'AI warning strutturati quando le condizioni di mercato
   suggeriscono di valutare la chiusura di una posizione aperta.
 
-  MODALITÀ:
+  MODALITÀ DISPONIBILI:
   ┌────────────────┬─────────────────────────────────────────────────┐
   │ WARN-ONLY      │ I warning vengono solo passati all'AI           │
-  │ (default)      │ L'AI decide liberamente se chiudere o holdare   │
-  │                │ Nessuna chiusura automatica                     │
+  │ (SMART_EXIT_   │ L'AI decide liberamente se chiudere o holdare   │
+  │  MODE=warn)    │ Nessuna chiusura automatica                     │
+  │                │ Nessun tracking tra cicli                       │
   ├────────────────┼─────────────────────────────────────────────────┤
-  │ HYBRID         │ Warning passati all'AI + tracking cicli         │
-  │ (futuro)       │ Se stesso warning confermato N cicli → segnala  │
-  │                │ "CONFIRMED" ma ancora AI decide                 │
+  │ HYBRID         │ Warning passati all'AI + tracking persistente   │
+  │ (SMART_EXIT_   │ Se stesso warning confermato N cicli consecutivi│
+  │  MODE=hybrid)  │ → warning marcato come "CONFIRMED" nel prompt   │
+  │                │ L'AI riceve info extra sulla persistenza        │
+  │                │ MA sempre l'AI decide (no chiusure automatiche) │
   └────────────────┴─────────────────────────────────────────────────┘
+
+  COME FUNZIONA HYBRID MODE:
+  ┌────────────────────────────────────────────────────────────────────┐
+  │ Ciclo 1: EMA_INVALIDATION rilevato → warning_counts[BTC] = 1      │
+  │ Ciclo 2: EMA_INVALIDATION ancora → warning_counts[BTC] = 2        │
+  │ Ciclo 3: EMA_INVALIDATION ancora → CONFIRMED! (>= CONFIRM_CYCLES) │
+  │                                                                    │
+  │ Se warning NON si verifica in un ciclo → counter resettato a 0    │
+  │ Se posizione chiusa → tutti i counter per quel simbolo resettati  │
+  └────────────────────────────────────────────────────────────────────┘
 
   REGOLE IMPLEMENTATE:
   ┌─────────────────────┬───────────────────────────────────────────┐
@@ -708,32 +721,41 @@ should_wake_ai_for_symbol(symbol, score, positions):
   SEVERITY LEVELS:
   - warning (🟡): Condizione potenzialmente problematica
   - critical (🔴): Condizione seria, considerare azione
+  - CONFIRMED (⚠️): Warning persistente per N cicli consecutivi
 
-  ESEMPIO PROMPT AI CON WARNING:
+  ESEMPIO PROMPT AI CON WARNING (HYBRID MODE):
   ┌──────────────────────────────────────────────────────────────┐
   │ ## ⚠️ SMART EXIT WARNINGS                                    │
   │                                                              │
-  │ 🔴 **EMA_INVALIDATION**: LONG position: Price $95,123        │
-  │    is 0.42% BELOW EMA20 ($95,523)                            │
+  │ 🔴 **EMA_INVALIDATION** [CONFIRMED - 3 cycles]: LONG         │
+  │    position: Price $95,123 is 0.42% BELOW EMA20 ($95,523)    │
   │                                                              │
   │ 🟡 **SCORE_DECAY**: LONG: Score decayed 65% from opening     │
   │    (18.0 → 6.3)                                              │
   │                                                              │
   │ ### Your task:                                               │
   │ Evaluate these warnings alongside other factors and          │
-  │ decide whether to CLOSE or HOLD. The warnings are            │
-  │ informational - you make the final decision.                 │
+  │ decide whether to CLOSE or HOLD. CONFIRMED warnings have     │
+  │ persisted across multiple cycles - consider them seriously.  │
   └──────────────────────────────────────────────────────────────┘
 ```
 
 ```python
 # CONFIGURAZIONE ENV:
 SMART_EXIT_ENABLED=true           # Abilita sistema (default: true)
-SMART_EXIT_MODE=warn              # 'warn' o 'hybrid' (default: warn)
+SMART_EXIT_MODE=hybrid            # 'warn' o 'hybrid' (default: warn)
 SMART_EXIT_EMA_CHECK=true         # Check EMA invalidation
 SMART_EXIT_SCORE_DECAY_CHECK=true # Check score decay
 SMART_EXIT_TIME_STOP_MINUTES=60   # Time stop (0 = disabilitato)
 SMART_EXIT_CONFIRM_CYCLES=2       # Cicli per conferma in hybrid mode
+
+# FUNZIONI PRINCIPALI (main.py):
+# generate_smart_exit_warnings(symbol, ...) → Lista di warning
+# clear_smart_exit_warnings(symbol)         → Reset al close
+# get_smart_exit_warnings(symbol)           → Lista warning attivi
+
+# STORAGE (in memoria, non persistente):
+# _smart_exit_warning_counts[symbol][warning_type] = count
 ```
 
 ### 5.7 Data Collection per Backtesting (Trade Journal V2)
