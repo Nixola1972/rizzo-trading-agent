@@ -319,11 +319,67 @@ VOLUME_WEIGHT = 4      # Volume imbalance
 | `whalealert.py` | Alert whale transactions |
 | `ai_context.py` | Costruisce contesto AI arricchito |
 | `analytics.py` | Analisi performance |
-| `dashboard.py` | Dashboard web Streamlit |
+| `dashboard.py` | Dashboard principale (porta 8501) |
+| `dashboard_fresh.py` | Dashboard compatta/fresh (porta 8502) |
+| `dashboard_ai_analyzer.py` | AI Prompt Analyzer (porta 8503) |
 | `trade_analyzer.py` | Analisi dettagliata trade |
 | `weight_optimizer.py` | Ottimizzazione pesi score |
 | `strategy_controller.py` | Controllo strategie |
 | `backtester.py` | Backtesting strategie |
+
+---
+
+### 2.11 Dashboard Web (Streamlit)
+
+| Dashboard | File | Porta | Descrizione |
+|-----------|------|-------|-------------|
+| **Principale** | `dashboard.py` | 8501 | Dashboard completa con grafici P&L, analisi performance, confronto trading mode, analisi AI vs Auto |
+| **Fresh** | `dashboard_fresh.py` | 8502 | Dashboard compatta con overview rapido, trade journal, posizioni aperte |
+| **AI Analyzer** | `dashboard_ai_analyzer.py` | 8503 | Visualizza prompt AI completi, risposte, esporta per analisi esterna |
+
+#### Comandi Docker per avviare le Dashboard
+
+```bash
+# Dashboard Principale (porta 8501)
+docker run -d \
+  --name rizzo_dashboard \
+  --env-file /root/trading-bots/rizzo-trading-agent/.env \
+  --network unified-memory-stack_memory-net \
+  -p 8501:8501 \
+  --restart unless-stopped \
+  --entrypoint "" \
+  rizzo-sentinel:latest \
+  streamlit run /app/dashboard.py --server.port 8501 --server.address 0.0.0.0
+
+# Dashboard Fresh (porta 8502)
+docker run -d \
+  --name rizzo_dashboard_fresh \
+  --env-file /root/trading-bots/rizzo-trading-agent/.env \
+  --network unified-memory-stack_memory-net \
+  -p 8502:8502 \
+  --restart unless-stopped \
+  --entrypoint "" \
+  rizzo-sentinel:latest \
+  streamlit run /app/dashboard_fresh.py --server.port 8502 --server.address 0.0.0.0
+
+# AI Prompt Analyzer (porta 8503)
+docker run -d \
+  --name rizzo_ai_analyzer \
+  --env-file /root/trading-bots/rizzo-trading-agent/.env \
+  --network unified-memory-stack_memory-net \
+  -p 8503:8503 \
+  --restart unless-stopped \
+  --entrypoint "" \
+  rizzo-sentinel:latest \
+  streamlit run /app/dashboard_ai_analyzer.py --server.port 8503 --server.address 0.0.0.0
+```
+
+**NOTA**: Il flag `--entrypoint ""` è necessario per sovrascrivere l'entrypoint del Dockerfile.
+
+#### Accesso Dashboard
+- Dashboard Principale: `http://VPS_IP:8501`
+- Dashboard Fresh: `http://VPS_IP:8502`
+- AI Prompt Analyzer: `http://VPS_IP:8503`
 
 ---
 
