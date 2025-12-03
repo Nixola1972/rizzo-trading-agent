@@ -718,9 +718,11 @@ def run_analysis_cycle(
                                         price_vs_ema20=tech_data.get('price_vs_ema20_pct'),
                                         ema_alignment=tech_data.get('ema_alignment'),
                                         trend_direction=tech_data.get('rsi_trend'),
-                                        atr=tech_data.get('atr_percent')
+                                        atr=tech_data.get('atr_percent'),
+                                        # Chi ha aperto
+                                        open_source=tj.OpenSource.MICRO_GAIN_AUTO
                                     )
-                                    print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}...")
+                                    print(f"[JOURNAL] 📒 Trade registrato (MICRO_GAIN_AUTO): {trade_uuid[:8]}...")
                                 except Exception as je:
                                     print(f"[JOURNAL] ⚠️ Errore registrazione trade: {je}")
 
@@ -1268,9 +1270,11 @@ You have full autonomy to decide. The sentinel score is informational only.
                                             price_vs_ema20=tech_data.get('price_vs_ema20_pct'),
                                             ema_alignment=tech_data.get('ema_alignment'),
                                             trend_direction=tech_data.get('rsi_trend'),
-                                            atr=tech_data.get('atr_percent')
+                                            atr=tech_data.get('atr_percent'),
+                                            # Chi ha aperto
+                                            open_source=tj.OpenSource.AI_DECISION
                                         )
-                                        print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}... (mode: {trading_mode})")
+                                        print(f"[JOURNAL] 📒 Trade registrato (AI_DECISION): {trade_uuid[:8]}... (mode: {trading_mode})")
                                     except Exception as je:
                                         print(f"[JOURNAL] ⚠️ Errore registrazione trade: {je}")
 

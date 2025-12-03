@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS trades (
     net_pnl_percent         NUMERIC(10, 4),  -- % sul margine usato
     profitable              BOOLEAN,
 
-    -- Chiusura
+    -- Apertura/Chiusura source
+    open_source             TEXT,  -- MICRO_GAIN_AUTO, AI_DECISION, MANUAL
     close_reason            TEXT,  -- TP_HIT, SL_HIT, TRAILING_SL, AI_DECISION, MANUAL, LIQUIDATION
 
     -- Indicatori all'apertura
@@ -236,7 +237,15 @@ class EventType:
     CONTROLLER_CHECK = "CONTROLLER_CHECK"
 
 
+class OpenSource:
+    """Chi ha aperto il trade"""
+    MICRO_GAIN_AUTO = "MICRO_GAIN_AUTO"  # Apertura automatica MICRO_GAIN
+    AI_DECISION = "AI_DECISION"           # Apertura decisa dall'AI
+    MANUAL = "MANUAL"                     # Apertura manuale
+
+
 class CloseReason:
+    """Chi/cosa ha chiuso il trade"""
     TP_HIT = "TP_HIT"
     SL_HIT = "SL_HIT"
     TRAILING_SL = "TRAILING_SL"
@@ -304,6 +313,8 @@ def open_trade(
     ema_alignment: str = None,
     trend_direction: str = None,
     atr: float = None,
+    # Chi ha aperto il trade
+    open_source: str = None,
     metadata: dict = None
 ) -> str:
     """
@@ -327,6 +338,7 @@ def open_trade(
                     fee_open, fee_total,
                     open_score, open_rsi, open_macd, open_fg, open_volume_ratio,
                     open_price_vs_ema20, open_ema_alignment, open_trend_direction, open_atr,
+                    open_source,
                     sl_percent_config, tp_percent_config, trailing_activation, trailing_gap,
                     peak_price, metadata
                 ) VALUES (
@@ -335,6 +347,7 @@ def open_trade(
                     %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
+                    %s,
                     %s, %s, %s, %s,
                     %s, %s
                 )
@@ -344,6 +357,7 @@ def open_trade(
                 fee_open, fee_open,
                 score, rsi, macd, fg, volume_ratio,
                 price_vs_ema20, ema_alignment, trend_direction, atr,
+                open_source,
                 sl_percent, tp_percent, trailing_activation, trailing_gap,
                 entry_price_dec,  # peak starts at entry
                 Json(metadata or {})
