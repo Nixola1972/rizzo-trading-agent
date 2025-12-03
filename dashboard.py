@@ -2247,6 +2247,7 @@ with tab8:
                 ROUND(pnl_usd::numeric, 2) as pnl_gross,
                 ROUND(fee_total::numeric, 2) as fees,
                 ROUND(net_pnl_usd::numeric, 2) as net_pnl,
+                open_source,
                 close_reason,
                 profitable
             FROM trades
@@ -2274,7 +2275,7 @@ with tab8:
             # Trades table
             st.dataframe(
                 trades_df[[
-                    'symbol', 'direction', 'trading_mode', 'opened_at', 'closed_at',
+                    'symbol', 'direction', 'trading_mode', 'open_source', 'opened_at', 'closed_at',
                     'entry_price', 'exit_price', 'pnl_pct', 'pnl_gross', 'fees', 'net_pnl', 'close_reason'
                 ]],
                 use_container_width=True,
@@ -2566,6 +2567,107 @@ with tab8:
                     st.dataframe(mode_comparison_df, use_container_width=True, hide_index=True)
                 else:
                     st.info("Dati trading mode non disponibili")
+
+            # ========================================
+            # ROW 3.5: Open Source Analysis (Chi apre i trade?)
+            # ========================================
+            st.markdown("---")
+            st.markdown("### 🤖 Chi Apre i Trade? (AI vs Auto)")
+
+            col_os1, col_os2 = st.columns(2)
+
+            with col_os1:
+                st.markdown("#### 📊 Distribuzione Open Source")
+                open_source_df = query_db(f"""
+                    SELECT
+                        COALESCE(open_source, 'N/A') as open_source,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) as percentage,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as total_pnl,
+                        ROUND(AVG(net_pnl_usd)::numeric, 2) as avg_pnl,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY open_source
+                    ORDER BY trades DESC
+                """)
+
+                if not open_source_df.empty:
+                    # Pie chart
+                    fig_open_source = px.pie(
+                        open_source_df,
+                        values='trades',
+                        names='open_source',
+                        title='Chi ha aperto i trade?',
+                        color='open_source',
+                        color_discrete_map={
+                            'MICRO_GAIN_AUTO': '#FF9800',
+                            'AI_DECISION': '#2196F3',
+                            'MANUAL': '#607D8B',
+                            'N/A': '#9E9E9E'
+                        },
+                        hole=0.4
+                    )
+                    fig_open_source.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig_open_source, use_container_width=True)
+
+                    # Summary
+                    for _, row_os in open_source_df.iterrows():
+                        color = 'green' if row_os['avg_pnl'] >= 0 else 'red'
+                        st.markdown(
+                            f"**{row_os['open_source']}**: {row_os['trades']} trades | "
+                            f"WR: {row_os['win_rate']:.0f}% | "
+                            f"P&L: <span style='color:{color}'>${row_os['total_pnl']:.2f}</span>",
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.info("Nessun dato open_source disponibile")
+
+            with col_os2:
+                st.markdown("#### 🎯 AI vs Auto: Confronto Performance")
+                ai_vs_auto_df = query_db(f"""
+                    SELECT
+                        COALESCE(open_source, 'N/A') as open_source,
+                        close_reason,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        ROUND(AVG(net_pnl_usd)::numeric, 3) as avg_pnl,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND close_reason IS NOT NULL
+                    GROUP BY open_source, close_reason
+                    ORDER BY open_source, trades DESC
+                """)
+
+                if not ai_vs_auto_df.empty:
+                    # Grouped bar chart
+                    fig_ai_auto = px.bar(
+                        ai_vs_auto_df,
+                        x='open_source',
+                        y='trades',
+                        color='close_reason',
+                        barmode='group',
+                        title='Come si chiudono i trade per Open Source?',
+                        color_discrete_map={
+                            'TP_HIT': '#4CAF50',
+                            'SL_HIT': '#f44336',
+                            'TRAILING_SL': '#FF9800',
+                            'AI_DECISION': '#2196F3',
+                            'REVERSAL': '#9C27B0',
+                            'MANUAL': '#607D8B'
+                        }
+                    )
+                    st.plotly_chart(fig_ai_auto, use_container_width=True)
+
+                    # Summary table
+                    summary_os = open_source_df[['open_source', 'trades', 'win_rate', 'avg_pnl', 'total_pnl']].copy()
+                    summary_os.columns = ['Source', 'Trades', 'Win Rate %', 'Avg P&L $', 'Total P&L $']
+                    st.dataframe(summary_os, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Dati confronto non disponibili")
 
             # ========================================
             # ROW 4: P&L Cumulativo per Mode + Fees Impact

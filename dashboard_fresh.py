@@ -277,14 +277,16 @@ with tab2:
                 direction,
                 entry_price,
                 exit_price,
-                pnl_usd,
-                pnl_percent,
+                ROUND(net_pnl_usd::numeric, 2) as pnl_usd,
+                ROUND(pnl_percent::numeric, 2) as pnl_percent,
                 opened_at,
                 closed_at,
-                duration_minutes,
+                ROUND(duration_seconds / 60.0) as duration_minutes,
+                open_source,
                 close_reason
-            FROM trade_journal
-            WHERE closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
+            FROM trades
+            WHERE status = 'CLOSED'
+              AND closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
             ORDER BY closed_at DESC
             LIMIT 50
         """)
