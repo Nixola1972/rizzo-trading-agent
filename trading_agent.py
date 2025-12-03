@@ -137,14 +137,28 @@ def extract_json_from_text(text):
     """
     Estrae JSON da una risposta che potrebbe contenere anche testo normale.
     Cerca il primo oggetto JSON valido nella risposta.
+    Gestisce anche risposte "sporche" con markdown, commenti, etc.
     """
-    # Cerca pattern JSON (oggetto tra { })
+    if not text or not text.strip():
+        return None
+
+    # 1. Rimuovi markdown code blocks
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+
+    # 2. Rimuovi commenti JavaScript/JSON style
+    text = re.sub(r'//[^\n]*', '', text)
+
+    # 3. Cerca pattern JSON (oggetto tra { })
     json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
     matches = re.finditer(json_pattern, text, re.DOTALL)
 
     for match in matches:
         try:
             potential_json = match.group(0)
+            # Rimuovi virgole finali prima di } o ]
+            potential_json = re.sub(r',\s*}', '}', potential_json)
+            potential_json = re.sub(r',\s*]', ']', potential_json)
             parsed = json.loads(potential_json)
             # Verifica che sia un dizionario (non array)
             if isinstance(parsed, dict):
@@ -152,7 +166,53 @@ def extract_json_from_text(text):
         except json.JSONDecodeError:
             continue
 
-    # Se non trova JSON, prova a fare parse diretto
+    # 4. Prova a estrarre JSON anche con pattern più permissivo
+    # Cerca tutto tra la prima { e l'ultima }
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        try:
+            potential_json = text[first_brace:last_brace+1]
+            potential_json = re.sub(r',\s*}', '}', potential_json)
+            potential_json = re.sub(r',\s*]', ']', potential_json)
+            parsed = json.loads(potential_json)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # 5. Prova a estrarre campi chiave manualmente se JSON non parsabile
+    # Questo gestisce risposte come: operation: "hold", symbol: "BTC", ...
+    try:
+        result = {}
+        # Cerca operation
+        op_match = re.search(r'["\']?operation["\']?\s*[:=]\s*["\']?(open|close|hold)["\']?', text, re.IGNORECASE)
+        if op_match:
+            result['operation'] = op_match.group(1).lower()
+
+        # Cerca symbol
+        sym_match = re.search(r'["\']?symbol["\']?\s*[:=]\s*["\']?([A-Z]{2,5})["\']?', text, re.IGNORECASE)
+        if sym_match:
+            result['symbol'] = sym_match.group(1).upper()
+
+        # Cerca direction
+        dir_match = re.search(r'["\']?direction["\']?\s*[:=]\s*["\']?(long|short)["\']?', text, re.IGNORECASE)
+        if dir_match:
+            result['direction'] = dir_match.group(1).lower()
+
+        # Cerca reason
+        reason_match = re.search(r'["\']?reason["\']?\s*[:=]\s*["\']([^"\']+)["\']', text)
+        if reason_match:
+            result['reason'] = reason_match.group(1)
+
+        # Se abbiamo almeno operation e symbol, ritorna il risultato
+        if 'operation' in result and 'symbol' in result:
+            print(f"   🔧 JSON estratto manualmente: {result}")
+            return result
+    except Exception:
+        pass
+
+    # 6. Se non trova JSON, prova a fare parse diretto
     try:
         return json.loads(text)
     except json.JSONDecodeError:
