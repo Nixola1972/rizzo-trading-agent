@@ -958,12 +958,12 @@ You have full autonomy to decide. The sentinel score is informational only.
                 max_profit_pct = 0
                 duration_minutes = 0
                 if position_context:
-                    max_profit_pct = position_context.get('max_profit_pct', current_pnl_pct)
-                    duration_minutes = position_context.get('duration_minutes', 0)
+                    max_profit_pct = position_context.get('max_profit_pct') or current_pnl_pct or 0
+                    duration_minutes = position_context.get('duration_minutes') or 0
 
                 # Calcola profit decay
                 profit_decay_pct = 0
-                if max_profit_pct > 0 and current_pnl_pct < max_profit_pct:
+                if max_profit_pct is not None and max_profit_pct > 0 and current_pnl_pct is not None and current_pnl_pct < max_profit_pct:
                     profit_decay_pct = ((max_profit_pct - current_pnl_pct) / max_profit_pct) * 100
 
                 # Costruisci warning dinamico
