@@ -42,7 +42,7 @@ except ImportError:
 
 # AI Context Builder - Nuovo modulo per contesto arricchito
 try:
-    from ai_context import build_full_ai_context, format_context_summary
+    from ai_context import build_full_ai_context, format_context_summary, get_technical_indicators_advanced
     AI_CONTEXT_ENABLED = True
 except ImportError:
     AI_CONTEXT_ENABLED = False
@@ -700,6 +700,10 @@ def run_analysis_cycle(
                             # Trade Journal: registra apertura
                             if TRADE_JOURNAL_ENABLED:
                                 try:
+                                    # Estrai dati tecnici per HYBRID data collection
+                                    ticker_ind = next((ind for ind in indicators_json if ind.get('ticker') == ticker_sym), None)
+                                    tech_data = get_technical_indicators_advanced(ticker_ind) if AI_CONTEXT_ENABLED and ticker_ind else {}
+
                                     trade_uuid = tj.open_trade(
                                         symbol=ticker_sym,
                                         direction=pos["side"].upper(),
@@ -709,7 +713,12 @@ def run_analysis_cycle(
                                         leverage=MICRO_GAIN_LEVERAGE,
                                         score=net_score,
                                         sl_percent=float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0')),
-                                        tp_percent=MICRO_GAIN_TARGET_PERCENT
+                                        tp_percent=MICRO_GAIN_TARGET_PERCENT,
+                                        # Dati HYBRID per analisi Smart Exit
+                                        price_vs_ema20=tech_data.get('price_vs_ema20_pct'),
+                                        ema_alignment=tech_data.get('ema_alignment'),
+                                        trend_direction=tech_data.get('rsi_trend'),
+                                        atr=tech_data.get('atr_percent')
                                     )
                                     print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}...")
                                 except Exception as je:
@@ -1240,6 +1249,9 @@ You have full autonomy to decide. The sentinel score is informational only.
                                             trailing_act = NORMAL_TRAILING_ACTIVATION
                                             trailing_g = NORMAL_TRAILING_GAP
 
+                                        # Estrai dati tecnici per HYBRID data collection
+                                        tech_data = ticker_context.get('technical_advanced', {}) if ticker_context else {}
+
                                         trade_uuid = tj.open_trade(
                                             symbol=ticker_sym,
                                             direction=pos["side"].upper(),
@@ -1251,7 +1263,12 @@ You have full autonomy to decide. The sentinel score is informational only.
                                             sl_percent=sl_pct,
                                             tp_percent=tp_pct,
                                             trailing_activation=trailing_act,
-                                            trailing_gap=trailing_g
+                                            trailing_gap=trailing_g,
+                                            # Dati HYBRID per analisi Smart Exit
+                                            price_vs_ema20=tech_data.get('price_vs_ema20_pct'),
+                                            ema_alignment=tech_data.get('ema_alignment'),
+                                            trend_direction=tech_data.get('rsi_trend'),
+                                            atr=tech_data.get('atr_percent')
                                         )
                                         print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}... (mode: {trading_mode})")
                                     except Exception as je:
