@@ -321,6 +321,180 @@ def wake_ai_agent(symbol: str, reason: str, sentinel_score: float = None):
         return {"success": False, "error": str(e)}
 
 
+# ============================================================================
+# DOUBLE_CHECK AI: VALIDAZIONE SINCRONA IMMEDIATA
+# ============================================================================
+
+def validate_double_check_ai(symbol: str, direction: str, score: float, trading_mode: str = "MICRO_GAIN") -> dict:
+    """
+    Chiama l'AI per validare un segnale MICRO_GAIN/MICRO_PAY prima di aprire.
+    CHIAMATA SINCRONA - aspetta la risposta AI immediatamente.
+
+    Args:
+        symbol: Simbolo da validare (BTC, ETH, SOL)
+        direction: Direzione proposta ("long" o "short")
+        score: Score che ha generato il segnale
+        trading_mode: Modalità trading (MICRO_GAIN, MICRO_PAY)
+
+    Returns:
+        dict con:
+        - approved: True se AI conferma, False se rifiuta
+        - operation: "open" o "hold"
+        - reason: Motivo della decisione AI
+    """
+    log(f"   🔍 DOUBLE_CHECK: Validazione AI immediata per {symbol} {direction.upper()}...")
+
+    try:
+        from trading_agent import previsione_trading_agent
+        from indicators import analyze_single_ticker
+        from sentiment import get_sentiment
+        from whalealert import get_whale_alerts_json
+
+        # === 1. RECUPERA CONTESTO ===
+        score_history = _get_recent_scores(symbol, limit=5)
+        score_trend = _analyze_score_trend(score_history)
+
+        try:
+            _, indicators_data = analyze_single_ticker(symbol)
+        except:
+            indicators_data = {}
+
+        try:
+            _, sentiment_data = get_sentiment()
+        except:
+            sentiment_data = {}
+
+        try:
+            whale_data = get_whale_alerts_json()
+            whale_sentiment = whale_data.get("summary", {}).get("net_sentiment", "neutral")
+            whale_symbol = whale_data.get("by_symbol", {}).get(symbol.upper(), {})
+        except:
+            whale_sentiment = "unavailable"
+            whale_symbol = {}
+
+        # === 2. COSTRUISCI PROMPT FOCALIZZATO ===
+        prompt = f"""## DOUBLE_CHECK VALIDATION - IMMEDIATE DECISION REQUIRED
+
+Validate this {trading_mode} signal NOW. Be decisive.
+
+### PROPOSED TRADE:
+- Symbol: {symbol}
+- Direction: {direction.upper()}
+- Score: {score:.1f}
+- Mode: {trading_mode}
+
+### SCORE HISTORY (last 5):
+{_format_score_history(score_history)}
+- Trend: {score_trend}
+
+### WHALE ACTIVITY:
+- Market: {whale_sentiment}
+- {symbol}: {whale_symbol.get('net_sentiment', 'no data')} ({whale_symbol.get('count', 0)} movements)
+
+### INDICATORS:
+{_format_quick_indicators(indicators_data)}
+
+### SENTIMENT:
+- Fear & Greed: {sentiment_data.get('value', 'N/A')} ({sentiment_data.get('sentiment', 'N/A')})
+
+### DECIDE NOW:
+1. Score trend supports direction? 2. Whale confirms? 3. Indicators aligned?
+
+Respond ONLY with JSON:
+{{"operation": "open|hold", "symbol": "{symbol}", "direction": "{direction}", "reason": "max 30 words", "confidence": "high|medium|low"}}
+
+"open" = proceed, "hold" = reject
+"""
+
+        log(f"      Chiamata AI...")
+        ai_response = previsione_trading_agent(prompt, indicators=[indicators_data] if indicators_data else None, sentiment=sentiment_data)
+
+        operation = ai_response.get("operation", "hold").lower()
+        ai_reason = ai_response.get("reason", "No reason")[:80]
+        approved = operation == "open"
+
+        if approved:
+            log(f"      ✅ AI APPROVA: {ai_reason}")
+        else:
+            log(f"      ❌ AI RIFIUTA: {ai_reason}")
+
+        return {
+            "approved": approved,
+            "operation": operation,
+            "reason": ai_reason,
+            "confidence": ai_response.get("confidence", "medium"),
+            "direction": ai_response.get("direction", direction)
+        }
+
+    except Exception as e:
+        log(f"      ⚠️ Errore validazione AI: {e}")
+        return {"approved": False, "operation": "hold", "reason": f"Error: {str(e)}", "error": str(e)}
+
+
+def _get_recent_scores(symbol: str, limit: int = 5) -> list:
+    """Recupera ultimi N score dal database."""
+    try:
+        with db_utils.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT net_score, created_at FROM score_history
+                    WHERE symbol = %s ORDER BY created_at DESC LIMIT %s
+                """, (symbol, limit))
+                return [{"score": float(r[0]), "time": r[1]} for r in cur.fetchall()]
+    except:
+        return []
+
+
+def _analyze_score_trend(score_history: list) -> str:
+    """Analizza trend degli ultimi score."""
+    if len(score_history) < 2:
+        return "insufficient_data"
+    scores = [s["score"] for s in score_history]
+    changes = [scores[i] - scores[i+1] for i in range(len(scores)-1)]
+    avg_change = sum(changes) / len(changes) if changes else 0
+    all_positive = all(s > 0 for s in scores)
+    all_negative = all(s < 0 for s in scores)
+    trend = "strengthening" if avg_change > 2 else "weakening" if avg_change < -2 else "stable"
+    if all_positive:
+        return f"{trend}_bullish"
+    elif all_negative:
+        return f"{trend}_bearish"
+    return f"{trend}_mixed"
+
+
+def _format_score_history(score_history: list) -> str:
+    """Formatta score history per prompt."""
+    if not score_history:
+        return "- No history"
+    lines = []
+    for s in score_history:
+        time_str = s["time"].strftime("%H:%M") if hasattr(s["time"], "strftime") else str(s["time"])
+        dir_str = "bull" if s["score"] > 0 else "bear" if s["score"] < 0 else "neutral"
+        lines.append(f"  {time_str}: {s['score']:.1f} ({dir_str})")
+    return "\n".join(lines)
+
+
+def _format_quick_indicators(indicators: dict) -> str:
+    """Formatta indicatori per prompt."""
+    if not indicators:
+        return "- No data"
+    lines = []
+    current = indicators.get("current", {})
+    intraday = indicators.get("intraday", {})
+    price, ema20 = current.get("price"), current.get("ema20")
+    if price and ema20:
+        vs_ema = ((price - ema20) / ema20) * 100
+        lines.append(f"- Price: ${price:.2f} ({vs_ema:+.1f}% vs EMA20)")
+    rsi = intraday.get("rsi_14", [])
+    if rsi:
+        zone = "OB" if rsi[-1] > 70 else "OS" if rsi[-1] < 30 else "N"
+        lines.append(f"- RSI: {rsi[-1]:.0f} ({zone})")
+    macd = intraday.get("macd", [])
+    if macd:
+        lines.append(f"- MACD: {macd[-1]:.4f}")
+    return "\n".join(lines) if lines else "- Limited data"
+
+
 def should_wake_ai_for_symbol(symbol: str, score: float, existing_positions: list) -> dict:
     """
     Decide se svegliare l'AI per un simbolo in base a AI_FREE_MODE e condizioni.
@@ -3291,12 +3465,20 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
 
             log(f"   ✅ {symbol} MICRO_GAIN: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
 
-            # === DOUBLE_CHECK_AI: Se attivo, salta apertura automatica ===
-            # Lascia che main.py gestisca con validazione AI
+            # === DOUBLE_CHECK_AI: Validazione AI immediata prima di aprire ===
             if DOUBLE_CHECK_AI_ENABLED:
-                log(f"   🔍 DOUBLE_CHECK: {symbol} MICRO_GAIN segnale confermato - attende validazione AI")
-                log(f"      Score: {score:.1f}, Direction: {direction.upper()}")
-                continue  # Skip auto-open, main.py gestirà con AI
+                validation = validate_double_check_ai(symbol, direction, score, "MICRO_GAIN")
+
+                if not validation.get("approved"):
+                    log(f"   ❌ DOUBLE_CHECK RIFIUTATO: {validation.get('reason', 'AI declined')}")
+                    continue  # AI ha rifiutato, non aprire
+
+                log(f"   ✅ DOUBLE_CHECK APPROVATO: confidence={validation.get('confidence', 'N/A')}")
+                # AI potrebbe suggerire direzione diversa
+                ai_direction = validation.get("direction", direction)
+                if ai_direction and ai_direction.lower() != direction.lower():
+                    log(f"      ⚠️ AI suggerisce {ai_direction.upper()} invece di {direction.upper()}")
+                    direction = ai_direction
 
             result = open_micro_gain_position(bot, symbol, direction, score)
 
@@ -3316,11 +3498,19 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
 
             log(f"   ✅ {symbol} MICRO_PAY: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
 
-            # === DOUBLE_CHECK_AI: Se attivo, salta apertura automatica ===
+            # === DOUBLE_CHECK_AI: Validazione AI immediata prima di aprire ===
             if DOUBLE_CHECK_AI_ENABLED:
-                log(f"   🔍 DOUBLE_CHECK: {symbol} MICRO_PAY segnale confermato - attende validazione AI")
-                log(f"      Score: {score:.1f}, Direction: {direction.upper()}")
-                continue
+                validation = validate_double_check_ai(symbol, direction, score, "MICRO_PAY")
+
+                if not validation.get("approved"):
+                    log(f"   ❌ DOUBLE_CHECK RIFIUTATO: {validation.get('reason', 'AI declined')}")
+                    continue
+
+                log(f"   ✅ DOUBLE_CHECK APPROVATO: confidence={validation.get('confidence', 'N/A')}")
+                ai_direction = validation.get("direction", direction)
+                if ai_direction and ai_direction.lower() != direction.lower():
+                    log(f"      ⚠️ AI suggerisce {ai_direction.upper()} invece di {direction.upper()}")
+                    direction = ai_direction
 
             result = open_micro_pay_position(bot, symbol, direction, score)
 
@@ -3991,7 +4181,7 @@ def run_loop(interval: int = None):
         log(f"      Score smoothing: {SCORE_SMOOTHING_SAMPLES} samples, Leverage: {MICRO_GAIN_LEVERAGE}x")
         log(f"      Score range: {SCORE_THRESHOLD_HOLD} - {SCORE_THRESHOLD_OPEN}")
         if DOUBLE_CHECK_AI_ENABLED:
-            log(f"      🔍 DOUBLE_CHECK_AI: aperture passano attraverso AI per validazione")
+            log(f"      🔍 DOUBLE_CHECK_AI: validazione AI in tempo reale prima di ogni apertura")
     if MICRO_PAY_ENABLED:
         log(f"   💵 MICRO_PAY: enabled")
         log(f"      TP: +{MICRO_PAY_TARGET_PERCENT}%, SL: -{MICRO_PAY_STOP_LOSS_PERCENT}%")
