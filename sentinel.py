@@ -97,6 +97,9 @@ SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))
 # AI_FREE_MODE: se true, AI decide liberamente (score come suggerimento)
 AI_FREE_MODE = os.getenv('AI_FREE_MODE', 'false').lower() == 'true'
 
+# DOUBLE_CHECK_AI: se true, aperture MICRO_GAIN passano attraverso AI per validazione
+DOUBLE_CHECK_AI_ENABLED = os.getenv('DOUBLE_CHECK_AI_ENABLED', 'false').lower() == 'true'
+
 MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
 MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # % balance per posizione
 
@@ -3287,6 +3290,14 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 continue
 
             log(f"   ✅ {symbol} MICRO_GAIN: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
+
+            # === DOUBLE_CHECK_AI: Se attivo, salta apertura automatica ===
+            # Lascia che main.py gestisca con validazione AI
+            if DOUBLE_CHECK_AI_ENABLED:
+                log(f"   🔍 DOUBLE_CHECK: {symbol} MICRO_GAIN segnale confermato - attende validazione AI")
+                log(f"      Score: {score:.1f}, Direction: {direction.upper()}")
+                continue  # Skip auto-open, main.py gestirà con AI
+
             result = open_micro_gain_position(bot, symbol, direction, score)
 
             if result.get("success"):
@@ -3304,6 +3315,13 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 continue
 
             log(f"   ✅ {symbol} MICRO_PAY: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
+
+            # === DOUBLE_CHECK_AI: Se attivo, salta apertura automatica ===
+            if DOUBLE_CHECK_AI_ENABLED:
+                log(f"   🔍 DOUBLE_CHECK: {symbol} MICRO_PAY segnale confermato - attende validazione AI")
+                log(f"      Score: {score:.1f}, Direction: {direction.upper()}")
+                continue
+
             result = open_micro_pay_position(bot, symbol, direction, score)
 
             if result.get("success"):
@@ -3972,6 +3990,8 @@ def run_loop(interval: int = None):
         log(f"      Cooldown: {MICRO_GAIN_COOLDOWN_SECONDS}s, Max positions: {MICRO_GAIN_MAX_POSITIONS}")
         log(f"      Score smoothing: {SCORE_SMOOTHING_SAMPLES} samples, Leverage: {MICRO_GAIN_LEVERAGE}x")
         log(f"      Score range: {SCORE_THRESHOLD_HOLD} - {SCORE_THRESHOLD_OPEN}")
+        if DOUBLE_CHECK_AI_ENABLED:
+            log(f"      🔍 DOUBLE_CHECK_AI: aperture passano attraverso AI per validazione")
     if MICRO_PAY_ENABLED:
         log(f"   💵 MICRO_PAY: enabled")
         log(f"      TP: +{MICRO_PAY_TARGET_PERCENT}%, SL: -{MICRO_PAY_STOP_LOSS_PERCENT}%")
