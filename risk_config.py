@@ -55,7 +55,8 @@ def parse_trailing_steps(steps_str: str) -> List[Tuple[float, float]]:
 # =============================================================================
 
 # Simboli abilitati al trading (da DATABASE: BTC ha win rate migliore)
-ENABLED_SYMBOLS = os.getenv('ENABLED_SYMBOLS', 'BTC').split(',')
+# Strip whitespace da ogni simbolo per evitare errori come 'ETH             '
+ENABLED_SYMBOLS = [s.strip() for s in os.getenv('ENABLED_SYMBOLS', 'BTC').split(',')]
 # ENABLED_SYMBOLS = ['BTC', 'ETH', 'SOL']  # Per riabilitare tutti
 
 

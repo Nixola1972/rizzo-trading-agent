@@ -53,7 +53,8 @@ try:
     print(f"[SENTINEL] ✅ risk_config: Symbols={ENABLED_SYMBOLS}, MaxTrades={MAX_TRADES_PER_DAY}")
 except ImportError:
     RISK_CONFIG_ENABLED = False
-    ENABLED_SYMBOLS = os.getenv('ENABLED_SYMBOLS', 'BTC,ETH,SOL').split(',')
+    # Strip whitespace da ogni simbolo
+    ENABLED_SYMBOLS = [s.strip() for s in os.getenv('ENABLED_SYMBOLS', 'BTC,ETH,SOL').split(',')]
     MAX_TRADES_PER_DAY = int(os.getenv('MAX_TRADES_PER_DAY', '30'))
     print(f"[SENTINEL] ⚠️ risk_config non trovato, uso env: Symbols={ENABLED_SYMBOLS}")
 
@@ -1073,15 +1074,11 @@ def get_daily_trade_count() -> int:
     if not DB_UTILS_ENABLED:
         return 0
     try:
-        conn = db_utils.get_connection()
-        if not conn:
-            return 0
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM trades WHERE DATE(created_at) = CURRENT_DATE")
-            result = cur.fetchone()
-            count = result[0] if result else 0
-        conn.close()
-        return count
+        with db_utils.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM trades WHERE DATE(created_at) = CURRENT_DATE")
+                result = cur.fetchone()
+                return result[0] if result else 0
     except Exception as e:
         log(f"⚠️ Errore conteggio trade: {e}")
         return 0
