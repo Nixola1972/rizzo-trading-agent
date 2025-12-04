@@ -346,7 +346,7 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
 
     try:
         from trading_agent import previsione_trading_agent
-        from indicators import analyze_single_ticker
+        from indicators import analyze_multiple_tickers
         from sentiment import get_sentiment
         from whalealert import get_whale_alerts_json
 
@@ -355,7 +355,8 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
         score_trend = _analyze_score_trend(score_history)
 
         try:
-            _, indicators_data = analyze_single_ticker(symbol)
+            _, indicators_list = analyze_multiple_tickers([symbol])
+            indicators_data = indicators_list[0] if indicators_list else {}
         except:
             indicators_data = {}
 
