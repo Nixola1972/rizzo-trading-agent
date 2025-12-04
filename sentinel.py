@@ -28,29 +28,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Risk Config - Configurazione centralizzata (opzionale, fallback su env vars)
-try:
-    import risk_config as rc
-    RISK_CONFIG_ENABLED = True
-    # Usa valori da risk_config se disponibili
-    SCORE_THRESHOLD_HOLD = rc.SCORE.HOLD_THRESHOLD
-    SCORE_THRESHOLD_OPEN = rc.SCORE.OPEN_THRESHOLD
-    MICRO_GAIN_TARGET_PERCENT = rc.MICRO_GAIN.TARGET_PERCENT
-    MICRO_GAIN_STOP_LOSS_PERCENT = rc.MICRO_GAIN.STOP_LOSS_PERCENT
-    MICRO_GAIN_LEVERAGE = rc.MICRO_GAIN.LEVERAGE
-    MICRO_GAIN_PORTION = rc.MICRO_GAIN.PORTION_OF_BALANCE
-    MICRO_GAIN_TRAILING_MODE = rc.MICRO_GAIN.TRAILING_MODE
-    MICRO_GAIN_TRAILING_ACTIVATION = rc.MICRO_GAIN.TRAILING_ACTIVATION
-    MICRO_GAIN_COOLDOWN_SECONDS = rc.MICRO_GAIN.COOLDOWN_SECONDS
-    ENABLED_SYMBOLS = rc.ENABLED_SYMBOLS
-    MAX_TRADES_PER_DAY = rc.DAILY_LIMITS.MAX_TRADES_PER_DAY
-    print(f"[SENTINEL] risk_config.py caricato - SCORE: {SCORE_THRESHOLD_HOLD}-{SCORE_THRESHOLD_OPEN}")
-except ImportError:
-    RISK_CONFIG_ENABLED = False
-    ENABLED_SYMBOLS = ['BTC', 'ETH', 'SOL']
-    MAX_TRADES_PER_DAY = 30
-    print("[SENTINEL] risk_config.py non trovato, uso env vars")
-
 # Trade Journal - Import opzionale per retrocompatibilità
 try:
     import trade_journal as tj
@@ -66,6 +43,19 @@ try:
 except ImportError:
     DB_UTILS_ENABLED = False
     db_utils = None
+
+# Risk Config - ENABLED_SYMBOLS e MAX_TRADES_PER_DAY
+try:
+    import risk_config as rc
+    RISK_CONFIG_ENABLED = True
+    ENABLED_SYMBOLS = rc.ENABLED_SYMBOLS
+    MAX_TRADES_PER_DAY = rc.DAILY_LIMITS.MAX_TRADES_PER_DAY
+    print(f"[SENTINEL] ✅ risk_config: Symbols={ENABLED_SYMBOLS}, MaxTrades={MAX_TRADES_PER_DAY}")
+except ImportError:
+    RISK_CONFIG_ENABLED = False
+    ENABLED_SYMBOLS = os.getenv('ENABLED_SYMBOLS', 'BTC,ETH,SOL').split(',')
+    MAX_TRADES_PER_DAY = int(os.getenv('MAX_TRADES_PER_DAY', '30'))
+    print(f"[SENTINEL] ⚠️ risk_config non trovato, uso env: Symbols={ENABLED_SYMBOLS}")
 
 # Configurazione
 SENTINEL_ENABLED = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
@@ -1079,36 +1069,21 @@ def set_cooldown(symbol: str):
 
 
 def get_daily_trade_count() -> int:
-    """
-    Ottiene il numero di trade aperti oggi dal database.
-    Usato per limitare il numero massimo di trade giornalieri.
-
-    Returns:
-        Numero di trade aperti oggi (default 0 se errore)
-    """
+    """Conta i trade aperti oggi per limitare MAX_TRADES_PER_DAY."""
     if not DB_UTILS_ENABLED:
         return 0
-
     try:
-        import db_utils
-        # Query per contare i trade aperti oggi
         conn = db_utils.get_connection()
         if not conn:
             return 0
-
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM trades
-            WHERE DATE(created_at) = CURRENT_DATE
-        """)
-        result = cur.fetchone()
-        count = result[0] if result else 0
-        cur.close()
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM trades WHERE DATE(created_at) = CURRENT_DATE")
+            result = cur.fetchone()
+            count = result[0] if result else 0
         conn.close()
         return count
     except Exception as e:
-        log(f"⚠️ Errore conteggio trade giornalieri: {e}")
+        log(f"⚠️ Errore conteggio trade: {e}")
         return 0
 
 
@@ -3262,13 +3237,13 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
     if not MICRO_GAIN_AUTO_OPEN:
         return
 
-    # Usa ENABLED_SYMBOLS da risk_config (default: solo BTC)
-    symbols_to_check = ENABLED_SYMBOLS if RISK_CONFIG_ENABLED else ['BTC', 'ETH', 'SOL']
+    # Usa ENABLED_SYMBOLS da risk_config o env
+    symbols_to_check = ENABLED_SYMBOLS
 
-    # === CHECK DAILY TRADE LIMIT ===
+    # === CHECK LIMITE GIORNALIERO ===
     daily_trades = get_daily_trade_count()
     if daily_trades >= MAX_TRADES_PER_DAY:
-        log(f"   ⛔ LIMITE GIORNALIERO RAGGIUNTO: {daily_trades}/{MAX_TRADES_PER_DAY} trades oggi")
+        log(f"   ⛔ LIMITE GIORNALIERO: {daily_trades}/{MAX_TRADES_PER_DAY} - NO nuovi trade")
         return
 
     # Conta posizioni esistenti
@@ -3358,8 +3333,8 @@ def check_and_wake_ai_for_normal(bot, existing_positions: list):
     if AI_FREE_MODE:
         return
 
-    # Usa ENABLED_SYMBOLS da risk_config
-    symbols_to_check = ENABLED_SYMBOLS if RISK_CONFIG_ENABLED else ['BTC', 'ETH', 'SOL']
+    # Usa ENABLED_SYMBOLS da risk_config o env
+    symbols_to_check = ENABLED_SYMBOLS
     existing_symbols = [p.get("symbol") for p in existing_positions]
 
     for symbol in symbols_to_check:

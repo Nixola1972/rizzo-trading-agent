@@ -1,8 +1,12 @@
 import json
+import os
 from decimal import Decimal, ROUND_DOWN
 from typing import Dict, Any
 
 import eth_account
+from dotenv import load_dotenv
+
+load_dotenv()
 from eth_account.signers.local import LocalAccount
 
 from hyperliquid.info import Info
@@ -32,6 +36,32 @@ class HyperLiquidTrader:
 
         # cache meta per tick-size e min-size
         self.meta = self.info.meta()
+
+    def _get_tick_size(self, symbol: str) -> float:
+        """Ottiene il tick size per un simbolo da meta."""
+        try:
+            for asset in self.meta.get("universe", []):
+                if asset.get("name") == symbol:
+                    # szDecimals indica i decimali per la size
+                    # Per il prezzo, usiamo un approccio basato sul prezzo corrente
+                    sz_decimals = asset.get("szDecimals", 8)
+                    # Tick size tipici per Hyperliquid
+                    if symbol == "BTC":
+                        return 1.0  # BTC tick size è $1
+                    elif symbol == "ETH":
+                        return 0.1  # ETH tick size è $0.10
+                    elif symbol == "SOL":
+                        return 0.01  # SOL tick size è $0.01
+                    else:
+                        return 0.01  # Default
+            return 0.01
+        except Exception:
+            return 0.01
+
+    def _round_to_tick(self, price: float, symbol: str) -> float:
+        """Arrotonda il prezzo al tick size più vicino."""
+        tick_size = self._get_tick_size(symbol)
+        return round(round(price / tick_size) * tick_size, 8)
 
     def _to_hl_size(self, size_decimal: Decimal) -> str:
         # HL accetta max 8 decimali
@@ -159,7 +189,13 @@ class HyperLiquidTrader:
         symbol = order_json["symbol"]
         direction = order_json["direction"]
         portion = Decimal(str(order_json["target_portion_of_balance"]))
-        leverage = int(order_json.get("leverage", 1))
+
+        # Leggi la leva richiesta e applica MAX_LEVERAGE cap
+        requested_leverage = int(order_json.get("leverage", 1))
+        max_leverage_env = int(os.getenv('MAX_LEVERAGE', '10'))
+        leverage = min(requested_leverage, max_leverage_env)
+        if requested_leverage > max_leverage_env:
+            print(f"⚠️ Leva richiesta {requested_leverage}x limitata a MAX_LEVERAGE={max_leverage_env}x")
 
         if op == "hold":
             print(f"[HyperLiquidTrader] HOLD — nessuna azione per {symbol}.")
@@ -195,7 +231,22 @@ class HyperLiquidTrader:
         if balance_usd <= 0:
             raise RuntimeError("Balance account = 0")
 
-        notional = balance_usd * portion * Decimal(str(leverage))
+        # === RISK MANAGEMENT: MAX_POSITION_SIZE_PCT ===
+        # Limita l'investimento massimo per singola operazione
+        max_position_pct = Decimal(os.getenv('MAX_POSITION_SIZE_PCT', '50'))
+        max_investment = balance_usd * (max_position_pct / Decimal('100'))
+
+        # Calcola il notional richiesto
+        requested_notional = balance_usd * portion * Decimal(str(leverage))
+
+        # Applica il limite se necessario
+        if requested_notional > max_investment:
+            print(f"⚠️ RISK LIMIT: Notional richiesto ${requested_notional:.2f} supera il limite ${max_investment:.2f} ({max_position_pct}% del portafoglio)")
+            print(f"   📊 Ridotto notional da ${requested_notional:.2f} a ${max_investment:.2f}")
+            notional = max_investment
+        else:
+            notional = requested_notional
+            print(f"✅ Notional ${notional:.2f} entro il limite ${max_investment:.2f} ({max_position_pct}%)")
 
         mids = self.info.all_mids()
         if symbol not in mids:
@@ -241,12 +292,17 @@ class HyperLiquidTrader:
 
         is_buy = (direction == "long")
 
+        # Check if MICRO_GAIN mode
+        trading_mode = order_json.get("trading_mode", "NORMAL")
+        micro_gain_target = order_json.get("micro_gain_target", 0.15)
+
         print(
             f"\n[HyperLiquidTrader] Market {'BUY' if is_buy else 'SELL'} "
             f"{size_float} {symbol}\n"
             f"  💰 Prezzo: ${mark_px}\n"
             f"  📊 Notional: ${notional:.2f}\n"
             f"  🎯 Leva target: {leverage}x\n"
+            f"  📋 Trading mode: {trading_mode}\n"
         )
 
         res = self.exchange.market_open(
@@ -256,6 +312,89 @@ class HyperLiquidTrader:
             None,
             0.01
         )
+
+        print(f"  📋 Market open response status: {res.get('status')}")
+
+        # Se MICRO_GAIN o MICRO_PAY, piazza automaticamente TP order
+        if trading_mode in ("MICRO_GAIN", "MICRO_PAY"):
+            if res.get("status") != "ok":
+                print(f"  ⚠️ Market open non ok, skip TP. Response: {res}")
+            else:
+                try:
+                    # Attendi un attimo per assicurarsi che la posizione sia registrata
+                    import time
+                    time.sleep(1)
+
+                    # Ottieni il prezzo di entrata effettivo
+                    user_state = self.info.user_state(self.account_address)
+                    entry_price = None
+                    position_size = None
+
+                    print(f"  🔍 Cerco posizione {symbol} per TP order...")
+                    for p in user_state.get("assetPositions", []):
+                        if isinstance(p, dict) and "position" in p:
+                            pos = p["position"]
+                            if pos.get("coin") == symbol:
+                                entry_price = float(pos.get("entryPx", 0))
+                                position_size = abs(float(pos.get("szi", 0)))
+                                print(f"  📍 Trovato: entry={entry_price}, size={position_size}")
+                                break
+
+                    if entry_price and position_size:
+                        # Calcola prezzo target basato su P&L con leva
+                        # micro_gain_target è già in % P&L (con leva inclusa)
+                        # price_change = pnl_target / leverage
+                        price_change_pct = micro_gain_target / leverage
+
+                        if is_buy:  # LONG
+                            target_price = entry_price * (1 + price_change_pct / 100)
+                        else:  # SHORT
+                            target_price = entry_price * (1 - price_change_pct / 100)
+
+                        # Arrotonda il prezzo target al tick size corretto per l'asset
+                        target_price = self._round_to_tick(target_price, symbol)
+
+                        print(f"  🎯 {trading_mode}: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%, tick={self._get_tick_size(symbol)})")
+
+                        # Piazza Take Profit limit order (non trigger)
+                        # Usa un limit order semplice che si attiva quando il prezzo raggiunge il target
+                        tp_order = self.exchange.order(
+                            symbol,
+                            not is_buy,  # Direzione opposta per chiudere
+                            position_size,
+                            target_price,  # Prezzo limite
+                            {"limit": {"tif": "Gtc"}},  # Good till cancelled
+                            reduce_only=True
+                        )
+
+                        print(f"  📋 TP order response: {tp_order}")
+
+                        if tp_order.get("status") == "ok":
+                            response_data = tp_order.get("response", {})
+                            if response_data.get("type") == "order":
+                                order_data = response_data.get("data", {})
+                                statuses = order_data.get("statuses", [])
+                                if statuses and statuses[0].get("resting"):
+                                    print(f"  ✅ TP limit order piazzato: OID={statuses[0]['resting']['oid']}")
+                                    res["tp_order"] = tp_order
+                                    res["tp_price"] = target_price
+                                else:
+                                    print(f"  ⚠️ TP order status inatteso: {statuses}")
+                                    res["tp_order_error"] = statuses
+                            else:
+                                print(f"  ⚠️ TP order response type inatteso: {response_data}")
+                                res["tp_order_error"] = response_data
+                        else:
+                            print(f"  ⚠️ Errore TP order: {tp_order}")
+                            res["tp_order_error"] = tp_order
+                    else:
+                        print(f"  ⚠️ Non riesco a trovare entry price/size per TP order: entry={entry_price}, size={position_size}")
+
+                except Exception as e:
+                    import traceback
+                    print(f"  ⚠️ Errore piazzamento TP order: {e}")
+                    print(f"  📋 Traceback: {traceback.format_exc()}")
+                    res["tp_order_error"] = str(e)
 
         return res
 
