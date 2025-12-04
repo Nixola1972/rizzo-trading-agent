@@ -1078,6 +1078,40 @@ def set_cooldown(symbol: str):
     log(f"   ⏱️ Cooldown attivato per {symbol} ({MICRO_GAIN_COOLDOWN_SECONDS}s)")
 
 
+def get_daily_trade_count() -> int:
+    """
+    Ottiene il numero di trade aperti oggi dal database.
+    Usato per limitare il numero massimo di trade giornalieri.
+
+    Returns:
+        Numero di trade aperti oggi (default 0 se errore)
+    """
+    if not DB_UTILS_ENABLED:
+        return 0
+
+    try:
+        import db_utils
+        # Query per contare i trade aperti oggi
+        conn = db_utils.get_connection()
+        if not conn:
+            return 0
+
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM trades
+            WHERE DATE(created_at) = CURRENT_DATE
+        """)
+        result = cur.fetchone()
+        count = result[0] if result else 0
+        cur.close()
+        conn.close()
+        return count
+    except Exception as e:
+        log(f"⚠️ Errore conteggio trade giornalieri: {e}")
+        return 0
+
+
 def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
     """
     Apre una posizione MICRO_GAIN con TP e SL orders su Hyperliquid.
@@ -3228,7 +3262,14 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
     if not MICRO_GAIN_AUTO_OPEN:
         return
 
-    symbols_to_check = ['BTC', 'ETH', 'SOL']
+    # Usa ENABLED_SYMBOLS da risk_config (default: solo BTC)
+    symbols_to_check = ENABLED_SYMBOLS if RISK_CONFIG_ENABLED else ['BTC', 'ETH', 'SOL']
+
+    # === CHECK DAILY TRADE LIMIT ===
+    daily_trades = get_daily_trade_count()
+    if daily_trades >= MAX_TRADES_PER_DAY:
+        log(f"   ⛔ LIMITE GIORNALIERO RAGGIUNTO: {daily_trades}/{MAX_TRADES_PER_DAY} trades oggi")
+        return
 
     # Conta posizioni esistenti
     position_count = len(existing_symbols)
@@ -3317,7 +3358,8 @@ def check_and_wake_ai_for_normal(bot, existing_positions: list):
     if AI_FREE_MODE:
         return
 
-    symbols_to_check = ['BTC', 'ETH', 'SOL']
+    # Usa ENABLED_SYMBOLS da risk_config
+    symbols_to_check = ENABLED_SYMBOLS if RISK_CONFIG_ENABLED else ['BTC', 'ETH', 'SOL']
     existing_symbols = [p.get("symbol") for p in existing_positions]
 
     for symbol in symbols_to_check:
