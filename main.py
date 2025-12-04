@@ -27,7 +27,13 @@ try:
     )
 
     # Calcolo delle informazioni in input per Ticker
-    tickers = ['BTC', 'ETH', 'SOL']
+    # NOTA: Limitato a BTC (basato su analisi DATABASE_SUMMARY.md)
+    # ETH e SOL hanno performance peggiori in NORMAL mode
+    try:
+        from risk_config import ENABLED_SYMBOLS
+        tickers = ENABLED_SYMBOLS
+    except ImportError:
+        tickers = ['BTC']  # Default solo BTC
     indicators_txt, indicators_json  = analyze_multiple_tickers(tickers)
     news_txt = fetch_latest_news()
     # whale_alerts_txt = format_whale_alerts_to_string()
