@@ -32,11 +32,33 @@ Bot's overall performance in last 7 days:
 - total_trades, win_rate, total_net_pnl
 USE THIS TO: If bot is in drawdown (negative net_pnl), be more conservative. If win_rate is high, trust signals more.
 
-### whale_alerts (in market data)
-Large crypto movements by whales:
-- Accumulation (buying) patterns = bullish context
-- Distribution (selling) patterns = bearish context
-USE THIS TO: Confirm or question your signal direction
+### whale_alerts (structured whale data)
+Large crypto movements by whales with classified sentiment:
+
+**market_summary** (overall whale activity):
+- net_sentiment: "bullish" (accumulation), "bearish" (distribution), or "neutral"
+- net_flow: "bullish" (exchange outflow > inflow), "bearish" (inflow > outflow)
+- exchange_inflow_usd: Total $ deposited to exchanges (selling pressure)
+- exchange_outflow_usd: Total $ withdrawn from exchanges (accumulation)
+- interpretation: Human-readable summary
+
+**symbol_data** (specific to current coin):
+- alerts_count: Number of whale movements for this symbol
+- bullish_movements: Count of accumulation signals
+- bearish_movements: Count of distribution signals
+- net_sentiment: "bullish", "bearish", or "neutral" for this specific symbol
+
+**Movement Types & Meaning:**
+- exchange_inflow = Whales depositing to exchanges → BEARISH (likely selling)
+- exchange_outflow = Whales withdrawing from exchanges → BULLISH (likely holding)
+- accumulation = Transfer to unknown wallet → BULLISH
+- inter_exchange = Transfer between exchanges → NEUTRAL
+
+USE THIS TO:
+- If whale net_sentiment matches your signal direction → STRONGER confidence
+- If whale net_sentiment OPPOSES your signal direction → Be cautious, reduce size
+- High exchange_inflow_usd → Expect selling pressure, be careful with longs
+- High exchange_outflow_usd → Accumulation phase, support for longs
 
 ### sentiment_trend (if available)
 How Fear & Greed sentiment is changing over time:

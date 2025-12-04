@@ -17,7 +17,7 @@ Usage:
 from indicators import analyze_multiple_tickers
 from news_feed import fetch_latest_news
 from trading_agent import previsione_trading_agent, get_last_signal_scores, get_scoring_config, SCORING_ENABLED, AI_CALL_INTERVAL_MINUTES
-from whalealert import format_whale_alerts_to_string
+from whalealert import format_whale_alerts_to_string, get_whale_alerts_json
 from sentiment import get_sentiment
 from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
@@ -551,6 +551,12 @@ def run_analysis_cycle(
         print("[STEP 2] Recupero news e whale alerts...")
         news_txt = fetch_latest_news()
         whale_alerts_txt = format_whale_alerts_to_string()
+        whale_alerts_json = get_whale_alerts_json()  # Versione strutturata per AI
+
+        # Log whale sentiment summary
+        if whale_alerts_json and not whale_alerts_json.get("error"):
+            ws = whale_alerts_json.get("summary", {})
+            print(f"[WHALE] 🐋 {ws.get('total_alerts', 0)} alerts | Sentiment: {ws.get('net_sentiment', 'N/A')} | Flow: {ws.get('net_flow', 'N/A')}")
 
         print("[STEP 3] Recupero sentiment e forecast...")
         sentiment_txt, sentiment_json = get_sentiment()
@@ -787,7 +793,8 @@ def run_analysis_cycle(
                     forecasts_json=forecasts_json,
                     account_status=account_status,
                     position=ticker_position,
-                    score_data=score_data
+                    score_data=score_data,
+                    whale_data=whale_alerts_json  # Whale alerts strutturati
                 )
                 # Estrai position_context dal ticker_context per il profit-taking
                 position_context = ticker_context.get('position_context')
