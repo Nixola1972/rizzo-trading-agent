@@ -119,6 +119,30 @@ Bias: When in doubt → HOLD
 
 ---
 
+## Direction Override Feature
+
+The AI can override the direction proposed by Sentinel if indicators strongly suggest the opposite.
+
+### How it works:
+1. Sentinel calculates score +15 → proposes LONG
+2. AI analyzes indicators → sees MACD is strongly negative (-0.30)
+3. AI responds: `{"operation": "open", "direction": "short"}`
+4. System opens SHORT instead of LONG
+
+### Log output when override happens:
+```
+🔍 DOUBLE_CHECK [MODERATE]: Validating BTC LONG...
+   ✅ AI APPROVED with DIRECTION OVERRIDE: LONG → SHORT
+      Reason: MACD -0.30 strongly bearish, overrides positive score
+```
+
+### When AI should override:
+- Only with HIGH CONFIDENCE in the opposite direction
+- When primary indicators (MACD, EMA) strongly contradict the score
+- Example: Score is positive but MACD is very negative
+
+---
+
 ## Indicator Weights
 
 The DOUBLE_CHECK prompt assigns different importance to indicators:

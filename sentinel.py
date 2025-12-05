@@ -496,8 +496,12 @@ Based on the trading style rules above, decide:
 - "open" = Indicators support the trade according to the style rules
 - "hold" = Signals don't meet the style requirements
 
+**DIRECTION OVERRIDE**: If indicators STRONGLY suggest the OPPOSITE direction, you can change it.
+Example: Sentinel proposes LONG but MACD is strongly negative → You can respond with direction: "short"
+Only override if you have HIGH CONFIDENCE in the opposite direction.
+
 Respond with JSON only:
-{{"operation": "open|hold", "symbol": "{symbol}", "direction": "{direction}", "reason": "Brief analysis (max 50 words)", "confidence": "high|medium|low"}}
+{{"operation": "open|hold", "symbol": "{symbol}", "direction": "long|short", "reason": "Brief analysis (max 50 words)", "confidence": "high|medium|low"}}
 """
 
         log(f"      Calling AI...")
@@ -507,8 +511,15 @@ Respond with JSON only:
         ai_reason = ai_response.get("reason", "No reason")[:80]
         approved = operation == "open"
 
+        ai_direction = ai_response.get("direction", direction).lower()
+        direction_overridden = ai_direction != direction.lower()
+
         if approved:
-            log(f"      ✅ AI APPROVED: {ai_reason}")
+            if direction_overridden:
+                log(f"      ✅ AI APPROVED with DIRECTION OVERRIDE: {direction.upper()} → {ai_direction.upper()}")
+                log(f"         Reason: {ai_reason}")
+            else:
+                log(f"      ✅ AI APPROVED: {ai_reason}")
         else:
             log(f"      ❌ AI REJECTED: {ai_reason}")
 
@@ -517,7 +528,8 @@ Respond with JSON only:
             "operation": operation,
             "reason": ai_reason,
             "confidence": ai_response.get("confidence", "medium"),
-            "direction": ai_response.get("direction", direction)
+            "direction": ai_direction,
+            "direction_overridden": direction_overridden
         }
 
     except Exception as e:
