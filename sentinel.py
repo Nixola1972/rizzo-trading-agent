@@ -149,6 +149,19 @@ LEVERAGE_SCALING_STEP = int(os.getenv('LEVERAGE_SCALING_STEP', '2'))  # +2x ogni
 LEVERAGE_SCALING_MAX = int(os.getenv('LEVERAGE_SCALING_MAX', '15'))  # Leva massima
 LEVERAGE_SCALING_COOLDOWN_CYCLES = int(os.getenv('LEVERAGE_SCALING_COOLDOWN_CYCLES', '2'))  # Cicli di attesa tra scaling
 
+# ===== ATR DYNAMIC STEPS CONFIG =====
+# Scala automaticamente gli step del trailing in base alla volatilità (ATR)
+# Se enabled, gli step vengono moltiplicati per (ATR_current / ATR_BASE)
+ATR_DYNAMIC_STEPS_ENABLED = os.getenv('ATR_DYNAMIC_STEPS_ENABLED', 'false').lower() == 'true'
+ATR_BASE_PERCENT = float(os.getenv('ATR_BASE_PERCENT', '1.5'))  # ATR% per cui sono tarati gli step
+ATR_STEP_MULTIPLIER_MIN = float(os.getenv('ATR_STEP_MULTIPLIER_MIN', '0.5'))  # Non scalare sotto 0.5x
+ATR_STEP_MULTIPLIER_MAX = float(os.getenv('ATR_STEP_MULTIPLIER_MAX', '2.5'))  # Non scalare sopra 2.5x
+
+# ===== BTC CORRELATION FILTER =====
+# Blocca trade su ALT (ETH, SOL) se BTC va nella direzione opposta
+BTC_CORRELATION_FILTER_ENABLED = os.getenv('BTC_CORRELATION_FILTER_ENABLED', 'false').lower() == 'true'
+BTC_CORRELATION_MACD_THRESHOLD = float(os.getenv('BTC_CORRELATION_MACD_THRESHOLD', '0.15'))  # MACD threshold per determinare trend BTC
+
 # ===== AUTO TAKE PROFIT CONFIG =====
 # Piazza automaticamente un ordine LIMIT TP dopo X minuti dall'apertura
 # Questo garantisce un profitto minimo e previene chiusure AI a 0%
@@ -188,6 +201,103 @@ NORMAL_TRAILING_STEPS = parse_trailing_steps(
     NORMAL_TRAILING_STEPS_STR,
     default_steps=[(3.0, 0.0), (5.0, 2.0), (8.0, 5.0), (12.0, 8.0), (15.0, 10.0)]
 )
+
+# ===== ATR DYNAMIC FUNCTIONS =====
+# Cache for ATR values (symbol -> (atr_percent, timestamp))
+_atr_cache = {}
+_atr_cache_ttl = 60  # Cache TTL in seconds
+
+
+def get_atr_percent(symbol: str) -> float:
+    """
+    Get current ATR as percentage of price for a symbol.
+    Uses 14-period ATR on 15-minute candles.
+    Returns ATR_BASE_PERCENT if unable to calculate.
+    """
+    import time
+    from indicators import analyze_multiple_tickers
+
+    # Check cache
+    now = time.time()
+    if symbol in _atr_cache:
+        cached_atr, cached_time = _atr_cache[symbol]
+        if now - cached_time < _atr_cache_ttl:
+            return cached_atr
+
+    try:
+        _, indicators_list = analyze_multiple_tickers([symbol])
+        if indicators_list:
+            data = indicators_list[0]
+            price = data.get('current', {}).get('price', 0)
+            atr_raw = data.get('longer_term_15m', {}).get('atr_14_current', 0)
+
+            if price > 0 and atr_raw > 0:
+                atr_pct = (atr_raw / price) * 100
+                _atr_cache[symbol] = (atr_pct, now)
+                return atr_pct
+    except Exception as e:
+        log(f"   ⚠️ Error getting ATR for {symbol}: {e}")
+
+    return ATR_BASE_PERCENT  # Fallback
+
+
+def get_dynamic_trailing_steps(symbol: str, base_steps: list) -> list:
+    """
+    Scale trailing steps based on current ATR volatility.
+
+    If ATR_DYNAMIC_STEPS_ENABLED:
+      multiplier = ATR_current / ATR_BASE
+      Each step threshold and SL level gets multiplied.
+
+    Args:
+        symbol: Symbol to get ATR for
+        base_steps: Original steps list [(pnl_threshold, sl_level), ...]
+
+    Returns:
+        Scaled steps list
+    """
+    if not ATR_DYNAMIC_STEPS_ENABLED:
+        return base_steps
+
+    atr_pct = get_atr_percent(symbol)
+    multiplier = atr_pct / ATR_BASE_PERCENT
+
+    # Clamp multiplier to min/max
+    multiplier = max(ATR_STEP_MULTIPLIER_MIN, min(multiplier, ATR_STEP_MULTIPLIER_MAX))
+
+    # Scale steps
+    dynamic_steps = []
+    for pnl_threshold, sl_level in base_steps:
+        dynamic_steps.append((
+            round(pnl_threshold * multiplier, 2),
+            round(sl_level * multiplier, 2)
+        ))
+
+    return dynamic_steps
+
+
+def get_btc_trend() -> str:
+    """
+    Get BTC trend based on MACD.
+    Returns: 'bullish', 'bearish', or 'neutral'
+    """
+    from indicators import analyze_multiple_tickers
+
+    try:
+        _, indicators_list = analyze_multiple_tickers(['BTC'])
+        if indicators_list:
+            data = indicators_list[0]
+            macd = data.get('current', {}).get('macd', 0) or 0
+
+            if macd > BTC_CORRELATION_MACD_THRESHOLD:
+                return 'bullish'
+            elif macd < -BTC_CORRELATION_MACD_THRESHOLD:
+                return 'bearish'
+    except Exception as e:
+        log(f"   ⚠️ Error getting BTC trend: {e}")
+
+    return 'neutral'
+
 
 # Tracking SL corrente per ogni simbolo (in-memory)
 _current_sl_level = {}  # symbol -> current SL % level
@@ -492,6 +602,39 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
         # Log indicator values for visibility
         log(f"      📊 MACD: {macd_val:.4f} | RSI: {rsi_val:.1f} | ADX: {adx_val:.1f} ({adx_interpretation})")
         log(f"      💰 Price: ${price_val:,.2f} {price_vs_ema} EMA20 | Funding: {funding_pct:.4f}%")
+
+        # === 2.5 BTC CORRELATION FILTER ===
+        # Block trades on ALT coins if BTC is trending opposite direction
+        btc_trend_info = ""
+        if BTC_CORRELATION_FILTER_ENABLED and symbol.upper() != "BTC":
+            btc_trend = get_btc_trend()
+            btc_trend_info = f"\n- **BTC Trend**: {btc_trend.upper()}"
+
+            # Check for conflict
+            if btc_trend == "bearish" and direction.lower() == "long":
+                log(f"      🚫 BTC CORRELATION FILTER: BTC bearish, blocking LONG on {symbol}")
+                return {
+                    "approved": False,
+                    "operation": "hold",
+                    "reason": f"BTC bearish (MACD < -{BTC_CORRELATION_MACD_THRESHOLD}), avoid LONG on {symbol}",
+                    "confidence": "n/a",
+                    "direction": direction,
+                    "direction_overridden": False,
+                    "leverage": MICRO_GAIN_LEVERAGE
+                }
+            elif btc_trend == "bullish" and direction.lower() == "short":
+                log(f"      🚫 BTC CORRELATION FILTER: BTC bullish, blocking SHORT on {symbol}")
+                return {
+                    "approved": False,
+                    "operation": "hold",
+                    "reason": f"BTC bullish (MACD > +{BTC_CORRELATION_MACD_THRESHOLD}), avoid SHORT on {symbol}",
+                    "confidence": "n/a",
+                    "direction": direction,
+                    "direction_overridden": False,
+                    "leverage": MICRO_GAIN_LEVERAGE
+                }
+            else:
+                log(f"      ✅ BTC Correlation: {btc_trend.upper()} - OK for {direction.upper()}")
 
         # === 3. BUILD FOCUSED PROMPT ===
         style_instructions = _get_trading_style_prompt(direction, TRADING_STYLE)
@@ -2159,13 +2302,15 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
 
         if MICRO_GAIN_TRAILING_MODE == "steps":
             # === MODALITÀ GRADINI ===
-            step_sl = get_step_sl_level(pnl_pct, current_sl, MICRO_GAIN_TRAILING_STEPS)
+            # Get dynamic steps based on ATR volatility
+            dynamic_steps = get_dynamic_trailing_steps(symbol, MICRO_GAIN_TRAILING_STEPS)
+            step_sl = get_step_sl_level(pnl_pct, current_sl, dynamic_steps)
 
             if step_sl > current_sl:
                 new_sl_level = step_sl
                 # Trova quale gradino è stato raggiunto
                 step_reached = None
-                for pnl_threshold, sl_level in MICRO_GAIN_TRAILING_STEPS:
+                for pnl_threshold, sl_level in dynamic_steps:
                     if sl_level == step_sl:
                         step_reached = pnl_threshold
                         break
@@ -2255,7 +2400,12 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
                         if open_trade:
                             # Log trailing activation se è il primo trailing update
                             if old_sl <= -MICRO_GAIN_STOP_LOSS_PERCENT + 0.1:
-                                activation_pct = MICRO_GAIN_TRAILING_STEPS[0][0] if MICRO_GAIN_TRAILING_MODE == "steps" else MICRO_GAIN_TRAILING_ACTIVATION
+                                # Get dynamic activation from ATR-scaled steps
+                                if MICRO_GAIN_TRAILING_MODE == "steps":
+                                    dyn_steps = get_dynamic_trailing_steps(symbol, MICRO_GAIN_TRAILING_STEPS)
+                                    activation_pct = dyn_steps[0][0] if dyn_steps else MICRO_GAIN_TRAILING_ACTIVATION
+                                else:
+                                    activation_pct = MICRO_GAIN_TRAILING_ACTIVATION
                                 tj.log_trailing_activated(
                                     open_trade['trade_uuid'],
                                     current_price, pnl_pct,
@@ -2367,14 +2517,16 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
 
         if NORMAL_TRAILING_MODE == "steps":
             # === MODALITÀ GRADINI ===
+            # Get dynamic steps based on ATR volatility
+            dynamic_steps = get_dynamic_trailing_steps(symbol, NORMAL_TRAILING_STEPS)
             # SL si alza solo quando si raggiunge un nuovo gradino
-            step_sl = get_step_sl_level(pnl_pct, current_sl, NORMAL_TRAILING_STEPS)
+            step_sl = get_step_sl_level(pnl_pct, current_sl, dynamic_steps)
 
             if step_sl > current_sl:
                 new_sl_level = step_sl
                 # Trova quale gradino è stato raggiunto per il log
                 step_reached = None
-                for pnl_threshold, sl_level in NORMAL_TRAILING_STEPS:
+                for pnl_threshold, sl_level in dynamic_steps:
                     if sl_level == step_sl:
                         step_reached = pnl_threshold
                         break
@@ -2464,8 +2616,12 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
                         if open_trade:
                             # Log trailing activation se è il primo trailing update
                             if old_sl <= -NORMAL_STOP_LOSS_PERCENT + 0.1:
-                                # Per steps, usa il primo gradino come activation
-                                activation_pct = NORMAL_TRAILING_STEPS[0][0] if NORMAL_TRAILING_MODE == "steps" else NORMAL_TRAILING_ACTIVATION
+                                # Get dynamic activation from ATR-scaled steps
+                                if NORMAL_TRAILING_MODE == "steps":
+                                    dyn_steps = get_dynamic_trailing_steps(symbol, NORMAL_TRAILING_STEPS)
+                                    activation_pct = dyn_steps[0][0] if dyn_steps else NORMAL_TRAILING_ACTIVATION
+                                else:
+                                    activation_pct = NORMAL_TRAILING_ACTIVATION
                                 tj.log_trailing_activated(
                                     open_trade['trade_uuid'],
                                     current_price, pnl_pct,
