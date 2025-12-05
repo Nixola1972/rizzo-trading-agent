@@ -17,7 +17,7 @@ Usage:
 from indicators import analyze_multiple_tickers
 from news_feed import fetch_latest_news
 from trading_agent import previsione_trading_agent, get_last_signal_scores, get_scoring_config, SCORING_ENABLED, AI_CALL_INTERVAL_MINUTES
-from whalealert import format_whale_alerts_to_string
+from whalealert import format_whale_alerts_to_string, get_whale_alerts_json
 from sentiment import get_sentiment
 from forecaster import get_crypto_forecasts
 from hyperliquid_trader import HyperLiquidTrader
@@ -42,7 +42,7 @@ except ImportError:
 
 # AI Context Builder - Nuovo modulo per contesto arricchito
 try:
-    from ai_context import build_full_ai_context, format_context_summary
+    from ai_context import build_full_ai_context, format_context_summary, get_technical_indicators_advanced
     AI_CONTEXT_ENABLED = True
 except ImportError:
     AI_CONTEXT_ENABLED = False
@@ -55,6 +55,33 @@ MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
 MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))
 SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '15'))
 SCORE_THRESHOLD_NORMAL = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))  # Soglia per mode NORMAL
+
+# ===== DOUBLE_CHECK AI CONFIGURATION =====
+# Quando abilitato, le aperture automatiche (MICRO_GAIN) passano attraverso AI per validazione
+DOUBLE_CHECK_AI_ENABLED = os.getenv('DOUBLE_CHECK_AI_ENABLED', 'false').lower() == 'true'
+if DOUBLE_CHECK_AI_ENABLED:
+    print("🔍 DOUBLE_CHECK_AI: Aperture automatiche validate da AI")
+
+# ===== SMART EXIT CONFIGURATION =====
+# Sistema di exit intelligenti basato su regole (EMA invalidation, Score decay, Time stop)
+SMART_EXIT_ENABLED = os.getenv('SMART_EXIT_ENABLED', 'true').lower() == 'true'
+SMART_EXIT_MODE = os.getenv('SMART_EXIT_MODE', 'warn')  # 'warn' = solo warning, 'hybrid' = warn + confirm
+SMART_EXIT_EMA_CHECK = os.getenv('SMART_EXIT_EMA_CHECK', 'true').lower() == 'true'
+SMART_EXIT_SCORE_DECAY_CHECK = os.getenv('SMART_EXIT_SCORE_DECAY_CHECK', 'true').lower() == 'true'
+SMART_EXIT_TIME_STOP_MINUTES = int(os.getenv('SMART_EXIT_TIME_STOP_MINUTES', '60'))  # 0 = disabilitato
+SMART_EXIT_CONFIRM_CYCLES = int(os.getenv('SMART_EXIT_CONFIRM_CYCLES', '2'))  # cicli per conferma in hybrid mode
+
+if SMART_EXIT_ENABLED:
+    mode_desc = "WARN-ONLY" if SMART_EXIT_MODE == 'warn' else "HYBRID (warn + confirm)"
+    print(f"🚨 SMART_EXIT: {mode_desc}")
+    checks = []
+    if SMART_EXIT_EMA_CHECK:
+        checks.append("EMA")
+    if SMART_EXIT_SCORE_DECAY_CHECK:
+        checks.append("ScoreDecay")
+    if SMART_EXIT_TIME_STOP_MINUTES > 0:
+        checks.append(f"TimeStop({SMART_EXIT_TIME_STOP_MINUTES}min)")
+    print(f"   Checks attivi: {', '.join(checks)}")
 
 # Score confirmation - richiede N cicli consecutivi sopra soglia prima di aprire
 SCORE_CONFIRMATION_CYCLES = int(os.getenv('SCORE_CONFIRMATION_CYCLES', '3'))
@@ -243,6 +270,186 @@ def should_skip_ai_call(symbol: str) -> tuple:
         return (False, f"Errore: {e}", 0)
 
 
+# ===== SMART EXIT WARNING TRACKER =====
+# Traccia i warning consecutivi per ogni simbolo (per hybrid mode)
+_smart_exit_warning_counts = {}  # {symbol: {warning_type: count}}
+
+
+def generate_smart_exit_warnings(
+    symbol: str,
+    position: dict,
+    position_context: dict,
+    ticker_indicators: dict,
+    net_score: float
+) -> list:
+    """
+    Genera warning di Smart Exit per posizioni aperte.
+
+    Args:
+        symbol: Simbolo della posizione
+        position: Dati posizione da Hyperliquid
+        position_context: Contesto posizione da tracking DB
+        ticker_indicators: Indicatori tecnici per questo simbolo
+        net_score: Score attuale calcolato
+
+    Returns:
+        Lista di warning dict: [{"type": "EMA_INVALIDATION", "message": "...", "severity": "warning|critical"}]
+    """
+    global _smart_exit_warning_counts
+
+    if not SMART_EXIT_ENABLED:
+        return []
+
+    warnings = []
+    direction = position.get("side", "long").lower()
+
+    # Inizializza tracker per questo simbolo se non esiste
+    if symbol not in _smart_exit_warning_counts:
+        _smart_exit_warning_counts[symbol] = {}
+
+    # === RULE 1: EMA INVALIDATION ===
+    if SMART_EXIT_EMA_CHECK and ticker_indicators:
+        try:
+            current_price = ticker_indicators.get("current", {}).get("price")
+            ema20 = ticker_indicators.get("current", {}).get("ema20")
+
+            if current_price and ema20:
+                ema_warning = None
+
+                if direction == "long" and current_price < ema20:
+                    pct_below = ((ema20 - current_price) / ema20) * 100
+                    ema_warning = {
+                        "type": "EMA_INVALIDATION",
+                        "message": f"LONG position: Price ${current_price:.2f} is {pct_below:.2f}% BELOW EMA20 (${ema20:.2f})",
+                        "severity": "critical" if pct_below > 1.0 else "warning"
+                    }
+                elif direction == "short" and current_price > ema20:
+                    pct_above = ((current_price - ema20) / ema20) * 100
+                    ema_warning = {
+                        "type": "EMA_INVALIDATION",
+                        "message": f"SHORT position: Price ${current_price:.2f} is {pct_above:.2f}% ABOVE EMA20 (${ema20:.2f})",
+                        "severity": "critical" if pct_above > 1.0 else "warning"
+                    }
+
+                if ema_warning:
+                    warnings.append(ema_warning)
+                    # Track consecutive warnings
+                    _smart_exit_warning_counts[symbol]["EMA_INVALIDATION"] = \
+                        _smart_exit_warning_counts[symbol].get("EMA_INVALIDATION", 0) + 1
+                else:
+                    # Reset counter if no warning
+                    _smart_exit_warning_counts[symbol]["EMA_INVALIDATION"] = 0
+
+        except Exception as e:
+            print(f"[SMART_EXIT] EMA check error for {symbol}: {e}")
+
+    # === RULE 2: SCORE DECAY ===
+    if SMART_EXIT_SCORE_DECAY_CHECK:
+        try:
+            opening_score = None
+            if position_context:
+                opening_score = position_context.get("opening_score")
+
+            score_warning = None
+
+            # Score decay: score cambiato segno rispetto alla posizione
+            if direction == "long" and net_score < 0:
+                score_warning = {
+                    "type": "SCORE_DECAY",
+                    "message": f"LONG position but score turned NEGATIVE: {net_score:.1f}",
+                    "severity": "critical" if net_score < -10 else "warning"
+                }
+            elif direction == "short" and net_score > 0:
+                score_warning = {
+                    "type": "SCORE_DECAY",
+                    "message": f"SHORT position but score turned POSITIVE: {net_score:.1f}",
+                    "severity": "critical" if net_score > 10 else "warning"
+                }
+            # Score decay significativo rispetto all'apertura
+            elif opening_score is not None:
+                if direction == "long" and opening_score > 0:
+                    decay_pct = ((opening_score - net_score) / abs(opening_score)) * 100 if opening_score != 0 else 0
+                    if decay_pct > 50:
+                        score_warning = {
+                            "type": "SCORE_DECAY",
+                            "message": f"LONG: Score decayed {decay_pct:.0f}% from opening ({opening_score:.1f} → {net_score:.1f})",
+                            "severity": "warning"
+                        }
+                elif direction == "short" and opening_score < 0:
+                    decay_pct = ((abs(opening_score) - abs(net_score)) / abs(opening_score)) * 100 if opening_score != 0 else 0
+                    if decay_pct > 50:
+                        score_warning = {
+                            "type": "SCORE_DECAY",
+                            "message": f"SHORT: Score decayed {decay_pct:.0f}% from opening ({opening_score:.1f} → {net_score:.1f})",
+                            "severity": "warning"
+                        }
+
+            if score_warning:
+                warnings.append(score_warning)
+                _smart_exit_warning_counts[symbol]["SCORE_DECAY"] = \
+                    _smart_exit_warning_counts[symbol].get("SCORE_DECAY", 0) + 1
+            else:
+                _smart_exit_warning_counts[symbol]["SCORE_DECAY"] = 0
+
+        except Exception as e:
+            print(f"[SMART_EXIT] Score decay check error for {symbol}: {e}")
+
+    # === RULE 3: TIME STOP ===
+    if SMART_EXIT_TIME_STOP_MINUTES > 0 and position_context:
+        try:
+            duration_minutes = position_context.get("duration_minutes", 0)
+
+            if duration_minutes > SMART_EXIT_TIME_STOP_MINUTES:
+                # Controlla il P&L per valutare severità
+                pnl_pct = position_context.get("unrealized_pnl_pct") or 0
+
+                if pnl_pct < 1.0:  # Meno dell'1% di profitto dopo tanto tempo
+                    severity = "critical" if duration_minutes > SMART_EXIT_TIME_STOP_MINUTES * 2 else "warning"
+                    time_warning = {
+                        "type": "TIME_STOP",
+                        "message": f"Position open for {duration_minutes} minutes (limit: {SMART_EXIT_TIME_STOP_MINUTES}) with only {pnl_pct:.2f}% P&L",
+                        "severity": severity
+                    }
+                    warnings.append(time_warning)
+                    _smart_exit_warning_counts[symbol]["TIME_STOP"] = \
+                        _smart_exit_warning_counts[symbol].get("TIME_STOP", 0) + 1
+                else:
+                    _smart_exit_warning_counts[symbol]["TIME_STOP"] = 0
+
+        except Exception as e:
+            print(f"[SMART_EXIT] Time stop check error for {symbol}: {e}")
+
+    # === CHECK HYBRID MODE: Conferma dopo N cicli consecutivi ===
+    confirmed_exits = []
+    if SMART_EXIT_MODE == 'hybrid' and warnings:
+        for warning in warnings:
+            warning_type = warning["type"]
+            consecutive_count = _smart_exit_warning_counts[symbol].get(warning_type, 0)
+
+            if consecutive_count >= SMART_EXIT_CONFIRM_CYCLES:
+                warning["confirmed"] = True
+                warning["consecutive_cycles"] = consecutive_count
+                confirmed_exits.append(warning)
+                print(f"[SMART_EXIT] 🔴 CONFIRMED: {symbol} {warning_type} after {consecutive_count} cycles")
+
+    return warnings
+
+
+def clear_smart_exit_warnings(symbol: str):
+    """Resetta i warning per un simbolo (chiamare quando posizione chiusa)."""
+    global _smart_exit_warning_counts
+    if symbol in _smart_exit_warning_counts:
+        del _smart_exit_warning_counts[symbol]
+
+
+def get_smart_exit_warnings(symbol: str) -> list:
+    """Ritorna lista di warning attivi per un simbolo."""
+    global _smart_exit_warning_counts
+    if symbol not in _smart_exit_warning_counts:
+        return []
+    return list(_smart_exit_warning_counts[symbol].keys())
+
+
 # ===== TIMEOUT HANDLER =====
 _cycle_timeout_triggered = False
 
@@ -259,7 +466,8 @@ def run_analysis_cycle(
     ticker: str = None,
     reason: str = "scheduled",
     priority: str = "normal",
-    timeout_seconds: int = None
+    timeout_seconds: int = None,
+    sentinel_score: float = None
 ) -> dict:
     """
     Esegue un singolo ciclo di analisi trading.
@@ -269,12 +477,16 @@ def run_analysis_cycle(
         reason: Motivo del trigger (scheduled, take_profit, manual, etc.)
         priority: Priorità esecuzione (normal, high)
         timeout_seconds: Timeout per questo ciclo (default: BOT_TIMEOUT_SECONDS)
+        sentinel_score: Score già calcolato dalla sentinel (evita ricalcolo, usa prompt libero)
 
     Returns:
         dict con risultato del ciclo (actions_taken, errors, etc.)
     """
     global _cycle_timeout_triggered
     _cycle_timeout_triggered = False
+
+    # Flag per determinare se usare prompt "libero" (chiamata da sentinel)
+    is_sentinel_triggered = sentinel_score is not None and priority == "high"
 
     result = {
         "success": False,
@@ -285,7 +497,12 @@ def run_analysis_cycle(
     }
 
     from datetime import datetime, timezone
+    import time as time_module
     result["timestamp"] = datetime.now(timezone.utc).isoformat()
+    cycle_start_time = time_module.time()  # Per calcolare durata ciclo
+
+    # Lista per raccogliere tutte le decisioni (per riassunto Telegram)
+    all_decisions = []
 
     # Setup timeout per questo ciclo
     effective_timeout = timeout_seconds or BOT_TIMEOUT_SECONDS
@@ -294,7 +511,11 @@ def run_analysis_cycle(
 
     try:
         if priority == "high":
-            print(f"🚀 PRIORITY EXECUTION: {reason}")
+            if sentinel_score is not None:
+                print(f"🚀 SENTINEL TRIGGER: {reason} (score={sentinel_score:.1f})")
+                print(f"   📊 Using SENTINEL score - AI will receive liberated prompt")
+            else:
+                print(f"🚀 PRIORITY EXECUTION: {reason}")
 
         # Verifica credenziali
         if not PRIVATE_KEY or not WALLET_ADDRESS:
@@ -330,6 +551,12 @@ def run_analysis_cycle(
         print("[STEP 2] Recupero news e whale alerts...")
         news_txt = fetch_latest_news()
         whale_alerts_txt = format_whale_alerts_to_string()
+        whale_alerts_json = get_whale_alerts_json()  # Versione strutturata per AI
+
+        # Log whale sentiment summary
+        if whale_alerts_json and not whale_alerts_json.get("error"):
+            ws = whale_alerts_json.get("summary", {})
+            print(f"[WHALE] 🐋 {ws.get('total_alerts', 0)} alerts | Sentiment: {ws.get('net_sentiment', 'N/A')} | Flow: {ws.get('net_flow', 'N/A')}")
 
         print("[STEP 3] Recupero sentiment e forecast...")
         sentiment_txt, sentiment_json = get_sentiment()
@@ -396,10 +623,18 @@ def run_analysis_cycle(
             net_score = score_data.get('net_score', 0)
             direction = score_data.get('direction', 'HOLD')
 
+            # Se sentinel trigger per questo ticker, usa sentinel_score
+            if is_sentinel_triggered and ticker and ticker.upper() == ticker_sym:
+                net_score = sentinel_score
+                direction = "LONG" if sentinel_score > 0 else "SHORT" if sentinel_score < 0 else "HOLD"
+                print(f"\n{'='*50}")
+                print(f"🚀 SENTINEL: {ticker_sym} usando score sentinel={sentinel_score:.1f} invece di ricalcolato")
+            else:
+                print(f"\n{'='*50}")
+
             # Verifica se c'è già una posizione aperta su questo simbolo
             has_position = ticker_sym in open_symbols
 
-            print(f"\n{'='*50}")
             print(f"📈 Valutazione {ticker_sym}: score={net_score:.1f}, direction={direction}, position={'YES' if has_position else 'NO'}")
 
             # Se c'è già una posizione, gestiscila (HOLD o CLOSE)
@@ -421,7 +656,17 @@ def run_analysis_cycle(
                     is_micro_gain_candidate = True
                     print(f"   🎯 {ticker_sym}: score {net_score:.1f} in range MICRO_GAIN ({SCORE_THRESHOLD_HOLD}-{SCORE_THRESHOLD_OPEN})")
 
-            # === MICRO_GAIN: Forza OPEN senza chiedere all'AI ===
+            # === MICRO_GAIN: Forza OPEN senza chiedere all'AI (a meno che DOUBLE_CHECK sia attivo) ===
+            if is_micro_gain_candidate:
+                micro_direction = "long" if net_score > 0 else "short"
+
+                # Se DOUBLE_CHECK è attivo, passa all'AI invece di aprire direttamente
+                if DOUBLE_CHECK_AI_ENABLED:
+                    print(f"   🔍 DOUBLE_CHECK: {ticker_sym} MICRO_GAIN passa a AI per validazione")
+                    is_micro_gain_candidate = False  # Disabilita auto-open, farà decidere AI
+                    # NON fare continue, lascia proseguire all'AI call sotto
+
+            # Esegue auto-open solo se ancora candidato (DOUBLE_CHECK non attivo)
             if is_micro_gain_candidate:
                 micro_direction = "long" if net_score > 0 else "short"
                 print(f"   🎯 MICRO_GAIN AUTO-OPEN: {ticker_sym} {micro_direction.upper()} (score={net_score:.1f})")
@@ -461,6 +706,10 @@ def run_analysis_cycle(
                             # Trade Journal: registra apertura
                             if TRADE_JOURNAL_ENABLED:
                                 try:
+                                    # Estrai dati tecnici per HYBRID data collection
+                                    ticker_ind = next((ind for ind in indicators_json if ind.get('ticker') == ticker_sym), None)
+                                    tech_data = get_technical_indicators_advanced(ticker_ind) if AI_CONTEXT_ENABLED and ticker_ind else {}
+
                                     trade_uuid = tj.open_trade(
                                         symbol=ticker_sym,
                                         direction=pos["side"].upper(),
@@ -470,9 +719,16 @@ def run_analysis_cycle(
                                         leverage=MICRO_GAIN_LEVERAGE,
                                         score=net_score,
                                         sl_percent=float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '3.0')),
-                                        tp_percent=MICRO_GAIN_TARGET_PERCENT
+                                        tp_percent=MICRO_GAIN_TARGET_PERCENT,
+                                        # Dati HYBRID per analisi Smart Exit
+                                        price_vs_ema20=tech_data.get('price_vs_ema20_pct'),
+                                        ema_alignment=tech_data.get('ema_alignment'),
+                                        trend_direction=tech_data.get('rsi_trend'),
+                                        atr=tech_data.get('atr_percent'),
+                                        # Chi ha aperto
+                                        open_source=tj.OpenSource.MICRO_GAIN_AUTO
                                     )
-                                    print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}...")
+                                    print(f"[JOURNAL] 📒 Trade registrato (MICRO_GAIN_AUTO): {trade_uuid[:8]}...")
                                 except Exception as je:
                                     print(f"[JOURNAL] ⚠️ Errore registrazione trade: {je}")
 
@@ -482,8 +738,14 @@ def run_analysis_cycle(
                 except Exception as e:
                     print(f"[TRACKING] ⚠️ Errore creazione tracking MICRO_GAIN: {e}")
 
-                # Notifica e salva (MICRO_GAIN aperto dal sistema AI main.py)
-                tg.notify_trading_decision(out, source="AI")
+                # Aggiungi a decisioni per riassunto + notifica apertura
+                all_decisions.append({
+                    "symbol": out.get("symbol"),
+                    "operation": out.get("operation"),
+                    "direction": out.get("direction", ""),
+                    "reason": "MICRO_GAIN auto-open",
+                })
+                tg.notify_trading_decision(out)  # Notifica apertura
                 op_id = db_utils.log_bot_operation(
                     out,
                     system_prompt="MICRO_GAIN auto-open",
@@ -531,7 +793,8 @@ def run_analysis_cycle(
                     forecasts_json=forecasts_json,
                     account_status=account_status,
                     position=ticker_position,
-                    score_data=score_data
+                    score_data=score_data,
+                    whale_data=whale_alerts_json  # Whale alerts strutturati
                 )
                 # Estrai position_context dal ticker_context per il profit-taking
                 position_context = ticker_context.get('position_context')
@@ -564,6 +827,57 @@ def run_analysis_cycle(
                 msg_info
             )
 
+            # === SMART EXIT WARNINGS: Genera warning per posizioni aperte ===
+            smart_exit_warnings = []
+            if has_position and ticker_position and SMART_EXIT_ENABLED:
+                smart_exit_warnings = generate_smart_exit_warnings(
+                    symbol=ticker_sym,
+                    position=ticker_position,
+                    position_context=position_context,
+                    ticker_indicators=ticker_indicators[0] if ticker_indicators else {},
+                    net_score=net_score
+                )
+
+                if smart_exit_warnings:
+                    # Costruisci sezione warning per il prompt
+                    warning_lines = []
+                    has_critical = any(w.get("severity") == "critical" for w in smart_exit_warnings)
+                    has_confirmed = any(w.get("confirmed") for w in smart_exit_warnings)
+
+                    warning_lines.append("")
+                    warning_lines.append("## ⚠️ SMART EXIT WARNINGS")
+                    warning_lines.append("")
+
+                    for w in smart_exit_warnings:
+                        severity_icon = "🔴" if w.get("severity") == "critical" else "🟡"
+                        confirmed_tag = " [CONFIRMED]" if w.get("confirmed") else ""
+                        warning_lines.append(f"{severity_icon} **{w['type']}**{confirmed_tag}: {w['message']}")
+
+                    warning_lines.append("")
+                    warning_lines.append("### What these warnings mean:")
+                    warning_lines.append("- **EMA_INVALIDATION**: Price has crossed the EMA20 against your position direction")
+                    warning_lines.append("- **SCORE_DECAY**: The trading score has weakened or reversed")
+                    warning_lines.append("- **TIME_STOP**: Position open too long with minimal profit")
+                    warning_lines.append("")
+
+                    if has_confirmed:
+                        warning_lines.append("### ⚠️ CONFIRMED SIGNALS:")
+                        warning_lines.append("Some warnings have been confirmed over multiple cycles.")
+                        warning_lines.append("This increases the probability that the exit signal is valid.")
+                        warning_lines.append("")
+
+                    warning_lines.append("### Your task:")
+                    warning_lines.append("Evaluate these warnings alongside other factors (P&L, trend, etc.)")
+                    warning_lines.append("and decide whether to CLOSE or HOLD the position.")
+                    warning_lines.append("The warnings are informational - you make the final decision.")
+
+                    system_prompt += "\n".join(warning_lines)
+
+                    # Log warnings
+                    print(f"   ⚠️ SMART_EXIT: {len(smart_exit_warnings)} warning(s) for {ticker_sym}")
+                    for w in smart_exit_warnings:
+                        print(f"      - {w['type']}: {w['message'][:60]}...")
+
             # === AI_FREE_MODE: Aggiungi istruzioni per libertà decisionale ===
             if AI_FREE_MODE:
                 free_mode_instructions = """
@@ -594,6 +908,42 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
 """
                 system_prompt += free_mode_instructions
                 print(f"   🆓 AI_FREE_MODE: Prompt modificato per libertà decisionale")
+
+            # === SENTINEL TRIGGER: Additional context when called by sentinel ===
+            if is_sentinel_triggered:
+                sentinel_direction = "LONG" if sentinel_score > 0 else "SHORT"
+                sentinel_instructions = f"""
+
+## SENTINEL TRIGGER - ADDITIONAL CONTEXT
+
+You have been called by the SENTINEL monitoring system because it detected a potentially significant signal.
+
+### PRE-CALCULATED DATA FROM SENTINEL:
+- **Sentinel Score**: {sentinel_score:.1f}
+- **Suggested Direction**: {sentinel_direction}
+- **Trigger Reason**: {reason}
+
+### CONTEXT:
+This score was calculated by the sentinel using real-time market data.
+It is provided as additional information for your analysis.
+
+### YOUR TASK:
+Analyze the full context (indicators, sentiment, volume, etc.) and make your own independent decision.
+The sentinel score is just one data point to consider - you are free to:
+- Agree with the suggested direction and OPEN
+- Disagree if you see contradicting signals and HOLD
+- Make any decision you believe is correct based on your analysis
+
+### KEY QUESTIONS TO CONSIDER:
+1. Do the technical indicators (RSI, MACD, EMA) support the {sentinel_direction} direction?
+2. Is there any significant contradiction in the data?
+3. What does the volume pattern suggest?
+4. Is the risk/reward favorable?
+
+You have full autonomy to decide. The sentinel score is informational only.
+"""
+                system_prompt += sentinel_instructions
+                print(f"   🚀 SENTINEL MODE: Additional context provided (score={sentinel_score:.1f}, dir={sentinel_direction})")
 
             # === PROFIT-TAKING RULES: Aggiungi pressione per prendere profitti ===
             if has_position and ticker_position:
@@ -626,12 +976,12 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                 max_profit_pct = 0
                 duration_minutes = 0
                 if position_context:
-                    max_profit_pct = position_context.get('max_profit_pct', current_pnl_pct)
-                    duration_minutes = position_context.get('duration_minutes', 0)
+                    max_profit_pct = position_context.get('max_profit_pct') or current_pnl_pct or 0
+                    duration_minutes = position_context.get('duration_minutes') or 0
 
                 # Calcola profit decay
                 profit_decay_pct = 0
-                if max_profit_pct > 0 and current_pnl_pct < max_profit_pct:
+                if max_profit_pct is not None and max_profit_pct > 0 and current_pnl_pct is not None and current_pnl_pct < max_profit_pct:
                     profit_decay_pct = ((max_profit_pct - current_pnl_pct) / max_profit_pct) * 100
 
                 # Costruisci warning dinamico
@@ -768,6 +1118,10 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                 bot.execute_signal(out)
                 actions_taken.append(out)
 
+                # Clear Smart Exit warnings quando posizione viene chiusa
+                if out.get("operation") == "close":
+                    clear_smart_exit_warnings(ticker_sym)
+
                 # Trade Journal: registra chiusura PRIMA di eliminare tracking
                 if out.get("operation") == "close" and TRADE_JOURNAL_ENABLED:
                     try:
@@ -795,6 +1149,71 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                                 close_score=net_score if net_score else None
                             )
                             print(f"[JOURNAL] 📒 Trade chiuso: Net P&L ${result_close['net_pnl_usd']:.2f}")
+
+                            # === TELEGRAM: Notifica chiusura AI ===
+                            try:
+                                from datetime import datetime as dt
+
+                                # Recupera dati per messaggio
+                                entry_price = float(open_trade.get('entry_price', 0))
+                                position_size = float(open_trade.get('size', 0))
+                                direction = open_trade.get('direction', 'LONG').lower()
+                                leverage = int(open_trade.get('leverage', 1))
+                                value_usd = position_size * entry_price
+                                margin = value_usd / leverage if leverage > 0 else value_usd
+
+                                # Entry time da tracking o journal
+                                entry_time = dt.now()
+                                if position_context and position_context.get('open_timestamp'):
+                                    try:
+                                        entry_time = dt.fromisoformat(str(position_context['open_timestamp']).replace('Z', ''))
+                                    except:
+                                        pass
+                                elif open_trade.get('created_at'):
+                                    try:
+                                        created = open_trade['created_at']
+                                        if isinstance(created, str):
+                                            entry_time = dt.fromisoformat(created.replace('Z', '+00:00').replace('+00:00', ''))
+                                        else:
+                                            entry_time = created.replace(tzinfo=None) if hasattr(created, 'replace') else created
+                                    except:
+                                        pass
+
+                                exit_time = dt.now()
+
+                                # Recupera balance attuale
+                                balance = None
+                                try:
+                                    account_state = bot.exchange.info.user_state(bot.exchange.account_address)
+                                    balance = float(account_state.get("marginSummary", {}).get("accountValue", 0))
+                                except:
+                                    pass
+
+                                # Motivo chiusura
+                                close_reason_text = out.get('reason', 'AI Decision')[:100]
+
+                                # Invia messaggio
+                                tg.notify_trade_summary(
+                                    symbol=ticker_sym,
+                                    direction=direction,
+                                    leverage=leverage,
+                                    entry_price=entry_price,
+                                    entry_time=entry_time,
+                                    size=position_size,
+                                    value_usd=value_usd,
+                                    margin=margin,
+                                    exit_price=exit_price,
+                                    exit_time=exit_time,
+                                    close_reason=close_reason_text,
+                                    pnl_usd=result_close['net_pnl_usd'],
+                                    pnl_pct=result_close['net_pnl_pct'],
+                                    score_open=float(open_trade.get('open_score', 0)) if open_trade.get('open_score') else None,
+                                    score_close=net_score,
+                                    balance=balance
+                                )
+                                print(f"[TELEGRAM] ✅ Notifica chiusura inviata")
+                            except Exception as te:
+                                print(f"[TELEGRAM] ⚠️ Errore notifica: {te}")
                     except Exception as je:
                         print(f"[JOURNAL] ⚠️ Errore chiusura trade: {je}")
 
@@ -839,6 +1258,9 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                                             trailing_act = NORMAL_TRAILING_ACTIVATION
                                             trailing_g = NORMAL_TRAILING_GAP
 
+                                        # Estrai dati tecnici per HYBRID data collection
+                                        tech_data = ticker_context.get('technical_advanced', {}) if ticker_context else {}
+
                                         trade_uuid = tj.open_trade(
                                             symbol=ticker_sym,
                                             direction=pos["side"].upper(),
@@ -850,9 +1272,16 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                                             sl_percent=sl_pct,
                                             tp_percent=tp_pct,
                                             trailing_activation=trailing_act,
-                                            trailing_gap=trailing_g
+                                            trailing_gap=trailing_g,
+                                            # Dati HYBRID per analisi Smart Exit
+                                            price_vs_ema20=tech_data.get('price_vs_ema20_pct'),
+                                            ema_alignment=tech_data.get('ema_alignment'),
+                                            trend_direction=tech_data.get('rsi_trend'),
+                                            atr=tech_data.get('atr_percent'),
+                                            # Chi ha aperto
+                                            open_source=tj.OpenSource.AI_DECISION
                                         )
-                                        print(f"[JOURNAL] 📒 Trade registrato: {trade_uuid[:8]}... (mode: {trading_mode})")
+                                        print(f"[JOURNAL] 📒 Trade registrato (AI_DECISION): {trade_uuid[:8]}... (mode: {trading_mode})")
                                     except Exception as je:
                                         print(f"[JOURNAL] ⚠️ Errore registrazione trade: {je}")
 
@@ -863,8 +1292,17 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
                     except Exception as e:
                         print(f"[TRACKING] ⚠️ Errore creazione tracking: {e}")
 
-            # Notifica Telegram con identificazione decisore AI
-            tg.notify_trading_decision(out, source="AI")
+            # Raccogli decisione per riassunto (notifica singola solo per OPEN)
+            all_decisions.append({
+                "symbol": out.get("symbol"),
+                "operation": out.get("operation"),
+                "direction": out.get("direction", ""),
+                "reason": out.get("reason", "")[:100],
+            })
+
+            # Notifica singola SOLO per aperture (importanti da sapere subito)
+            if out.get("operation") == "open":
+                tg.notify_trading_decision(out)
 
             # Salva operazione nel DB
             op_id = db_utils.log_bot_operation(
@@ -901,6 +1339,80 @@ Il net_score nel context è informativo, NON vincolante. Tu decidi.
 
         result["success"] = True
         result["actions_taken"] = actions_taken
+
+        # === NOTIFICA RIASSUNTO CICLO AI ===
+        try:
+            cycle_duration = time_module.time() - cycle_start_time
+
+            # Prepara scores per il riassunto
+            scores_for_summary = {}
+            if SCORING_ENABLED and scores:
+                for sym, score_data in scores.items():
+                    scores_for_summary[sym] = {
+                        "net": score_data.get("net_score", 0),
+                        "bull": score_data.get("bull_score", 0),
+                        "bear": score_data.get("bear_score", 0),
+                    }
+
+            # Recupera info account e dettaglio posizioni
+            positions_detail = []
+            try:
+                account_status = bot.get_account_status()
+                balance = account_status.get("balance", 0)
+                open_positions_list = account_status.get("open_positions", [])
+                open_pos_count = len(open_positions_list)
+
+                # Costruisci dettaglio posizioni
+                for pos in open_positions_list:
+                    sym = pos.get("symbol", "?")
+                    # Recupera tracking per durata
+                    tracking = db_utils.get_position_tracking(sym)
+                    duration_min = 0
+                    if tracking and tracking.get("created_at"):
+                        try:
+                            from datetime import datetime as dt
+                            created = tracking["created_at"]
+                            if isinstance(created, str):
+                                created = dt.fromisoformat(created.replace('Z', '+00:00').replace('+00:00', ''))
+                            duration_min = int((dt.now() - created.replace(tzinfo=None)).total_seconds() / 60)
+                        except:
+                            pass
+
+                    positions_detail.append({
+                        "symbol": sym,
+                        "direction": pos.get("side", "?"),
+                        "pnl_pct": float(pos.get("unrealized_pnl_pct", 0)),
+                        "pnl_usd": float(pos.get("unrealized_pnl", 0)),
+                        "duration_min": duration_min
+                    })
+            except:
+                balance = None
+                open_pos_count = None
+
+            # Recupera Smart Exit warnings attive
+            smart_exit_warnings = {}
+            try:
+                for sym in tickers:
+                    warns = get_smart_exit_warnings(sym)
+                    if warns:
+                        smart_exit_warnings[sym] = warns
+            except:
+                pass
+
+            # Invia riassunto
+            tg.notify_ai_cycle_summary(
+                reason=reason,
+                tickers_analyzed=tickers,
+                decisions=all_decisions,
+                scores=scores_for_summary,
+                duration_seconds=cycle_duration,
+                balance=balance,
+                open_positions=open_pos_count,
+                positions_detail=positions_detail if positions_detail else None,
+                smart_exit_warnings=smart_exit_warnings if smart_exit_warnings else None,
+            )
+        except Exception as e:
+            print(f"[TELEGRAM] ⚠️ Errore invio riassunto: {e}")
 
     except TimeoutError:
         result["errors"].append(f"Cycle timeout after {effective_timeout}s")
@@ -982,11 +1494,10 @@ def run_autonomous_loop(interval_minutes: int = None):
                 # Se troppi errori consecutivi, notifica e rallenta
                 if errors_count >= max_consecutive_errors:
                     print(f"🚨 {errors_count} errori consecutivi! Rallento l'esecuzione...")
-                    tg.notify_error(
-                        error_type="LOOP_ERRORS",
-                        error_message=f"{errors_count} errori consecutivi nel loop autonomo. Ultimo errore: {str(e)[:200]}",
-                        source="AI",
-                        severity="ERROR"
+                    tg.send_telegram_message(
+                        f"🚨 <b>BOT ALERT</b>\n\n"
+                        f"{errors_count} errori consecutivi nel loop autonomo.\n"
+                        f"Ultimo errore: {str(e)[:200]}"
                     )
                     # Aspetta il doppio del tempo
                     time.sleep(interval_seconds)
@@ -1021,6 +1532,7 @@ Esempi:
     parser.add_argument("--loop", action="store_true", help="Esegui in loop autonomo continuo")
     parser.add_argument("--interval", type=int, default=None, help="Intervallo loop in minuti (default: AI_CALL_INTERVAL_MINUTES)")
     parser.add_argument("--priority", type=str, default="normal", choices=["normal", "high"], help="Priorità esecuzione")
+    parser.add_argument("--sentinel-score", type=float, default=None, help="Score calcolato dalla sentinel (evita ricalcolo)")
 
     args = parser.parse_args()
 
@@ -1038,10 +1550,12 @@ Esempi:
         run_autonomous_loop(interval_minutes=args.interval)
     else:
         # Modalità single run
+        sentinel_score = getattr(args, 'sentinel_score', None)
         result = run_analysis_cycle(
             ticker=args.ticker,
             reason=args.reason,
-            priority=args.priority
+            priority=args.priority,
+            sentinel_score=sentinel_score
         )
 
         if not result["success"]:

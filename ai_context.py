@@ -937,6 +937,7 @@ def build_full_ai_context(
     account_status: dict,
     position: dict = None,
     score_data: dict = None,
+    whale_data: dict = None,
 ) -> dict:
     """
     Costruisce il contesto completo per l'AI.
@@ -949,6 +950,7 @@ def build_full_ai_context(
         account_status: Stato account
         position: Posizione aperta (se esiste)
         score_data: Score calcolato
+        whale_data: Dati whale alerts strutturati (da get_whale_alerts_json)
 
     Returns:
         dict con contesto completo per AI
@@ -1001,6 +1003,9 @@ def build_full_ai_context(
         # === FORECAST ===
         "forecast": forecasts_json,
 
+        # === WHALE ALERTS (strutturati) ===
+        "whale_alerts": _extract_whale_context(symbol, whale_data) if whale_data else None,
+
         # === ACCOUNT ===
         "account_balance": account_status.get("balance_usd", 0) if account_status else 0,
         "open_positions_count": len(account_status.get("open_positions", [])) if account_status else 0,
@@ -1010,6 +1015,94 @@ def build_full_ai_context(
     }
 
     return context
+
+
+def _extract_whale_context(symbol: str, whale_data: dict) -> dict:
+    """
+    Estrae contesto whale rilevante per un simbolo specifico.
+
+    Args:
+        symbol: Simbolo da analizzare
+        whale_data: Dati whale completi da get_whale_alerts_json()
+
+    Returns:
+        dict con whale context per il simbolo
+    """
+    if not whale_data or whale_data.get("error"):
+        return {
+            "available": False,
+            "error": whale_data.get("error") if whale_data else "No data"
+        }
+
+    symbol_upper = symbol.upper()
+    summary = whale_data.get("summary", {})
+    by_symbol = whale_data.get("by_symbol", {})
+
+    # Dati specifici per il simbolo
+    symbol_whale = by_symbol.get(symbol_upper, {})
+
+    # Estrai solo gli alert rilevanti per questo simbolo (ultimi 3)
+    relevant_alerts = [
+        {
+            "timestamp": a.get("timestamp"),
+            "amount": a.get("amount"),
+            "usd_value": a.get("usd_value"),
+            "movement_type": a.get("movement_type"),
+            "sentiment": a.get("sentiment"),
+            "reason": a.get("reason")
+        }
+        for a in whale_data.get("alerts", [])
+        if a.get("symbol") == symbol_upper
+    ][:3]  # Max 3 alert per non appesantire il context
+
+    return {
+        "available": True,
+
+        # === MARKET-WIDE WHALE SENTIMENT ===
+        "market_summary": {
+            "total_alerts": summary.get("total_alerts", 0),
+            "net_sentiment": summary.get("net_sentiment", "neutral"),
+            "net_flow": summary.get("net_flow", "neutral"),
+            "exchange_inflow_usd": summary.get("exchange_inflow_usd", 0),
+            "exchange_outflow_usd": summary.get("exchange_outflow_usd", 0),
+            "interpretation": _interpret_whale_flow(summary)
+        },
+
+        # === SYMBOL-SPECIFIC WHALE DATA ===
+        "symbol_data": {
+            "alerts_count": symbol_whale.get("count", 0),
+            "total_volume_usd": symbol_whale.get("total_usd", 0),
+            "bullish_movements": symbol_whale.get("bullish", 0),
+            "bearish_movements": symbol_whale.get("bearish", 0),
+            "net_sentiment": symbol_whale.get("net_sentiment", "neutral") if symbol_whale else "no_data"
+        } if symbol_whale else None,
+
+        # === RECENT ALERTS FOR SYMBOL ===
+        "recent_alerts": relevant_alerts if relevant_alerts else None
+    }
+
+
+def _interpret_whale_flow(summary: dict) -> str:
+    """
+    Genera interpretazione leggibile del flusso whale.
+    """
+    net_flow = summary.get("net_flow", "neutral")
+    net_sentiment = summary.get("net_sentiment", "neutral")
+    inflow = summary.get("exchange_inflow_usd", 0)
+    outflow = summary.get("exchange_outflow_usd", 0)
+
+    if net_flow == "bullish" and net_sentiment == "bullish":
+        return "Strong accumulation: whales withdrawing from exchanges (bullish)"
+    elif net_flow == "bearish" and net_sentiment == "bearish":
+        return "Distribution phase: whales depositing to exchanges (bearish)"
+    elif net_flow == "bullish":
+        return "Net outflow from exchanges suggests accumulation"
+    elif net_flow == "bearish":
+        return "Net inflow to exchanges suggests selling pressure"
+    elif inflow > 0 or outflow > 0:
+        return "Mixed whale activity, no clear direction"
+    else:
+        return "Low whale activity"
 
 
 def format_context_summary(context: dict) -> str:
@@ -1062,6 +1155,18 @@ def format_context_summary(context: dict) -> str:
     oi = market.get("open_interest", {}).get(symbol)
     if oi is not None:
         lines.append(f"OI=${oi/1e6:.1f}M")
+
+    # Whale alerts
+    whale = context.get("whale_alerts", {})
+    if whale and whale.get("available"):
+        whale_summary = whale.get("market_summary", {})
+        whale_symbol = whale.get("symbol_data", {})
+        net_sent = whale_summary.get("net_sentiment", "N/A")
+        lines.append(f"Whale={net_sent}")
+        if whale_symbol:
+            sym_sent = whale_symbol.get("net_sentiment", "N/A")
+            if sym_sent != net_sent:
+                lines.append(f"Whale_{symbol}={sym_sent}")
 
     return f"[{symbol}] " + " | ".join(lines) if lines else f"[{symbol}] No context"
 

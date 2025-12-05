@@ -44,6 +44,20 @@ except ImportError:
     DB_UTILS_ENABLED = False
     db_utils = None
 
+# Risk Config - ENABLED_SYMBOLS e MAX_TRADES_PER_DAY
+try:
+    import risk_config as rc
+    RISK_CONFIG_ENABLED = True
+    ENABLED_SYMBOLS = rc.ENABLED_SYMBOLS
+    MAX_TRADES_PER_DAY = rc.DAILY_LIMITS.MAX_TRADES_PER_DAY
+    print(f"[SENTINEL] ✅ risk_config: Symbols={ENABLED_SYMBOLS}, MaxTrades={MAX_TRADES_PER_DAY}")
+except ImportError:
+    RISK_CONFIG_ENABLED = False
+    # Strip whitespace da ogni simbolo
+    ENABLED_SYMBOLS = [s.strip() for s in os.getenv('ENABLED_SYMBOLS', 'BTC,ETH,SOL').split(',')]
+    MAX_TRADES_PER_DAY = int(os.getenv('MAX_TRADES_PER_DAY', '30'))
+    print(f"[SENTINEL] ⚠️ risk_config non trovato, uso env: Symbols={ENABLED_SYMBOLS}")
+
 # Configurazione
 SENTINEL_ENABLED = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
 SENTINEL_INTERVAL = int(os.getenv('SENTINEL_INTERVAL_SECONDS', '60'))
@@ -82,6 +96,9 @@ SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))
 
 # AI_FREE_MODE: se true, AI decide liberamente (score come suggerimento)
 AI_FREE_MODE = os.getenv('AI_FREE_MODE', 'false').lower() == 'true'
+
+# DOUBLE_CHECK_AI: se true, aperture MICRO_GAIN passano attraverso AI per validazione
+DOUBLE_CHECK_AI_ENABLED = os.getenv('DOUBLE_CHECK_AI_ENABLED', 'false').lower() == 'true'
 
 MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
 MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # % balance per posizione
@@ -236,7 +253,7 @@ def log(msg: str):
 # SMART SENTINEL: WAKE AI AGENT
 # ============================================================================
 
-def wake_ai_agent(symbol: str, reason: str):
+def wake_ai_agent(symbol: str, reason: str, sentinel_score: float = None):
     """
     Sveglia l'AI agent per rivalutare un simbolo.
 
@@ -245,18 +262,25 @@ def wake_ai_agent(symbol: str, reason: str):
     Args:
         symbol: Simbolo da analizzare (BTC, ETH, SOL)
         reason: Motivo del trigger (stop_loss, trailing_stop, volatility_spike, etc.)
+        sentinel_score: Score calcolato dalla sentinel (passato all'AI per evitare ricalcolo)
     """
     import telegram_notifier as tg
 
-    log(f"🚀 Triggering AI agent per {symbol} (reason: {reason})...")
+    score_info = f", score={sentinel_score:.1f}" if sentinel_score is not None else ""
+    log(f"🚀 Triggering AI agent per {symbol} (reason: {reason}{score_info})...")
 
     try:
         # Prepara il comando
         log_file = f"/tmp/ai_wake_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
+        # Costruisci comando con score opzionale
+        cmd = [sys.executable, "main.py", "--ticker", symbol, "--reason", reason, "--priority", "high"]
+        if sentinel_score is not None:
+            cmd.extend(["--sentinel-score", str(sentinel_score)])
+
         with open(log_file, 'w') as f_out:
             process = subprocess.Popen(
-                [sys.executable, "main.py", "--ticker", symbol, "--reason", reason, "--priority", "high"],
+                cmd,
                 stdout=f_out,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -275,12 +299,14 @@ def wake_ai_agent(symbol: str, reason: str):
                     "volatility_spike": "⚡",
                     "reversal": "🔄",
                     "sl_mismatch": "⚠️",
+                    "score_signal": "📊",
                 }
                 emoji = emoji_map.get(reason, "🤖")
+                score_msg = f"\n<b>Score:</b> {sentinel_score:.1f}" if sentinel_score is not None else ""
                 tg.send_telegram_message(
                     f"{emoji} <b>AI Wake Trigger</b>\n\n"
                     f"<b>Symbol:</b> {symbol}\n"
-                    f"<b>Reason:</b> {reason}\n"
+                    f"<b>Reason:</b> {reason}{score_msg}\n"
                     f"<b>PID:</b> {process.pid}"
                 )
             except Exception:
@@ -293,6 +319,181 @@ def wake_ai_agent(symbol: str, reason: str):
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# DOUBLE_CHECK AI: VALIDAZIONE SINCRONA IMMEDIATA
+# ============================================================================
+
+def validate_double_check_ai(symbol: str, direction: str, score: float, trading_mode: str = "MICRO_GAIN") -> dict:
+    """
+    Chiama l'AI per validare un segnale MICRO_GAIN/MICRO_PAY prima di aprire.
+    CHIAMATA SINCRONA - aspetta la risposta AI immediatamente.
+
+    Args:
+        symbol: Simbolo da validare (BTC, ETH, SOL)
+        direction: Direzione proposta ("long" o "short")
+        score: Score che ha generato il segnale
+        trading_mode: Modalità trading (MICRO_GAIN, MICRO_PAY)
+
+    Returns:
+        dict con:
+        - approved: True se AI conferma, False se rifiuta
+        - operation: "open" o "hold"
+        - reason: Motivo della decisione AI
+    """
+    log(f"   🔍 DOUBLE_CHECK: Validazione AI immediata per {symbol} {direction.upper()}...")
+
+    try:
+        from trading_agent import previsione_trading_agent
+        from indicators import analyze_multiple_tickers
+        from sentiment import get_sentiment
+        from whalealert import get_whale_alerts_json
+
+        # === 1. RECUPERA CONTESTO ===
+        score_history = _get_recent_scores(symbol, limit=5)
+        score_trend = _analyze_score_trend(score_history)
+
+        try:
+            _, indicators_list = analyze_multiple_tickers([symbol])
+            indicators_data = indicators_list[0] if indicators_list else {}
+        except:
+            indicators_data = {}
+
+        try:
+            _, sentiment_data = get_sentiment()
+        except:
+            sentiment_data = {}
+
+        try:
+            whale_data = get_whale_alerts_json()
+            whale_sentiment = whale_data.get("summary", {}).get("net_sentiment", "neutral")
+            whale_symbol = whale_data.get("by_symbol", {}).get(symbol.upper(), {})
+        except:
+            whale_sentiment = "unavailable"
+            whale_symbol = {}
+
+        # === 2. COSTRUISCI PROMPT FOCALIZZATO ===
+        prompt = f"""## DOUBLE_CHECK VALIDATION - IMMEDIATE DECISION REQUIRED
+
+Validate this {trading_mode} signal NOW. Be decisive.
+
+### PROPOSED TRADE:
+- Symbol: {symbol}
+- Direction: {direction.upper()}
+- Score: {score:.1f}
+- Mode: {trading_mode}
+
+### SCORE HISTORY (last 5):
+{_format_score_history(score_history)}
+- Trend: {score_trend}
+
+### WHALE ACTIVITY:
+- Market: {whale_sentiment}
+- {symbol}: {whale_symbol.get('net_sentiment', 'no data')} ({whale_symbol.get('count', 0)} movements)
+
+### INDICATORS:
+{_format_quick_indicators(indicators_data)}
+
+### SENTIMENT:
+- Fear & Greed: {sentiment_data.get('value', 'N/A')} ({sentiment_data.get('sentiment', 'N/A')})
+
+### DECIDE NOW:
+1. Score trend supports direction? 2. Whale confirms? 3. Indicators aligned?
+
+Respond ONLY with JSON:
+{{"operation": "open|hold", "symbol": "{symbol}", "direction": "{direction}", "reason": "max 30 words", "confidence": "high|medium|low"}}
+
+"open" = proceed, "hold" = reject
+"""
+
+        log(f"      Chiamata AI...")
+        ai_response = previsione_trading_agent(prompt, indicators=[indicators_data] if indicators_data else None, sentiment=sentiment_data)
+
+        operation = ai_response.get("operation", "hold").lower()
+        ai_reason = ai_response.get("reason", "No reason")[:80]
+        approved = operation == "open"
+
+        if approved:
+            log(f"      ✅ AI APPROVA: {ai_reason}")
+        else:
+            log(f"      ❌ AI RIFIUTA: {ai_reason}")
+
+        return {
+            "approved": approved,
+            "operation": operation,
+            "reason": ai_reason,
+            "confidence": ai_response.get("confidence", "medium"),
+            "direction": ai_response.get("direction", direction)
+        }
+
+    except Exception as e:
+        log(f"      ⚠️ Errore validazione AI: {e}")
+        return {"approved": False, "operation": "hold", "reason": f"Error: {str(e)}", "error": str(e)}
+
+
+def _get_recent_scores(symbol: str, limit: int = 5) -> list:
+    """Recupera ultimi N score dal database."""
+    try:
+        with db_utils.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT net_score, created_at FROM score_history
+                    WHERE symbol = %s ORDER BY created_at DESC LIMIT %s
+                """, (symbol, limit))
+                return [{"score": float(r[0]), "time": r[1]} for r in cur.fetchall()]
+    except:
+        return []
+
+
+def _analyze_score_trend(score_history: list) -> str:
+    """Analizza trend degli ultimi score."""
+    if len(score_history) < 2:
+        return "insufficient_data"
+    scores = [s["score"] for s in score_history]
+    changes = [scores[i] - scores[i+1] for i in range(len(scores)-1)]
+    avg_change = sum(changes) / len(changes) if changes else 0
+    all_positive = all(s > 0 for s in scores)
+    all_negative = all(s < 0 for s in scores)
+    trend = "strengthening" if avg_change > 2 else "weakening" if avg_change < -2 else "stable"
+    if all_positive:
+        return f"{trend}_bullish"
+    elif all_negative:
+        return f"{trend}_bearish"
+    return f"{trend}_mixed"
+
+
+def _format_score_history(score_history: list) -> str:
+    """Formatta score history per prompt."""
+    if not score_history:
+        return "- No history"
+    lines = []
+    for s in score_history:
+        time_str = s["time"].strftime("%H:%M") if hasattr(s["time"], "strftime") else str(s["time"])
+        dir_str = "bull" if s["score"] > 0 else "bear" if s["score"] < 0 else "neutral"
+        lines.append(f"  {time_str}: {s['score']:.1f} ({dir_str})")
+    return "\n".join(lines)
+
+
+def _format_quick_indicators(indicators: dict) -> str:
+    """Formatta indicatori per prompt."""
+    if not indicators:
+        return "- No data"
+    lines = []
+    current = indicators.get("current", {})
+    intraday = indicators.get("intraday", {})
+    price, ema20 = current.get("price"), current.get("ema20")
+    if price and ema20:
+        vs_ema = ((price - ema20) / ema20) * 100
+        lines.append(f"- Price: ${price:.2f} ({vs_ema:+.1f}% vs EMA20)")
+    rsi = intraday.get("rsi_14", [])
+    if rsi:
+        zone = "OB" if rsi[-1] > 70 else "OS" if rsi[-1] < 30 else "N"
+        lines.append(f"- RSI: {rsi[-1]:.0f} ({zone})")
+    macd = intraday.get("macd", [])
+    if macd:
+        lines.append(f"- MACD: {macd[-1]:.4f}")
+    return "\n".join(lines) if lines else "- Limited data"
 
 
 def should_wake_ai_for_symbol(symbol: str, score: float, existing_positions: list) -> dict:
@@ -665,6 +866,29 @@ def run_passive_sl_verification(bot, positions: list):
                 # Tenta di piazzare SL usando sl_pct già calcolato (include trailing)
                 log(f"   🔧 Tentativo piazzamento SL per {symbol} (mode={trading_mode}, sl={sl_pct:+.2f}%)...")
 
+                # IMPORTANTE: Prima cancella eventuali ordini SL esistenti per evitare duplicati
+                # (la ricerca potrebbe non averli trovati per latenza API)
+                try:
+                    try:
+                        all_orders = bot.info.frontend_open_orders(bot.account_address)
+                    except AttributeError:
+                        all_orders = bot.info.open_orders(bot.account_address)
+
+                    cancelled_count = 0
+                    for order in all_orders:
+                        if order.get("coin") == symbol and order.get("side") == expected_side:
+                            try:
+                                bot.exchange.cancel(symbol, order.get("oid"))
+                                cancelled_count += 1
+                                log(f"   🗑️ Cancellato ordine SL orfano OID={order.get('oid')}")
+                                time.sleep(0.1)
+                            except Exception as cancel_err:
+                                log(f"   ⚠️ Errore cancellazione ordine {order.get('oid')}: {cancel_err}")
+                    if cancelled_count > 0:
+                        time.sleep(0.3)  # Attendi sync API
+                except Exception as e:
+                    log(f"   ⚠️ Errore pulizia ordini esistenti: {e}")
+
                 # Usa expected_sl_price già calcolato sopra
                 sl_price = bot._round_to_tick(expected_sl_price, symbol)
                 is_buy = direction == "short"
@@ -707,11 +931,10 @@ def run_passive_sl_verification(bot, positions: list):
             if missing_sl and SENTINEL_TELEGRAM_NOTIFY:
                 try:
                     symbols_list = ", ".join([i["symbol"] for i in missing_sl])
-                    tg.notify_error(
-                        error_type="SL_VERIFICATION",
-                        error_message=f"Simboli senza SL: {symbols_list}. Tentativo correzione automatica in corso.",
-                        source="SENTINEL",
-                        severity="WARNING"
+                    tg.send_telegram_message(
+                        f"⚠️ <b>SL VERIFICATION ALERT</b>\n\n"
+                        f"Simboli senza SL: {symbols_list}\n"
+                        f"Tentativo correzione automatica in corso."
                     )
                 except Exception:
                     pass
@@ -805,26 +1028,32 @@ def check_score_confirmation(symbol: str, threshold: float) -> dict:
     # Prendi gli ultimi N cicli
     recent_scores = scores[-SCORE_CONFIRMATION_CYCLES:]
 
-    # Verifica che TUTTI siano sopra la soglia
-    all_above_threshold = all(abs(s) >= threshold for s in recent_scores)
-    if not all_above_threshold:
-        below_threshold = [s for s in recent_scores if abs(s) < threshold]
-        result["reason"] = f"Some scores below threshold: {[f'{s:.1f}' for s in below_threshold]}"
-        result["cycles_above"] = sum(1 for s in recent_scores if abs(s) >= threshold)
+    # NUOVA LOGICA: Usa la MEDIA invece di controllare ogni singolo score
+    avg_score = sum(recent_scores) / len(recent_scores)
+    abs_avg = abs(avg_score)
+
+    # Verifica che la MEDIA sia sopra la soglia minima
+    if abs_avg < threshold:
+        result["reason"] = f"Avg score {avg_score:.1f} below threshold {threshold}"
+        result["cycles_above"] = 0
         return result
 
-    # Verifica che TUTTI abbiano la stessa direzione (tutti positivi o tutti negativi)
-    all_positive = all(s > 0 for s in recent_scores)
-    all_negative = all(s < 0 for s in recent_scores)
+    # Verifica direzione consistente (maggioranza nella stessa direzione)
+    positive_count = sum(1 for s in recent_scores if s > 0)
+    negative_count = sum(1 for s in recent_scores if s < 0)
 
-    if not (all_positive or all_negative):
-        result["reason"] = f"Mixed directions in last {SCORE_CONFIRMATION_CYCLES} cycles"
+    # Almeno 2/3 devono essere nella stessa direzione
+    min_same_direction = max(2, SCORE_CONFIRMATION_CYCLES * 2 // 3)
+
+    if positive_count < min_same_direction and negative_count < min_same_direction:
+        result["reason"] = f"Direction not consistent: {positive_count} long, {negative_count} short (need {min_same_direction})"
         return result
 
-    # Confermato!
+    # Confermato! Usa la direzione della media
     result["confirmed"] = True
-    result["direction"] = "long" if all_positive else "short"
+    result["direction"] = "long" if avg_score > 0 else "short"
     result["cycles_above"] = SCORE_CONFIRMATION_CYCLES
+    result["avg_score"] = avg_score
 
     return result
 
@@ -927,7 +1156,8 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
             fear_greed=fear_greed,
             forecast_change_pct=0.0,  # Skip forecast nel sentinel
             volume_bid=volume_bid,
-            volume_ask=volume_ask
+            volume_ask=volume_ask,
+            symbol=symbol  # Per volume smoothing history
         )
 
         net_score = score_result.get('net_score', 0.0)
@@ -1015,6 +1245,21 @@ def set_cooldown(symbol: str):
     global _last_close_time
     _last_close_time[symbol] = time.time()
     log(f"   ⏱️ Cooldown attivato per {symbol} ({MICRO_GAIN_COOLDOWN_SECONDS}s)")
+
+
+def get_daily_trade_count() -> int:
+    """Conta i trade aperti oggi per limitare MAX_TRADES_PER_DAY."""
+    if not DB_UTILS_ENABLED:
+        return 0
+    try:
+        with db_utils.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM trades WHERE DATE(created_at) = CURRENT_DATE")
+                result = cur.fetchone()
+                return result[0] if result else 0
+    except Exception as e:
+        log(f"⚠️ Errore conteggio trade: {e}")
+        return 0
 
 
 def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
@@ -1133,22 +1378,27 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                     try:
                         # Calcoli per messaggio dettagliato
                         value_usd = position_size * entry_price
-                        target_profit = value_usd * (MICRO_GAIN_TARGET_PERCENT / 100) * MICRO_GAIN_LEVERAGE
-                        sl_loss = value_usd * (MICRO_GAIN_STOP_LOSS_PERCENT / 100) * MICRO_GAIN_LEVERAGE
-                        fees_estimate = value_usd * 0.0007 * MICRO_GAIN_LEVERAGE  # ~0.07% open+close
+                        margin = value_usd / MICRO_GAIN_LEVERAGE
+                        # P&L è sul valore posizione, NON moltiplicato per leverage!
+                        target_profit = value_usd * (MICRO_GAIN_TARGET_PERCENT / 100)
+                        sl_loss = value_usd * (MICRO_GAIN_STOP_LOSS_PERCENT / 100)
+                        # ROI% sul margine = target_pct * leverage
+                        target_roi_pct = MICRO_GAIN_TARGET_PERCENT * MICRO_GAIN_LEVERAGE
+                        sl_roi_pct = MICRO_GAIN_STOP_LOSS_PERCENT * MICRO_GAIN_LEVERAGE
+                        fees_estimate = value_usd * 0.0007  # ~0.07% open+close
 
-                        tg.notify_trade_open(
-                            symbol=symbol,
-                            direction=direction,
-                            leverage=MICRO_GAIN_LEVERAGE,
-                            target_pct=MICRO_GAIN_PORTION,
-                            reason=f"MICRO_GAIN auto-open: score {score:.1f}, target +{MICRO_GAIN_TARGET_PERCENT}%, SL -{MICRO_GAIN_STOP_LOSS_PERCENT}%",
-                            source="micro_gain",
-                            entry_price=entry_price,
-                            size=position_size,
-                            notional=value_usd,
-                            score=score,
-                            trading_mode="MICRO_GAIN"
+                        tg.send_telegram_message(
+                            f"🎯 <b>MICRO_GAIN OPEN</b>\n\n"
+                            f"<b>Symbol:</b> {symbol}\n"
+                            f"<b>Direction:</b> {direction.upper()}\n"
+                            f"<b>Entry:</b> ${entry_price:.2f}\n"
+                            f"<b>Size:</b> {position_size:.6f} {symbol}\n"
+                            f"<b>Valore:</b> ${value_usd:.2f}\n"
+                            f"<b>Margine:</b> ${margin:.2f} ({MICRO_GAIN_LEVERAGE}x)\n"
+                            f"<b>Score:</b> {score:.1f}\n\n"
+                            f"📊 <b>Target:</b> +{MICRO_GAIN_TARGET_PERCENT}% → ${target_profit:.2f} (ROI {target_roi_pct:.0f}%)\n"
+                            f"🛑 <b>Stop Loss:</b> -{MICRO_GAIN_STOP_LOSS_PERCENT}% → ${sl_loss:.2f} (ROI -{sl_roi_pct:.0f}%)\n"
+                            f"💸 <b>Fees stimate:</b> ~${fees_estimate:.2f}"
                         )
                     except Exception as e:
                         log(f"   ⚠️ Errore Telegram: {e}")
@@ -1412,20 +1662,15 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
                 # Notifica Telegram
                 if SENTINEL_TELEGRAM_NOTIFY:
                     try:
-                        # Calcola notional per MICRO_PAY
-                        value_usd_micropay = position_size * entry_price
-                        tg.notify_trade_open(
-                            symbol=symbol,
-                            direction=direction,
-                            leverage=MICRO_PAY_LEVERAGE,
-                            target_pct=MICRO_PAY_PORTION,
-                            reason=f"MICRO_PAY quick trade: score {score:.1f}, TP +{MICRO_PAY_TARGET_PERCENT}%, SL -{MICRO_PAY_STOP_LOSS_PERCENT}%",
-                            source="SENTINEL",
-                            entry_price=entry_price,
-                            size=position_size,
-                            notional=value_usd_micropay,
-                            score=score,
-                            trading_mode="MICRO_PAY"
+                        tg.send_telegram_message(
+                            f"💵 <b>MICRO_PAY OPEN</b>\n\n"
+                            f"<b>Symbol:</b> {symbol}\n"
+                            f"<b>Direction:</b> {direction.upper()}\n"
+                            f"<b>Entry:</b> ${entry_price:.2f}\n"
+                            f"<b>Score:</b> {score:.1f}\n"
+                            f"<b>TP Target:</b> +{MICRO_PAY_TARGET_PERCENT}%\n"
+                            f"<b>SL:</b> -{MICRO_PAY_STOP_LOSS_PERCENT}%\n"
+                            f"<i>Quick trade mode - no trailing</i>"
                         )
                     except Exception as e:
                         log(f"   ⚠️ Errore Telegram: {e}")
@@ -1716,11 +1961,29 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
                             bot.exchange.cancel(symbol, order.get("oid"))
                             cancelled_count += 1
                             time.sleep(0.1)  # Piccolo delay tra cancellazioni
-                        except:
-                            pass
+                        except Exception as cancel_err:
+                            log(f"   ⚠️ Errore cancellazione OID={order.get('oid')}: {cancel_err}")
                 if cancelled_count > 0:
                     log(f"   🗑️ Cancellati {cancelled_count} ordini SL precedenti")
-                    time.sleep(0.3)  # Attendi sync
+                    time.sleep(0.5)  # Attendi sync (aumentato)
+
+                    # Verifica che cancellazione sia effettiva
+                    try:
+                        verify_orders = bot.info.frontend_open_orders(bot.account_address)
+                    except AttributeError:
+                        verify_orders = bot.info.open_orders(bot.account_address)
+
+                    remaining = [o for o in verify_orders if o.get("coin") == symbol and o.get("side") == expected_side]
+                    if remaining:
+                        log(f"   ⚠️ {len(remaining)} ordini ancora presenti, riprovo cancellazione...")
+                        for order in remaining:
+                            try:
+                                bot.exchange.cancel(symbol, order.get("oid"))
+                                log(f"   🗑️ Ri-cancellato OID={order.get('oid')}")
+                                time.sleep(0.2)
+                            except:
+                                pass
+                        time.sleep(0.5)
             except Exception as e:
                 log(f"   ⚠️ Errore cancellazione: {e}")
 
@@ -1907,11 +2170,29 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
                             bot.exchange.cancel(symbol, order.get("oid"))
                             cancelled_count += 1
                             time.sleep(0.1)  # Piccolo delay tra cancellazioni
-                        except:
-                            pass
+                        except Exception as cancel_err:
+                            log(f"   ⚠️ Errore cancellazione OID={order.get('oid')}: {cancel_err}")
                 if cancelled_count > 0:
                     log(f"   🗑️ Cancellati {cancelled_count} ordini SL precedenti")
-                    time.sleep(0.3)  # Attendi sync
+                    time.sleep(0.5)  # Attendi sync (aumentato)
+
+                    # Verifica che cancellazione sia effettiva
+                    try:
+                        verify_orders = bot.info.frontend_open_orders(bot.account_address)
+                    except AttributeError:
+                        verify_orders = bot.info.open_orders(bot.account_address)
+
+                    remaining = [o for o in verify_orders if o.get("coin") == symbol and o.get("side") == expected_side]
+                    if remaining:
+                        log(f"   ⚠️ {len(remaining)} ordini ancora presenti, riprovo cancellazione...")
+                        for order in remaining:
+                            try:
+                                bot.exchange.cancel(symbol, order.get("oid"))
+                                log(f"   🗑️ Ri-cancellato OID={order.get('oid')}")
+                                time.sleep(0.2)
+                            except:
+                                pass
+                        time.sleep(0.5)
             except Exception as e:
                 log(f"   ⚠️ Errore cancellazione: {e}")
 
@@ -2344,8 +2625,8 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
                             bot.exchange.cancel(symbol, order.get("oid"))
                             log(f"   🗑️ Cancellato ordine SL duplicato OID={order.get('oid')}")
                             time.sleep(0.2)
-                        except:
-                            pass
+                        except Exception as cancel_err:
+                            log(f"   ⚠️ Errore cancellazione duplicato OID={order.get('oid')}: {cancel_err}")
             except Exception as e:
                 log(f"   ❌ Errore cancellazione: {e}")
         else:
@@ -2366,10 +2647,35 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
                             bot.exchange.cancel(symbol, order.get("oid"))
                             log(f"   🗑️ Cancellato ordine SL orfano OID={order.get('oid')}")
                             time.sleep(0.2)
-                        except:
-                            pass
-            except:
-                pass
+                        except Exception as cancel_err:
+                            log(f"   ⚠️ Errore cancellazione orfano OID={order.get('oid')}: {cancel_err}")
+            except Exception as e:
+                log(f"   ⚠️ Errore pulizia ordini orfani: {e}")
+
+        # IMPORTANTE: Verifica che tutti gli ordini siano stati effettivamente cancellati
+        # Aspetta e ricontrolla per evitare race condition con API
+        time.sleep(0.5)
+        try:
+            try:
+                verify_orders = bot.info.frontend_open_orders(bot.account_address)
+            except AttributeError:
+                verify_orders = bot.info.open_orders(bot.account_address)
+
+            expected_side = "B" if direction == "short" else "A"
+            remaining_orders = [o for o in verify_orders if o.get("coin") == symbol and o.get("side") == expected_side]
+
+            if remaining_orders:
+                log(f"   ⚠️ Trovati {len(remaining_orders)} ordini SL ancora presenti, riprovo cancellazione...")
+                for order in remaining_orders:
+                    try:
+                        bot.exchange.cancel(symbol, order.get("oid"))
+                        log(f"   🗑️ Ri-cancellato OID={order.get('oid')}")
+                        time.sleep(0.2)
+                    except Exception as cancel_err:
+                        log(f"   ⚠️ Errore ri-cancellazione: {cancel_err}")
+                time.sleep(0.5)  # Aspetta ancora dopo la ri-cancellazione
+        except Exception as e:
+            log(f"   ⚠️ Errore verifica cancellazione: {e}")
 
         # Piazza nuovo ordine SL corretto
         log(f"   🔄 Piazzo nuovo SL per {symbol} (tentativo {attempt + 1}/{max_retries + 1})...")
@@ -2484,11 +2790,17 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
     if SENTINEL_TELEGRAM_NOTIFY:
         try:
             issues_list = "\n".join([f"• {i}" for i in result["issues"]]) if result["issues"] else "• Ordine mancante"
-            tg.notify_error(
-                error_type="SL_NON_VALIDO",
-                error_message=f"{symbol} {direction.upper()} @ ${entry_price:.2f} (size: {size:.6f}, mode: {trading_mode})\n\nProblemi: {issues_list}\n\nTentativi falliti: {result['attempts']}. Azione richiesta: verifica manuale immediata",
-                source="SENTINEL",
-                severity="CRITICAL"
+            tg.send_telegram_message(
+                f"🚨 <b>ALERT CRITICO - SL NON VALIDO</b>\n\n"
+                f"<b>Symbol:</b> {symbol}\n"
+                f"<b>Direction:</b> {direction.upper()}\n"
+                f"<b>Entry:</b> ${entry_price:.2f}\n"
+                f"<b>Size:</b> {size:.6f}\n"
+                f"<b>Mode:</b> {trading_mode}\n\n"
+                f"<b>Problemi rilevati:</b>\n{issues_list}\n\n"
+                f"⚠️ <b>POSIZIONE CON SL NON VALIDO!</b>\n"
+                f"Tentativi falliti: {result['attempts']}\n\n"
+                f"<b>Azione richiesta:</b> verifica manuale immediata"
             )
         except Exception as e:
             log(f"   ⚠️ Errore invio alert Telegram: {e}")
@@ -3100,7 +3412,14 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
     if not MICRO_GAIN_AUTO_OPEN:
         return
 
-    symbols_to_check = ['BTC', 'ETH', 'SOL']
+    # Usa ENABLED_SYMBOLS da risk_config o env
+    symbols_to_check = ENABLED_SYMBOLS
+
+    # === CHECK LIMITE GIORNALIERO ===
+    daily_trades = get_daily_trade_count()
+    if daily_trades >= MAX_TRADES_PER_DAY:
+        log(f"   ⛔ LIMITE GIORNALIERO: {daily_trades}/{MAX_TRADES_PER_DAY} - NO nuovi trade")
+        return
 
     # Conta posizioni esistenti
     position_count = len(existing_symbols)
@@ -3146,6 +3465,22 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 continue
 
             log(f"   ✅ {symbol} MICRO_GAIN: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
+
+            # === DOUBLE_CHECK_AI: Validazione AI immediata prima di aprire ===
+            if DOUBLE_CHECK_AI_ENABLED:
+                validation = validate_double_check_ai(symbol, direction, score, "MICRO_GAIN")
+
+                if not validation.get("approved"):
+                    log(f"   ❌ DOUBLE_CHECK RIFIUTATO: {validation.get('reason', 'AI declined')}")
+                    continue  # AI ha rifiutato, non aprire
+
+                log(f"   ✅ DOUBLE_CHECK APPROVATO: confidence={validation.get('confidence', 'N/A')}")
+                # AI potrebbe suggerire direzione diversa
+                ai_direction = validation.get("direction", direction)
+                if ai_direction and ai_direction.lower() != direction.lower():
+                    log(f"      ⚠️ AI suggerisce {ai_direction.upper()} invece di {direction.upper()}")
+                    direction = ai_direction
+
             result = open_micro_gain_position(bot, symbol, direction, score)
 
             if result.get("success"):
@@ -3163,6 +3498,21 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 continue
 
             log(f"   ✅ {symbol} MICRO_PAY: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
+
+            # === DOUBLE_CHECK_AI: Validazione AI immediata prima di aprire ===
+            if DOUBLE_CHECK_AI_ENABLED:
+                validation = validate_double_check_ai(symbol, direction, score, "MICRO_PAY")
+
+                if not validation.get("approved"):
+                    log(f"   ❌ DOUBLE_CHECK RIFIUTATO: {validation.get('reason', 'AI declined')}")
+                    continue
+
+                log(f"   ✅ DOUBLE_CHECK APPROVATO: confidence={validation.get('confidence', 'N/A')}")
+                ai_direction = validation.get("direction", direction)
+                if ai_direction and ai_direction.lower() != direction.lower():
+                    log(f"      ⚠️ AI suggerisce {ai_direction.upper()} invece di {direction.upper()}")
+                    direction = ai_direction
+
             result = open_micro_pay_position(bot, symbol, direction, score)
 
             if result.get("success"):
@@ -3189,7 +3539,8 @@ def check_and_wake_ai_for_normal(bot, existing_positions: list):
     if AI_FREE_MODE:
         return
 
-    symbols_to_check = ['BTC', 'ETH', 'SOL']
+    # Usa ENABLED_SYMBOLS da risk_config o env
+    symbols_to_check = ENABLED_SYMBOLS
     existing_symbols = [p.get("symbol") for p in existing_positions]
 
     for symbol in symbols_to_check:
@@ -3212,8 +3563,8 @@ def check_and_wake_ai_for_normal(bot, existing_positions: list):
 
         if wake_check["should_wake"]:
             log(f"   🤖 {symbol} NORMAL range: {wake_check['reason']}")
-            log(f"      → Waking AI for potential trade")
-            wake_result = wake_ai_agent(symbol, "score_signal")
+            log(f"      → Waking AI for potential trade (score={score:.1f})")
+            wake_result = wake_ai_agent(symbol, "score_signal", sentinel_score=score)
             if wake_result.get("success"):
                 log(f"   ✅ AI Agent avviato (PID: {wake_result.get('pid')})")
             else:
@@ -3611,66 +3962,97 @@ def run_sentinel_check():
                     except Exception as e:
                         log(f"   ⚠️ Errore cancellazione ordini residui: {e}")
 
-                    # Notifica Telegram
+                    # Notifica Telegram con riassunto completo
                     if SENTINEL_TELEGRAM_NOTIFY:
                         try:
+                            from datetime import datetime as dt
+
                             # Calcoli per messaggio dettagliato
                             value_usd = position_size * entry_price
+                            margin = value_usd / pos_leverage
                             fees_estimate = value_usd * 0.0007 * pos_leverage  # ~0.07% open+close
                             net_pnl = pnl - fees_estimate
                             net_pnl_pct = pnl_pct - 0.07  # Sottrai fees %
 
-                            # Calcola durata se tracking disponibile
-                            duration_str = ""
+                            # Entry time da tracking
+                            entry_time = dt.now()
                             if tracking_data and tracking_data.get("created_at"):
                                 try:
-                                    from datetime import datetime
                                     created = tracking_data["created_at"]
                                     if isinstance(created, str):
-                                        created = datetime.fromisoformat(created.replace('Z', '+00:00'))
-                                    duration_mins = (datetime.now(created.tzinfo) - created).total_seconds() / 60
-                                    if duration_mins >= 60:
-                                        hours = int(duration_mins // 60)
-                                        mins = int(duration_mins % 60)
-                                        duration_str = f"\n<b>Durata:</b> {hours}h {mins}m"
+                                        entry_time = dt.fromisoformat(created.replace('Z', '+00:00').replace('+00:00', ''))
                                     else:
-                                        duration_str = f"\n<b>Durata:</b> {int(duration_mins)} min"
+                                        entry_time = created.replace(tzinfo=None) if hasattr(created, 'replace') else created
                                 except:
                                     pass
 
-                            # Determina source type per notifica
-                            if action_taken == "CLOSE_TAKE_PROFIT":
-                                source_type = "take_profit"
-                            elif action_taken == "CLOSE_STOP_LOSS":
-                                source_type = "stop_loss"
-                            elif action_taken == "CLOSE_TRAILING_STOP":
-                                source_type = "trailing_stop"
-                            else:
-                                source_type = "SENTINEL"
+                            exit_time = dt.now()
 
-                            # Calcola durata in minuti
-                            duration_minutes = None
+                            # Motivo chiusura
+                            close_reason_map = {
+                                "CLOSE_TAKE_PROFIT": "Take Profit",
+                                "CLOSE_STOP_LOSS": "Stop Loss",
+                                "CLOSE_TRAILING_STOP": f"Trailing Stop",
+                                "CLOSE_MICRO_GAIN_REVERSAL": "Reversal Score",
+                            }
+                            close_reason = close_reason_map.get(action_taken, "Chiusura Manuale")
+
+                            # Aggiungi livello SL se trailing
+                            if action_taken == "CLOSE_TRAILING_STOP":
+                                sl_key = symbol if trading_mode == "MICRO_GAIN" else f"{symbol}_NORMAL"
+                                current_sl = _current_sl_level.get(sl_key, 0)
+                                if current_sl != 0:
+                                    close_reason = f"Trailing Stop {current_sl:+.1f}%"
+
+                            # Recupera balance e stats
+                            balance = None
+                            pnl_today = None
+                            pnl_week = None
                             try:
-                                if tracking_data and tracking_data.get('created_at'):
-                                    created = tracking_data.get('created_at')
-                                    duration_minutes = int((datetime.now(created.tzinfo) - created).total_seconds() / 60)
+                                account_state = bot.info.user_state(bot.account_address)
+                                balance = float(account_state.get("marginSummary", {}).get("accountValue", 0))
+
+                                # P&L oggi/settimana dal database
+                                stats = db_utils.get_performance_stats(hours=168)  # 7 giorni
+                                if stats:
+                                    pnl_week = stats.get("net_pnl_usd", 0)
+                                stats_today = db_utils.get_performance_stats(hours=24)
+                                if stats_today:
+                                    pnl_today = stats_today.get("net_pnl_usd", 0)
                             except:
                                 pass
 
-                            # Usa nuove funzioni con identificazione decisore
-                            tg.notify_trade_close(
+                            # Score di apertura/chiusura
+                            score_open = None
+                            score_close = None
+                            try:
+                                if tracking_data:
+                                    score_open = tracking_data.get("open_score")
+                                # Score corrente come score chiusura
+                                score_close = micro_gain_result.get("quick_score") if trading_mode == "MICRO_GAIN" else None
+                            except:
+                                pass
+
+                            # Invia riassunto
+                            tg.notify_trade_summary(
                                 symbol=symbol,
                                 direction=direction,
-                                reason=close_reason,
-                                source=source_type,
+                                leverage=int(pos_leverage),
+                                entry_price=entry_price,
+                                entry_time=entry_time,
+                                size=position_size,
+                                value_usd=value_usd,
+                                margin=margin,
+                                exit_price=mark_price,
+                                exit_time=exit_time,
+                                close_reason=close_reason,
                                 pnl_usd=net_pnl,
                                 pnl_pct=net_pnl_pct,
-                                entry_price=entry_price,
-                                exit_price=mark_price,
-                                size=position_size,
-                                duration_minutes=duration_minutes,
-                                fees_paid=fees_estimate,
-                                trading_mode=trading_mode
+                                score_open=score_open,
+                                score_close=score_close,
+                                balance=balance,
+                                pnl_today=pnl_today,
+                                pnl_week=pnl_week,
                             )
                         except Exception as e:
                             log(f"   ⚠️ Errore Telegram: {e}")
@@ -3799,6 +4181,8 @@ def run_loop(interval: int = None):
         log(f"      Cooldown: {MICRO_GAIN_COOLDOWN_SECONDS}s, Max positions: {MICRO_GAIN_MAX_POSITIONS}")
         log(f"      Score smoothing: {SCORE_SMOOTHING_SAMPLES} samples, Leverage: {MICRO_GAIN_LEVERAGE}x")
         log(f"      Score range: {SCORE_THRESHOLD_HOLD} - {SCORE_THRESHOLD_OPEN}")
+        if DOUBLE_CHECK_AI_ENABLED:
+            log(f"      🔍 DOUBLE_CHECK_AI: validazione AI in tempo reale prima di ogni apertura")
     if MICRO_PAY_ENABLED:
         log(f"   💵 MICRO_PAY: enabled")
         log(f"      TP: +{MICRO_PAY_TARGET_PERCENT}%, SL: -{MICRO_PAY_STOP_LOSS_PERCENT}%")

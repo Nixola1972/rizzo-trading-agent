@@ -1,9 +1,6 @@
 """
-Telegram Notifier per Trading Bot - ENHANCED VERSION
-Invia notifiche su Telegram con focus su:
-1. Identificazione chiara del decisore (AI vs Sentinel)
-2. Dati economici dettagliati da Hyperliquid
-3. Diagnostica sistema e stato operativo
+Telegram Notifier per Trading Bot
+Invia notifiche su Telegram per trades, errori e report giornalieri.
 
 Configurazione .env:
     TELEGRAM_BOT_TOKEN=123456:ABC-DEF...  # Token da @BotFather
@@ -14,8 +11,8 @@ Configurazione .env:
 import os
 import requests
 import html
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from datetime import datetime
+from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,14 +24,6 @@ TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "false").lower() == "true"
 
 # Timeout per le richieste HTTP (in secondi)
 TELEGRAM_TIMEOUT = int(os.getenv("TELEGRAM_TIMEOUT", "10"))
-
-# Emoji per identificare il decisore
-BRAIN_AI = "🧠"        # AI/GPT decision
-BRAIN_SENTINEL = "🛡️"  # Sentinel/Rules decision
-BRAIN_MANUAL = "👤"    # Manual intervention
-
-# Costanti economiche
-ESTIMATED_FEES_PCT = 0.025  # 0.025% per side = ~0.05% round trip
 
 
 def is_telegram_configured() -> bool:
@@ -54,7 +43,7 @@ def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
         True se inviato con successo, False altrimenti
     """
     if not is_telegram_configured():
-        print("[TG] Telegram non configurato o disabilitato")
+        print("⚠️ Telegram non configurato o disabilitato")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -69,622 +58,459 @@ def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
     try:
         response = requests.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
         if response.status_code == 200:
-            print(f"[TG] Messaggio inviato")
+            print(f"✅ Telegram: messaggio inviato")
             return True
         else:
-            print(f"[TG] Error: {response.status_code} - {response.text}")
+            print(f"❌ Telegram error: {response.status_code} - {response.text}")
             return False
     except Exception as e:
-        print(f"[TG] Exception: {e}")
+        print(f"❌ Telegram exception: {e}")
         return False
 
 
-def _get_brain_emoji(source: str) -> str:
-    """Ritorna l'emoji appropriato per il decisore."""
-    source_lower = source.lower() if source else ""
-    if "sentinel" in source_lower or "trailing" in source_lower or "stop" in source_lower:
-        return BRAIN_SENTINEL
-    elif "manual" in source_lower or "user" in source_lower:
-        return BRAIN_MANUAL
-    else:
-        return BRAIN_AI
-
-
-def _format_source_label(source: str) -> str:
-    """Formatta il label del decisore in modo chiaro."""
-    source_lower = source.lower() if source else ""
-    if "sentinel" in source_lower:
-        return "SENTINEL (regole automatiche)"
-    elif "trailing" in source_lower:
-        return "SENTINEL (trailing stop)"
-    elif "stop_loss" in source_lower:
-        return "SENTINEL (stop loss)"
-    elif "take_profit" in source_lower:
-        return "SENTINEL (take profit)"
-    elif "micro" in source_lower:
-        return "SENTINEL (micro-gain)"
-    elif "manual" in source_lower:
-        return "MANUALE"
-    else:
-        return "AI (GPT analysis)"
-
-
-def _calculate_fees_usd(notional: float) -> float:
-    """Calcola le fees stimate per un'operazione."""
-    return notional * (ESTIMATED_FEES_PCT / 100)
-
-
-def _format_pnl_breakdown(
-    pnl_gross: float,
-    fees_estimated: float,
-    funding_paid: float = 0
-) -> str:
-    """Formatta il breakdown del P&L."""
-    pnl_net = pnl_gross - fees_estimated - funding_paid
-
-    lines = []
-    lines.append(f"  Lordo: ${pnl_gross:+.2f}")
-    lines.append(f"  Fees: -${fees_estimated:.2f}")
-    if funding_paid != 0:
-        lines.append(f"  Funding: ${funding_paid:+.2f}")
-    lines.append(f"  <b>Netto: ${pnl_net:+.2f}</b>")
-
-    return "\n".join(lines)
-
-
 # ============================================
-# MESSAGGI TRADE CON IDENTIFICAZIONE DECISORE
+# MESSAGGI PRE-FORMATTATI
 # ============================================
 
-def notify_trade_open(
+def notify_trade_open(symbol: str, direction: str, leverage: float,
+                      target_pct: float, reason: str,
+                      entry_price: Optional[float] = None,
+                      size: Optional[float] = None,
+                      value_usd: Optional[float] = None) -> bool:
+    """Notifica apertura posizione (messaggio breve)."""
+
+    # Formato breve per apertura
+    price_str = f" @ ${entry_price:,.2f}" if entry_price else ""
+    size_str = f" ({size} {symbol})" if size else ""
+    value_str = f" [${value_usd:.2f}]" if value_usd else ""
+
+    message = f"""🟢 <b>APERTO</b> {symbol} {direction.upper()} {leverage}x{price_str}{size_str}{value_str}
+
+🕐 {datetime.now().strftime('%H:%M:%S')}"""
+
+    return send_telegram_message(message)
+
+
+def notify_trade_close(symbol: str, direction: str, reason: str,
+                       pnl_usd: Optional[float] = None,
+                       pnl_pct: Optional[float] = None) -> bool:
+    """Notifica chiusura posizione."""
+    # Escape HTML characters in reason to prevent parsing errors
+    safe_reason = html.escape(reason[:500])
+    pnl_text = ""
+    if pnl_usd is not None:
+        pnl_emoji = "📈" if pnl_usd >= 0 else "📉"
+        pnl_text = f"\n<b>P&L:</b> {pnl_emoji} ${pnl_usd:+.2f}"
+        if pnl_pct is not None:
+            pnl_text += f" ({pnl_pct:+.2f}%)"
+
+    message = f"""🔴 <b>TRADE CHIUSO</b>
+
+<b>Symbol:</b> {symbol}
+<b>Direction:</b> {direction.upper()}{pnl_text}
+
+<b>Motivo AI:</b>
+<i>{safe_reason}</i>
+
+🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+
+    return send_telegram_message(message)
+
+
+def notify_trade_summary(
     symbol: str,
     direction: str,
     leverage: float,
-    target_pct: float,
-    reason: str,
-    source: str = "AI",
-    entry_price: Optional[float] = None,
-    size: Optional[float] = None,
-    notional: Optional[float] = None,
-    score: Optional[float] = None,
-    trading_mode: Optional[str] = None
+    # Apertura
+    entry_price: float,
+    entry_time: datetime,
+    size: float,
+    value_usd: float,
+    margin: float,
+    # Chiusura
+    exit_price: float,
+    exit_time: datetime,
+    close_reason: str,
+    # P&L
+    pnl_usd: float,
+    pnl_pct: float,
+    # Stats opzionali
+    max_pnl_usd: Optional[float] = None,
+    max_pnl_pct: Optional[float] = None,
+    min_pnl_usd: Optional[float] = None,
+    min_pnl_pct: Optional[float] = None,
+    score_open: Optional[float] = None,
+    score_close: Optional[float] = None,
+    # Balance
+    balance: Optional[float] = None,
+    pnl_today: Optional[float] = None,
+    pnl_week: Optional[float] = None,
 ) -> bool:
     """
-    Notifica apertura posizione con dettagli economici.
+    Notifica riassuntiva completa di un trade chiuso.
+    Include tutte le info di apertura, chiusura e performance.
+    """
+
+    # Determina se profit o loss
+    is_profit = pnl_usd >= 0
+    result_emoji = "✅" if is_profit else "❌"
+    result_label = "GUADAGNO" if is_profit else "PERDITA"
+    pnl_emoji = "💰" if is_profit else "💸"
+
+    # Calcola durata
+    duration = exit_time - entry_time
+    hours = int(duration.total_seconds() // 3600)
+    minutes = int((duration.total_seconds() % 3600) // 60)
+    if hours > 0:
+        duration_str = f"{hours}h {minutes}m"
+    else:
+        duration_str = f"{minutes}m"
+
+    # Escape close reason
+    safe_reason = html.escape(close_reason[:100]) if close_reason else "N/A"
+
+    # Stats section (opzionale)
+    stats_section = ""
+    if max_pnl_usd is not None or score_open is not None:
+        stats_lines = []
+        if max_pnl_usd is not None and max_pnl_pct is not None:
+            stats_lines.append(f"├─ Max P&L: +${max_pnl_usd:.2f} (+{max_pnl_pct:.1f}%)")
+        if min_pnl_usd is not None and min_pnl_pct is not None:
+            stats_lines.append(f"├─ Min P&L: ${min_pnl_usd:.2f} ({min_pnl_pct:.1f}%)")
+        if score_open is not None and score_close is not None:
+            stats_lines.append(f"└─ Score: {score_open:.1f} → {score_close:.1f}")
+        elif score_open is not None:
+            stats_lines.append(f"└─ Score apertura: {score_open:.1f}")
+
+        if stats_lines:
+            # Fix last line to use └─
+            if len(stats_lines) > 0:
+                stats_lines[-1] = stats_lines[-1].replace("├─", "└─")
+            stats_section = f"""
+📊 <b>STATS</b>
+{chr(10).join(stats_lines)}
+"""
+
+    # Balance section (opzionale)
+    balance_section = ""
+    if balance is not None:
+        balance_change = f" ({'+' if pnl_usd >= 0 else ''}{pnl_usd:.2f})"
+        balance_lines = [f"💼 Balance: ${balance:,.2f}{balance_change}"]
+        if pnl_today is not None or pnl_week is not None:
+            extra = []
+            if pnl_today is not None:
+                extra.append(f"Oggi: ${pnl_today:+.2f}")
+            if pnl_week is not None:
+                extra.append(f"Week: ${pnl_week:+.2f}")
+            if extra:
+                balance_lines.append(f"📈 {' | '.join(extra)}")
+        balance_section = f"""
+══════════════════════════════
+{chr(10).join(balance_lines)}"""
+
+    message = f"""📊 <b>TRADE COMPLETATO</b> {result_emoji}
+
+══════════════════════════════
+{pnl_emoji} <b>{result_label}:</b> ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
+══════════════════════════════
+
+📈 <b>APERTURA</b>
+├─ {symbol} {direction.upper()} {leverage}x
+├─ Entry: ${entry_price:,.2f}
+├─ Size: {size} {symbol}
+├─ Valore: ${value_usd:.2f}
+├─ Margine: ${margin:.2f}
+└─ 🕐 {entry_time.strftime('%d/%m %H:%M')}
+
+📉 <b>CHIUSURA</b>
+├─ Exit: ${exit_price:,.2f}
+├─ Motivo: {safe_reason}
+├─ Durata: {duration_str}
+└─ 🕐 {exit_time.strftime('%d/%m %H:%M')}{stats_section}{balance_section}"""
+
+    return send_telegram_message(message)
+
+
+def notify_ai_cycle_summary(
+    reason: str,
+    tickers_analyzed: list,
+    decisions: list,
+    scores: dict = None,
+    duration_seconds: float = None,
+    balance: float = None,
+    open_positions: int = None,
+    positions_detail: list = None,
+    smart_exit_warnings: dict = None,
+    cycle_number: int = None,
+) -> bool:
+    """
+    Notifica riassuntiva di un ciclo AI completato.
 
     Args:
-        source: "AI", "SENTINEL", "MANUAL" - chi ha preso la decisione
+        reason: Motivo del trigger (scheduled, take_profit, stop_loss, etc.)
+        tickers_analyzed: Lista ticker analizzati
+        decisions: Lista di decisioni [{symbol, operation, direction, reason}, ...]
+        scores: Dict di score per simbolo {BTC: {net: -5.2, bull: 3, bear: 8}, ...}
+        duration_seconds: Durata del ciclo in secondi
+        balance: Balance attuale
+        open_positions: Numero posizioni aperte
+        positions_detail: Lista posizioni [{symbol, direction, pnl_pct, pnl_usd, duration_min}, ...]
+        smart_exit_warnings: Dict warnings per simbolo {BTC: ["EMA_INVALIDATION", "SCORE_DECAY"], ...}
+        cycle_number: Numero ciclo giornaliero
     """
-    brain = _get_brain_emoji(source)
-    source_label = _format_source_label(source)
-    safe_reason = html.escape(reason[:400]) if reason else "N/A"
+    # Emoji per reason
+    reason_emoji_map = {
+        "scheduled": "⏰",
+        "take_profit": "💰",
+        "stop_loss": "🛑",
+        "trailing_stop": "📉",
+        "reversal": "🔄",
+        "volatility_spike": "⚡",
+        "position_closed": "🔒",
+        "manual": "👤",
+        "score_signal": "📊",
+    }
+    reason_emoji = reason_emoji_map.get(reason, "🤖")
 
-    # Calcola fees stimate
-    fees_est = _calculate_fees_usd(notional) if notional else 0
-
-    # Header con identificazione chiara del decisore
-    message = f"""{brain} <b>TRADE APERTO</b>
-
-<b>Decisore:</b> {source_label}
-<b>Symbol:</b> {symbol}
-<b>Direction:</b> {"LONG" if direction.lower() == "long" else "SHORT"}
-<b>Leverage:</b> {leverage}x
-<b>Allocazione:</b> {target_pct * 100:.1f}% del balance"""
-
-    # Aggiungi dettagli economici se disponibili
-    if entry_price:
-        message += f"\n\n<b>Entry Price:</b> ${entry_price:,.2f}"
-    if size:
-        message += f"\n<b>Size:</b> {size:.6f} {symbol}"
-    if notional:
-        message += f"\n<b>Notional:</b> ${notional:,.2f}"
-        message += f"\n<b>Fees stimate:</b> ~${fees_est:.2f}"
-
-    # Trading mode se specificato
-    if trading_mode:
-        mode_emoji = "🎯" if "MICRO" in trading_mode.upper() else "📊"
-        message += f"\n\n{mode_emoji} <b>Mode:</b> {trading_mode}"
-
-    # Score se disponibile
-    if score is not None:
-        score_emoji = "📈" if score > 0 else "📉"
-        message += f"\n{score_emoji} <b>Score:</b> {score:+.1f}"
-
-    message += f"""
-
-<b>Motivo:</b>
-<i>{safe_reason}</i>
-
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
-
-    return send_telegram_message(message)
-
-
-def notify_trade_close(
-    symbol: str,
-    direction: str,
-    reason: str,
-    source: str = "AI",
-    pnl_usd: Optional[float] = None,
-    pnl_pct: Optional[float] = None,
-    entry_price: Optional[float] = None,
-    exit_price: Optional[float] = None,
-    size: Optional[float] = None,
-    duration_minutes: Optional[int] = None,
-    fees_paid: Optional[float] = None,
-    funding_paid: Optional[float] = None,
-    trading_mode: Optional[str] = None
-) -> bool:
-    """
-    Notifica chiusura posizione con breakdown economico completo.
-    """
-    brain = _get_brain_emoji(source)
-    source_label = _format_source_label(source)
-    safe_reason = html.escape(reason[:400]) if reason else "N/A"
-
-    # Determina risultato trade
-    if pnl_usd is not None:
-        if pnl_usd > 0:
-            result_emoji = "💰"
-            result_text = "PROFITTO"
-        elif pnl_usd < 0:
-            result_emoji = "📉"
-            result_text = "PERDITA"
-        else:
-            result_emoji = "⚖️"
-            result_text = "BREAK-EVEN"
-    else:
-        result_emoji = "🔴"
-        result_text = "CHIUSO"
-
-    message = f"""{brain} <b>TRADE {result_text}</b> {result_emoji}
-
-<b>Decisore:</b> {source_label}
-<b>Symbol:</b> {symbol}
-<b>Direction:</b> {"LONG" if direction.lower() == "long" else "SHORT"}"""
-
-    # P&L principale
-    if pnl_usd is not None:
-        pnl_emoji = "📈" if pnl_usd >= 0 else "📉"
-        message += f"\n\n{pnl_emoji} <b>P&L:</b> ${pnl_usd:+.2f}"
-        if pnl_pct is not None:
-            message += f" ({pnl_pct:+.2f}%)"
-
-    # Dettagli trade
-    details = []
-    if entry_price:
-        details.append(f"Entry: ${entry_price:,.2f}")
-    if exit_price:
-        details.append(f"Exit: ${exit_price:,.2f}")
-    if size:
-        details.append(f"Size: {size:.6f}")
-
-    if details:
-        message += f"\n\n<b>Dettagli Trade:</b>\n" + " | ".join(details)
-
-    # Breakdown costi
-    if fees_paid or funding_paid:
-        message += f"\n\n<b>Costi:</b>"
-        if fees_paid:
-            message += f"\n  Fees: ${fees_paid:.2f}"
-        if funding_paid:
-            message += f"\n  Funding: ${funding_paid:+.2f}"
+    # Formatta reason in italiano
+    reason_label_map = {
+        "scheduled": "Ciclo programmato",
+        "take_profit": "Take Profit raggiunto",
+        "stop_loss": "Stop Loss triggerato",
+        "trailing_stop": "Trailing Stop",
+        "reversal": "Score reversal",
+        "volatility_spike": "Spike volatilità",
+        "position_closed": "Posizione chiusa",
+        "manual": "Manuale",
+        "score_signal": "Segnale score",
+    }
+    reason_label = reason_label_map.get(reason, reason)
 
     # Durata
-    if duration_minutes:
-        hours = duration_minutes // 60
-        mins = duration_minutes % 60
-        if hours > 0:
-            message += f"\n\n<b>Durata:</b> {hours}h {mins}m"
+    duration_str = ""
+    if duration_seconds:
+        if duration_seconds >= 60:
+            mins = int(duration_seconds // 60)
+            secs = int(duration_seconds % 60)
+            duration_str = f" ({mins}m {secs}s)"
         else:
-            message += f"\n\n<b>Durata:</b> {mins} minuti"
+            duration_str = f" ({int(duration_seconds)}s)"
 
-    # Trading mode
-    if trading_mode:
-        mode_emoji = "🎯" if "MICRO" in trading_mode.upper() else "📊"
-        message += f"\n{mode_emoji} <b>Mode:</b> {trading_mode}"
+    # Conta azioni
+    opens = [d for d in decisions if d.get("operation") == "open"]
+    closes = [d for d in decisions if d.get("operation") == "close"]
+    holds = [d for d in decisions if d.get("operation") == "hold"]
 
-    message += f"""
+    # Costruisci sezione decisioni
+    decisions_lines = []
+    for d in decisions:
+        op = d.get("operation", "?")
+        sym = d.get("symbol", "?")
+        direction = d.get("direction", "")
+        ai_reason = d.get("reason", "")[:50]  # Troncato
 
-<b>Motivo chiusura:</b>
-<i>{safe_reason}</i>
+        if op == "open":
+            op_emoji = "🟢"
+            op_text = f"OPEN {direction.upper()}"
+        elif op == "close":
+            op_emoji = "🔴"
+            op_text = "CLOSE"
+        else:
+            op_emoji = "⚪"
+            op_text = "HOLD"
 
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+        # Score per questo simbolo
+        score_str = ""
+        if scores and sym in scores:
+            net = scores[sym].get("net", 0)
+            score_str = f" [score: {net:+.1f}]"
+
+        decisions_lines.append(f"{op_emoji} <b>{sym}</b>: {op_text}{score_str}")
+        if ai_reason and op != "hold":
+            decisions_lines.append(f"   <i>{html.escape(ai_reason)}</i>")
+
+    # Se nessuna azione, mostra che tutto è HOLD
+    if not decisions_lines:
+        decisions_lines = ["⚪ Nessuna azione (tutte HOLD)"]
+
+    # Account info
+    account_info = ""
+    if balance is not None or open_positions is not None:
+        parts = []
+        if balance is not None:
+            parts.append(f"💼 ${balance:,.2f}")
+        if open_positions is not None:
+            parts.append(f"📈 {open_positions} pos")
+        account_info = f"\n{' | '.join(parts)}"
+
+    # Statistiche ciclo
+    stats = f"✅ {len(opens)} open | 🔴 {len(closes)} close | ⚪ {len(holds)} hold"
+
+    # Sezione posizioni aperte (dettaglio)
+    positions_section = ""
+    if positions_detail:
+        pos_lines = []
+        for pos in positions_detail:
+            sym = pos.get("symbol", "?")
+            direction = pos.get("direction", "?").upper()
+            pnl_pct = pos.get("pnl_pct", 0)
+            pnl_usd = pos.get("pnl_usd", 0)
+            duration = pos.get("duration_min", 0)
+
+            # Emoji P&L
+            pnl_emoji = "📈" if pnl_usd >= 0 else "📉"
+
+            # Warnings per questa posizione
+            warn_str = ""
+            if smart_exit_warnings and sym in smart_exit_warnings:
+                warns = smart_exit_warnings[sym]
+                if warns:
+                    warn_str = f" ⚠️{len(warns)}"
+
+            pos_lines.append(f"├─ {sym} {direction}: {pnl_emoji} ${pnl_usd:+.2f} ({pnl_pct:+.1f}%) • {duration}m{warn_str}")
+
+        if pos_lines:
+            pos_lines[-1] = pos_lines[-1].replace("├─", "└─")  # Fix ultimo elemento
+            positions_section = f"\n\n📊 <b>POSIZIONI APERTE:</b>\n{chr(10).join(pos_lines)}"
+
+    # Sezione Smart Exit warnings
+    warnings_section = ""
+    if smart_exit_warnings:
+        warn_lines = []
+        for sym, warns in smart_exit_warnings.items():
+            if warns:
+                warn_labels = {
+                    "EMA_INVALIDATION": "EMA↓",
+                    "SCORE_DECAY": "Score↓",
+                    "TIME_STOP": "Time⏱️"
+                }
+                warn_text = ", ".join([warn_labels.get(w, w) for w in warns])
+                warn_lines.append(f"⚠️ {sym}: {warn_text}")
+        if warn_lines:
+            warnings_section = f"\n\n🚨 <b>SMART EXIT ALERTS:</b>\n{chr(10).join(warn_lines)}"
+
+    # Numero ciclo
+    cycle_str = f" #{cycle_number}" if cycle_number else ""
+
+    message = f"""🤖 <b>AI CYCLE{cycle_str} COMPLETATO</b>{duration_str}
+
+{reason_emoji} <b>Trigger:</b> {reason_label}
+📋 <b>Ticker:</b> {', '.join(tickers_analyzed)}
+
+━━━━━━━━━━━━━━━━
+<b>DECISIONI:</b>
+{chr(10).join(decisions_lines)}
+━━━━━━━━━━━━━━━━
+{stats}{account_info}{positions_section}{warnings_section}
+
+🕐 {datetime.now().strftime('%H:%M:%S')}"""
 
     return send_telegram_message(message)
 
 
-def notify_hold(symbol: str, reason: str, source: str = "AI") -> bool:
+def notify_hold(symbol: str, reason: str) -> bool:
     """Notifica decisione HOLD (opzionale, può essere disabilitata)."""
+    # Di default non notifichiamo gli HOLD per non spammare
     notify_holds = os.getenv("TELEGRAM_NOTIFY_HOLDS", "false").lower() == "true"
     if not notify_holds:
         return True
 
-    brain = _get_brain_emoji(source)
-    source_label = _format_source_label(source)
-    safe_reason = html.escape(reason[:300]) if reason else "N/A"
+    # Escape HTML characters in reason to prevent parsing errors
+    safe_reason = html.escape(reason[:300])
+    message = f"""⚪ <b>HOLD</b>
 
-    message = f"""{brain} <b>HOLD</b>
-
-<b>Decisore:</b> {source_label}
 <b>Symbol:</b> {symbol}
 
-<b>Motivo:</b>
+<b>Motivo AI:</b>
 <i>{safe_reason}</i>
 
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
 
     return send_telegram_message(message)
 
 
-# ============================================
-# MESSAGGI SENTINEL SPECIFICI
-# ============================================
-
-def notify_trailing_stop_triggered(
-    symbol: str,
-    direction: str,
-    trigger_price: float,
-    entry_price: float,
-    peak_price: float,
-    pnl_usd: float,
-    pnl_pct: float
-) -> bool:
-    """Notifica attivazione trailing stop dal Sentinel."""
-
-    profit_emoji = "💰" if pnl_usd >= 0 else "📉"
-
-    message = f"""{BRAIN_SENTINEL} <b>TRAILING STOP TRIGGERED</b> {profit_emoji}
-
-<b>Decisore:</b> SENTINEL (trailing stop)
-<b>Symbol:</b> {symbol}
-<b>Direction:</b> {direction.upper()}
-
-<b>Prezzi:</b>
-  Entry: ${entry_price:,.2f}
-  Peak: ${peak_price:,.2f}
-  Trigger: ${trigger_price:,.2f}
-
-<b>P&L Finale:</b> ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
-
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
-
-    return send_telegram_message(message)
-
-
-def notify_stop_loss_triggered(
-    symbol: str,
-    direction: str,
-    trigger_price: float,
-    entry_price: float,
-    pnl_usd: float,
-    pnl_pct: float
-) -> bool:
-    """Notifica attivazione stop loss dal Sentinel."""
-
-    message = f"""{BRAIN_SENTINEL} <b>STOP LOSS TRIGGERED</b> 🛑
-
-<b>Decisore:</b> SENTINEL (stop loss)
-<b>Symbol:</b> {symbol}
-<b>Direction:</b> {direction.upper()}
-
-<b>Prezzi:</b>
-  Entry: ${entry_price:,.2f}
-  Trigger: ${trigger_price:,.2f}
-
-<b>P&L:</b> ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
-
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
-
-    return send_telegram_message(message)
-
-
-def notify_take_profit_triggered(
-    symbol: str,
-    direction: str,
-    target_price: float,
-    entry_price: float,
-    pnl_usd: float,
-    pnl_pct: float
-) -> bool:
-    """Notifica raggiungimento take profit."""
-
-    message = f"""{BRAIN_SENTINEL} <b>TAKE PROFIT</b> 💰
-
-<b>Decisore:</b> SENTINEL (take profit)
-<b>Symbol:</b> {symbol}
-<b>Direction:</b> {direction.upper()}
-
-<b>Prezzi:</b>
-  Entry: ${entry_price:,.2f}
-  Target: ${target_price:,.2f}
-
-<b>P&L:</b> ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
-
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
-
-    return send_telegram_message(message)
-
-
-# ============================================
-# DIAGNOSTICA SISTEMA
-# ============================================
-
-def notify_system_heartbeat(
-    balance: float,
-    open_positions: List[Dict],
-    ai_status: str = "OK",
-    sentinel_status: str = "OK",
-    last_ai_call: Optional[datetime] = None,
-    last_sentinel_check: Optional[datetime] = None
-) -> bool:
-    """
-    Invia heartbeat periodico con stato sistema.
-    """
-    # Calcola totale unrealized P&L
-    total_pnl = sum(p.get("pnl_usd", 0) for p in open_positions)
-    pnl_emoji = "📈" if total_pnl >= 0 else "📉"
-
-    # Status icons
-    ai_icon = "🟢" if ai_status == "OK" else "🔴"
-    sentinel_icon = "🟢" if sentinel_status == "OK" else "🔴"
-
-    message = f"""📡 <b>SYSTEM HEARTBEAT</b>
-
-<b>Account:</b>
-  Balance: ${balance:,.2f}
-  Unrealized P&L: {pnl_emoji} ${total_pnl:+.2f}
-  Posizioni: {len(open_positions)}
-
-<b>Status Componenti:</b>
-  {BRAIN_AI} AI: {ai_icon} {ai_status}
-  {BRAIN_SENTINEL} Sentinel: {sentinel_icon} {sentinel_status}"""
-
-    if last_ai_call:
-        mins_ago = int((datetime.now(timezone.utc) - last_ai_call).total_seconds() / 60)
-        message += f"\n  Ultima AI call: {mins_ago}m fa"
-
-    if last_sentinel_check:
-        secs_ago = int((datetime.now(timezone.utc) - last_sentinel_check).total_seconds())
-        message += f"\n  Ultimo Sentinel check: {secs_ago}s fa"
-
-    # Dettaglio posizioni
-    if open_positions:
-        message += f"\n\n<b>Posizioni Aperte:</b>"
-        for pos in open_positions:
-            pos_pnl = pos.get("pnl_usd", 0)
-            pos_emoji = "📈" if pos_pnl >= 0 else "📉"
-            message += f"\n  {pos.get('symbol')} {pos.get('side', '').upper()}: ${pos_pnl:+.2f}"
-
-    message += f"\n\n{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
-
-    return send_telegram_message(message)
-
-
-def notify_position_update(
-    symbol: str,
-    direction: str,
-    entry_price: float,
-    current_price: float,
-    pnl_usd: float,
-    pnl_pct: float,
-    peak_pnl_pct: Optional[float] = None,
-    trailing_active: bool = False,
-    current_sl: Optional[float] = None,
-    leverage: Optional[float] = None,
-    duration_minutes: Optional[int] = None
-) -> bool:
-    """
-    Notifica aggiornamento posizione con dettagli economici.
-    Utile per monitoraggio periodico.
-    """
-    pnl_emoji = "📈" if pnl_usd >= 0 else "📉"
-
-    message = f"""📊 <b>POSITION UPDATE</b>
-
-<b>Symbol:</b> {symbol}
-<b>Direction:</b> {direction.upper()}"""
-
-    if leverage:
-        message += f"\n<b>Leverage:</b> {leverage}x"
-
-    message += f"""
-
-<b>Prezzi:</b>
-  Entry: ${entry_price:,.2f}
-  Current: ${current_price:,.2f}
-  Change: {((current_price - entry_price) / entry_price * 100):+.2f}%
-
-{pnl_emoji} <b>P&L:</b> ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)"""
-
-    if peak_pnl_pct is not None:
-        message += f"\n<b>Peak P&L:</b> {peak_pnl_pct:+.2f}%"
-        if pnl_pct < peak_pnl_pct:
-            drawdown = peak_pnl_pct - pnl_pct
-            message += f" (drawdown: -{drawdown:.1f}%)"
-
-    if trailing_active:
-        message += f"\n\n🎯 <b>Trailing Stop:</b> ATTIVO"
-        if current_sl is not None:
-            message += f"\n  SL Level: {current_sl:+.1f}%"
-
-    if duration_minutes:
-        hours = duration_minutes // 60
-        mins = duration_minutes % 60
-        if hours > 0:
-            message += f"\n\n<b>Durata:</b> {hours}h {mins}m"
-        else:
-            message += f"\n\n<b>Durata:</b> {mins} minuti"
-
-    message += f"\n\n{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
-
-    return send_telegram_message(message)
-
-
-def notify_bot_started(
-    balance: float,
-    open_positions: int,
-    mode: str = "NORMAL",
-    testnet: bool = True
-) -> bool:
-    """Notifica avvio bot con dettagli configurazione."""
-    env_emoji = "🧪" if testnet else "🔴"
-    env_text = "TESTNET" if testnet else "MAINNET"
-
-    message = f"""🤖 <b>BOT AVVIATO</b>
-
-{env_emoji} <b>Environment:</b> {env_text}
-<b>Mode:</b> {mode}
-<b>Balance:</b> ${balance:,.2f}
-<b>Posizioni aperte:</b> {open_positions}
-
-<b>Componenti attivi:</b>
-  {BRAIN_AI} AI Agent: READY
-  {BRAIN_SENTINEL} Sentinel: READY
-
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
-
-    return send_telegram_message(message)
-
-
-def notify_daily_summary(
-    balance: float,
-    pnl_today: float,
-    trades_today: int,
-    open_positions: int,
-    win_rate: Optional[float] = None,
-    fees_today: Optional[float] = None,
-    funding_today: Optional[float] = None,
-    positions_detail: str = ""
-) -> bool:
-    """Notifica report giornaliero con metriche economiche."""
-    pnl_emoji = "📈" if pnl_today >= 0 else "📉"
-
-    message = f"""📊 <b>REPORT GIORNALIERO</b>
-
-<b>Account:</b>
-  Balance: ${balance:,.2f}
-  P&L Oggi: {pnl_emoji} ${pnl_today:+.2f}
-
-<b>Trading:</b>
-  Trades: {trades_today}
-  Posizioni Aperte: {open_positions}"""
-
-    if win_rate is not None:
-        message += f"\n  Win Rate: {win_rate:.1f}%"
-
-    # Costi
-    if fees_today or funding_today:
-        message += f"\n\n<b>Costi Oggi:</b>"
-        if fees_today:
-            message += f"\n  Fees: ${fees_today:.2f}"
-        if funding_today:
-            message += f"\n  Funding: ${funding_today:+.2f}"
-
-    # P&L netto
-    if fees_today or funding_today:
-        total_costs = (fees_today or 0) + (funding_today or 0)
-        net_pnl = pnl_today - total_costs
-        message += f"\n  <b>P&L Netto:</b> ${net_pnl:+.2f}"
-
-    if positions_detail:
-        message += f"\n\n{positions_detail}"
-
-    message += f"\n\n{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
-
-    return send_telegram_message(message)
-
-
-# ============================================
-# ERRORI E WARNING
-# ============================================
-
-def notify_error(
-    error_type: str,
-    error_message: str,
-    source: Optional[str] = None,
-    severity: str = "ERROR"
-) -> bool:
-    """Notifica errore con contesto."""
-    severity_emoji = {
-        "WARNING": "⚠️",
-        "ERROR": "❌",
-        "CRITICAL": "🚨"
-    }.get(severity.upper(), "⚠️")
-
+def notify_error(error_type: str, error_message: str,
+                 source: Optional[str] = None) -> bool:
+    """Notifica errore."""
+    # Escape HTML characters to prevent parsing errors
     safe_error_type = html.escape(error_type)
     safe_error_message = html.escape(error_message[:500])
     source_text = f"\n<b>Source:</b> {html.escape(source)}" if source else ""
 
-    message = f"""{severity_emoji} <b>{severity.upper()}</b>
+    message = f"""⚠️ <b>ERRORE BOT</b>
 
 <b>Tipo:</b> {safe_error_type}{source_text}
 
 <b>Messaggio:</b>
 <code>{safe_error_message}</code>
 
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
 
     return send_telegram_message(message)
 
 
-def notify_timeout(timeout_seconds: int, component: str = "BOT") -> bool:
-    """Notifica timeout del bot."""
-    message = f"""💀 <b>{component} TIMEOUT</b>
+def notify_bot_started(balance: float, open_positions: int) -> bool:
+    """Notifica avvio bot."""
+    message = f"""🤖 <b>BOT AVVIATO</b>
 
-Il componente {component} ha superato il timeout di {timeout_seconds} secondi.
+<b>Balance:</b> ${balance:,.2f}
+<b>Posizioni aperte:</b> {open_positions}
+
+🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+
+    return send_telegram_message(message)
+
+
+def notify_daily_summary(balance: float, pnl_today: float,
+                         trades_today: int, open_positions: int,
+                         positions_detail: str = "") -> bool:
+    """Notifica report giornaliero."""
+    pnl_emoji = "📈" if pnl_today >= 0 else "📉"
+
+    message = f"""📊 <b>REPORT GIORNALIERO</b>
+
+<b>Balance:</b> ${balance:,.2f}
+<b>P&L Oggi:</b> {pnl_emoji} ${pnl_today:+.2f}
+<b>Trades Oggi:</b> {trades_today}
+<b>Posizioni Aperte:</b> {open_positions}
+
+{positions_detail}
+
+🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+
+    return send_telegram_message(message)
+
+
+def notify_timeout(timeout_seconds: int) -> bool:
+    """Notifica timeout del bot."""
+    message = f"""💀 <b>BOT TIMEOUT</b>
+
+Il bot ha superato il timeout di {timeout_seconds} secondi ed è stato terminato.
 
 Possibili cause:
-- Database bloccato
-- API Hyperliquid non risponde
-- Connessione di rete lenta
-- OpenAI API timeout
+• Database bloccato
+• API non risponde
+• Connessione di rete lenta
 
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"""
-
-    return send_telegram_message(message)
-
-
-def notify_connection_issue(
-    service: str,
-    issue: str,
-    retry_in: Optional[int] = None
-) -> bool:
-    """Notifica problemi di connessione."""
-    message = f"""🔌 <b>CONNECTION ISSUE</b>
-
-<b>Service:</b> {service}
-<b>Issue:</b> {issue}"""
-
-    if retry_in:
-        message += f"\n<b>Retry in:</b> {retry_in} secondi"
-
-    message += f"\n\n{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
+🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
 
     return send_telegram_message(message)
 
 
 # ============================================
-# FUNZIONE PRINCIPALE COMPATIBILE
+# FUNZIONE PRINCIPALE PER IL BOT
 # ============================================
 
-def notify_trading_decision(
-    decision: Dict[str, Any],
-    pnl_usd: Optional[float] = None,
-    pnl_pct: Optional[float] = None,
-    source: str = "AI",
-    **kwargs
-) -> bool:
+def notify_trading_decision(decision: Dict[str, Any],
+                            pnl_usd: Optional[float] = None,
+                            pnl_pct: Optional[float] = None) -> bool:
     """
     Notifica una decisione di trading basata sul payload.
-    Mantiene compatibilità con il vecchio formato.
 
     Args:
         decision: Dict con operation, symbol, direction, reason, etc.
         pnl_usd: P&L in USD (solo per close)
         pnl_pct: P&L in percentuale (solo per close)
-        source: Chi ha preso la decisione (AI, SENTINEL, MANUAL)
-        **kwargs: Parametri aggiuntivi per i nuovi campi
     """
     operation = decision.get("operation", "hold")
     symbol = decision.get("symbol", "N/A")
@@ -692,41 +518,13 @@ def notify_trading_decision(
     reason = decision.get("reason", "No reason provided")
     leverage = decision.get("leverage", 1)
     target_pct = decision.get("target_portion_of_balance", 0)
-    trading_mode = decision.get("trading_mode")
-    score = decision.get("opening_score") or decision.get("score")
 
     if operation == "open":
-        return notify_trade_open(
-            symbol=symbol,
-            direction=direction,
-            leverage=leverage,
-            target_pct=target_pct,
-            reason=reason,
-            source=source,
-            entry_price=kwargs.get("entry_price"),
-            size=kwargs.get("size"),
-            notional=kwargs.get("notional"),
-            score=score,
-            trading_mode=trading_mode
-        )
+        return notify_trade_open(symbol, direction, leverage, target_pct, reason)
     elif operation == "close":
-        return notify_trade_close(
-            symbol=symbol,
-            direction=direction,
-            reason=reason,
-            source=source,
-            pnl_usd=pnl_usd,
-            pnl_pct=pnl_pct,
-            entry_price=kwargs.get("entry_price"),
-            exit_price=kwargs.get("exit_price"),
-            size=kwargs.get("size"),
-            duration_minutes=kwargs.get("duration_minutes"),
-            fees_paid=kwargs.get("fees_paid"),
-            funding_paid=kwargs.get("funding_paid"),
-            trading_mode=trading_mode
-        )
+        return notify_trade_close(symbol, direction, reason, pnl_usd, pnl_pct)
     elif operation == "hold":
-        return notify_hold(symbol, reason, source)
+        return notify_hold(symbol, reason)
     else:
         return False
 
@@ -742,12 +540,5 @@ if __name__ == "__main__":
     print(f"Enabled: {TELEGRAM_ENABLED}")
 
     if is_telegram_configured():
-        # Test completo
-        send_telegram_message(f"""🧪 <b>TEST NOTIFICHE ENHANCED</b>
-
-Verifica identificazione decisore:
-  {BRAIN_AI} AI (GPT)
-  {BRAIN_SENTINEL} Sentinel (Rules)
-  {BRAIN_MANUAL} Manual
-
-{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC""")
+        # Test message
+        send_telegram_message("🧪 <b>Test</b>\n\nIl bot Telegram funziona correttamente!")

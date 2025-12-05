@@ -1,26 +1,29 @@
 FROM python:3.11-slim
 
+# Disable Python output buffering for real-time logs
+ENV PYTHONUNBUFFERED=1
+
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies for psycopg2 and other packages
 RUN apt-get update && apt-get install -y \
     gcc \
-    g++ \
-    libffi-dev \
-    libssl-dev \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for caching
+# Copy requirements first for better caching
 COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all application files
+# Copy application code
 COPY . .
 
-# Make scripts executable
-RUN chmod +x entrypoint.sh start.sh 2>/dev/null || true
+# Make entrypoint executable
+RUN chmod +x /app/entrypoint.sh
 
-# Default command
-CMD ["python", "sentinel.py", "--loop"]
+# Use entrypoint.sh as the container entry point
+# This ensures ONLY ONE container runs both main.py and sentinel.py correctly
+ENTRYPOINT ["/app/entrypoint.sh"]
