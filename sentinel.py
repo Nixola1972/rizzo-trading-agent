@@ -104,6 +104,9 @@ DOUBLE_CHECK_AI_ENABLED = os.getenv('DOUBLE_CHECK_AI_ENABLED', 'false').lower() 
 # Controls how strict the DOUBLE_CHECK validation is
 TRADING_STYLE = os.getenv('TRADING_STYLE', 'moderate').lower()
 
+# MAX_LEVERAGE: Maximum leverage AI can choose (1x to MAX_LEVERAGE)
+MAX_LEVERAGE = int(os.getenv('MAX_LEVERAGE', '10'))
+
 MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
 MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # % balance per posizione
 
@@ -537,8 +540,15 @@ Based on the trading style rules above, decide:
 Example: Sentinel proposes LONG but MACD is strongly negative → You can respond with direction: "short"
 Only override if you have HIGH CONFIDENCE in the opposite direction.
 
+**LEVERAGE SELECTION** (1x to {MAX_LEVERAGE}x):
+Choose leverage based on your confidence and signal strength:
+- HIGH confidence + strong signals → higher leverage ({MAX_LEVERAGE}x or close)
+- MEDIUM confidence → moderate leverage ({MAX_LEVERAGE // 2}x to {(MAX_LEVERAGE * 2) // 3}x)
+- LOW confidence but still opening → minimal leverage (1x to 2x)
+- If "hold" → leverage is ignored
+
 Respond with JSON only:
-{{"operation": "open|hold", "symbol": "{symbol}", "direction": "long|short", "reason": "Brief analysis (max 50 words)", "confidence": "high|medium|low"}}
+{{"operation": "open|hold", "symbol": "{symbol}", "direction": "long|short", "leverage": 1-{MAX_LEVERAGE}, "reason": "Brief analysis (max 50 words)", "confidence": "high|medium|low"}}
 """
 
         log(f"      Calling AI...")
@@ -551,12 +561,24 @@ Respond with JSON only:
         ai_direction = ai_response.get("direction", direction).lower()
         direction_overridden = ai_direction != direction.lower()
 
+        # Parse leverage (default to MICRO_GAIN_LEVERAGE, clamp to 1-MAX_LEVERAGE)
+        ai_leverage_raw = ai_response.get("leverage", MICRO_GAIN_LEVERAGE)
+        try:
+            ai_leverage = int(ai_leverage_raw)
+        except (ValueError, TypeError):
+            ai_leverage = MICRO_GAIN_LEVERAGE
+        ai_leverage = max(1, min(ai_leverage, MAX_LEVERAGE))  # Clamp to valid range
+
+        confidence = ai_response.get("confidence", "medium")
+
         if approved:
             if direction_overridden:
                 log(f"      ✅ AI APPROVED with DIRECTION OVERRIDE: {direction.upper()} → {ai_direction.upper()}")
+                log(f"         Leverage: {ai_leverage}x | Confidence: {confidence}")
                 log(f"         Reason: {ai_reason}")
             else:
                 log(f"      ✅ AI APPROVED: {ai_reason}")
+                log(f"         Leverage: {ai_leverage}x | Confidence: {confidence}")
         else:
             log(f"      ❌ AI REJECTED: {ai_reason}")
 
@@ -564,14 +586,15 @@ Respond with JSON only:
             "approved": approved,
             "operation": operation,
             "reason": ai_reason,
-            "confidence": ai_response.get("confidence", "medium"),
+            "confidence": confidence,
             "direction": ai_direction,
-            "direction_overridden": direction_overridden
+            "direction_overridden": direction_overridden,
+            "leverage": ai_leverage
         }
 
     except Exception as e:
         log(f"      ⚠️ Validation error: {e}")
-        return {"approved": False, "operation": "hold", "reason": f"Error: {str(e)}", "error": str(e)}
+        return {"approved": False, "operation": "hold", "reason": f"Error: {str(e)}", "error": str(e), "leverage": MICRO_GAIN_LEVERAGE}
 
 
 def _get_recent_scores(symbol: str, limit: int = 5) -> list:
@@ -1404,7 +1427,7 @@ def get_daily_trade_count() -> int:
         return 0
 
 
-def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
+def open_micro_gain_position(bot, symbol: str, direction: str, score: float, leverage: int = None):
     """
     Apre una posizione MICRO_GAIN con TP e SL orders su Hyperliquid.
 
@@ -1413,6 +1436,7 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
         symbol: Simbolo (BTC, ETH, SOL)
         direction: 'long' o 'short'
         score: Score che ha generato il segnale
+        leverage: Leva da usare (se None, usa MICRO_GAIN_LEVERAGE)
 
     Returns:
         dict con risultato operazione
@@ -1420,7 +1444,10 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
     import db_utils
     import telegram_notifier as tg
 
-    log(f"🎯 MICRO_GAIN AUTO-OPEN: {symbol} {direction.upper()} (score={score:.1f})")
+    # Use AI-suggested leverage or default
+    actual_leverage = leverage if leverage is not None else MICRO_GAIN_LEVERAGE
+
+    log(f"🎯 MICRO_GAIN AUTO-OPEN: {symbol} {direction.upper()} (score={score:.1f}, leverage={actual_leverage}x)")
 
     try:
         # Prepara ordine
@@ -1430,7 +1457,7 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
             "direction": direction,
             "reason": f"MICRO_GAIN sentinel auto-open: score {score:.1f}",
             "target_portion_of_balance": MICRO_GAIN_PORTION,
-            "leverage": MICRO_GAIN_LEVERAGE,
+            "leverage": actual_leverage,
             "trading_mode": "MICRO_GAIN",
             "opening_score": score,
             "micro_gain_target": MICRO_GAIN_TARGET_PERCENT
@@ -1480,7 +1507,7 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                             trading_mode="MICRO_GAIN",
                             entry_price=entry_price,
                             size=position_size,
-                            leverage=MICRO_GAIN_LEVERAGE,
+                            leverage=actual_leverage,
                             score=score,
                             sl_percent=MICRO_GAIN_STOP_LOSS_PERCENT,
                             tp_percent=MICRO_GAIN_TARGET_PERCENT,
@@ -1498,7 +1525,7 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                 time.sleep(0.5)  # Piccola pausa per sincronizzazione
                 sl_verification = verify_and_fix_sl_order(
                     bot, symbol, direction, entry_price, position_size,
-                    MICRO_GAIN_LEVERAGE, "MICRO_GAIN", max_retries=2
+                    actual_leverage, "MICRO_GAIN", max_retries=2
                 )
                 if not sl_verification["verified"]:
                     log(f"   🚨 CRITICO: Impossibile verificare SL per {symbol}!")
@@ -1520,13 +1547,13 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                     try:
                         # Calcoli per messaggio dettagliato
                         value_usd = position_size * entry_price
-                        margin = value_usd / MICRO_GAIN_LEVERAGE
+                        margin = value_usd / actual_leverage
                         # P&L è sul valore posizione, NON moltiplicato per leverage!
                         target_profit = value_usd * (MICRO_GAIN_TARGET_PERCENT / 100)
                         sl_loss = value_usd * (MICRO_GAIN_STOP_LOSS_PERCENT / 100)
                         # ROI% sul margine = target_pct * leverage
-                        target_roi_pct = MICRO_GAIN_TARGET_PERCENT * MICRO_GAIN_LEVERAGE
-                        sl_roi_pct = MICRO_GAIN_STOP_LOSS_PERCENT * MICRO_GAIN_LEVERAGE
+                        target_roi_pct = MICRO_GAIN_TARGET_PERCENT * actual_leverage
+                        sl_roi_pct = MICRO_GAIN_STOP_LOSS_PERCENT * actual_leverage
                         fees_estimate = value_usd * 0.0007  # ~0.07% open+close
 
                         tg.send_telegram_message(
@@ -1536,7 +1563,7 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float):
                             f"<b>Entry:</b> ${entry_price:.2f}\n"
                             f"<b>Size:</b> {position_size:.6f} {symbol}\n"
                             f"<b>Valore:</b> ${value_usd:.2f}\n"
-                            f"<b>Margine:</b> ${margin:.2f} ({MICRO_GAIN_LEVERAGE}x)\n"
+                            f"<b>Margine:</b> ${margin:.2f} ({actual_leverage}x)\n"
                             f"<b>Score:</b> {score:.1f}\n\n"
                             f"📊 <b>Target:</b> +{MICRO_GAIN_TARGET_PERCENT}% → ${target_profit:.2f} (ROI {target_roi_pct:.0f}%)\n"
                             f"🛑 <b>Stop Loss:</b> -{MICRO_GAIN_STOP_LOSS_PERCENT}% → ${sl_loss:.2f} (ROI -{sl_roi_pct:.0f}%)\n"
@@ -1687,7 +1714,7 @@ def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price
 
 # ===== MICRO_PAY FUNCTIONS =====
 
-def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
+def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leverage: int = None):
     """
     Apre una posizione MICRO_PAY con TP e SL orders su Hyperliquid.
 
@@ -1699,6 +1726,7 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
         symbol: Simbolo (BTC, ETH, SOL)
         direction: 'long' o 'short'
         score: Score che ha generato il segnale
+        leverage: Leva da usare (se None, usa MICRO_PAY_LEVERAGE)
 
     Returns:
         dict con risultato operazione
@@ -1706,7 +1734,10 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
     import db_utils
     import telegram_notifier as tg
 
-    log(f"💵 MICRO_PAY AUTO-OPEN: {symbol} {direction.upper()} (score={score:.1f})")
+    # Use AI-suggested leverage or default
+    actual_leverage = leverage if leverage is not None else MICRO_PAY_LEVERAGE
+
+    log(f"💵 MICRO_PAY AUTO-OPEN: {symbol} {direction.upper()} (score={score:.1f}, leverage={actual_leverage}x)")
 
     try:
         # Prepara ordine
@@ -1716,7 +1747,7 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
             "direction": direction,
             "reason": f"MICRO_PAY sentinel auto-open: score {score:.1f}",
             "target_portion_of_balance": MICRO_PAY_PORTION,
-            "leverage": MICRO_PAY_LEVERAGE,
+            "leverage": actual_leverage,
             "trading_mode": "MICRO_PAY",
             "opening_score": score,
             "micro_gain_target": MICRO_PAY_TARGET_PERCENT  # Usa lo stesso campo per compatibilità
@@ -1766,7 +1797,7 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
                             trading_mode="MICRO_PAY",
                             entry_price=entry_price,
                             size=position_size,
-                            leverage=MICRO_PAY_LEVERAGE,
+                            leverage=actual_leverage,
                             score=score,
                             sl_percent=MICRO_PAY_STOP_LOSS_PERCENT,
                             tp_percent=MICRO_PAY_TARGET_PERCENT,
@@ -1784,7 +1815,7 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float):
                 time.sleep(0.5)  # Piccola pausa per sincronizzazione
                 sl_verification = verify_and_fix_sl_order(
                     bot, symbol, direction, entry_price, position_size,
-                    MICRO_PAY_LEVERAGE, "MICRO_PAY", max_retries=2
+                    actual_leverage, "MICRO_PAY", max_retries=2
                 )
                 if not sl_verification["verified"]:
                     log(f"   🚨 CRITICO: Impossibile verificare SL per {symbol}!")
@@ -3680,6 +3711,7 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
             log(f"   ✅ {symbol} MICRO_GAIN: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
 
             # === DOUBLE_CHECK_AI: Validazione AI immediata prima di aprire ===
+            ai_leverage = None  # Default: use MICRO_GAIN_LEVERAGE
             if DOUBLE_CHECK_AI_ENABLED:
                 validation = validate_double_check_ai(symbol, direction, score, "MICRO_GAIN")
 
@@ -3693,8 +3725,10 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 if ai_direction and ai_direction.lower() != direction.lower():
                     log(f"      ⚠️ AI suggerisce {ai_direction.upper()} invece di {direction.upper()}")
                     direction = ai_direction
+                # AI-suggested leverage
+                ai_leverage = validation.get("leverage")
 
-            result = open_micro_gain_position(bot, symbol, direction, score)
+            result = open_micro_gain_position(bot, symbol, direction, score, leverage=ai_leverage)
 
             if result.get("success"):
                 position_count += 1
@@ -3713,6 +3747,7 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
             log(f"   ✅ {symbol} MICRO_PAY: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
 
             # === DOUBLE_CHECK_AI: Validazione AI immediata prima di aprire ===
+            ai_leverage = None  # Default: use MICRO_PAY_LEVERAGE
             if DOUBLE_CHECK_AI_ENABLED:
                 validation = validate_double_check_ai(symbol, direction, score, "MICRO_PAY")
 
@@ -3725,8 +3760,10 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 if ai_direction and ai_direction.lower() != direction.lower():
                     log(f"      ⚠️ AI suggerisce {ai_direction.upper()} invece di {direction.upper()}")
                     direction = ai_direction
+                # AI-suggested leverage
+                ai_leverage = validation.get("leverage")
 
-            result = open_micro_pay_position(bot, symbol, direction, score)
+            result = open_micro_pay_position(bot, symbol, direction, score, leverage=ai_leverage)
 
             if result.get("success"):
                 position_count += 1
