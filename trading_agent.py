@@ -27,6 +27,10 @@ SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '16'))
 # Quando attivo, disabilita la protezione chiusure e lascia decidere l'AI
 AI_FREE_MODE = os.getenv('AI_FREE_MODE', 'false').lower() == 'true'
 
+# ===== DOUBLE_CHECK AI =====
+# Se attivo, l'AI decide in base agli indicatori, non allo score
+DOUBLE_CHECK_AI_ENABLED = os.getenv('DOUBLE_CHECK_AI_ENABLED', 'false').lower() == 'true'
+
 if TRAILING_STOP_ENABLED:
     print(f"🛡️  Trailing Stop: ENABLED (trailing={TRAILING_STOP_PERCENT}%, activation={TRAILING_STOP_ACTIVATION_PERCENT}%, stop_loss={INITIAL_STOP_LOSS_PERCENT}%)")
     print(f"🛡️  Close Reversal Threshold: {SCORE_THRESHOLD_CLOSE_REVERSAL}")
@@ -836,11 +840,15 @@ def previsione_trading_agent(prompt, indicators=None, sentiment=None, forecasts=
             net_score = score.get('net_score', 0)
             threshold = score.get('thresholds', {}).get('open', 15.0)
 
-            # Se score sotto soglia E AI vuole aprire → FORZA HOLD (solo se NON in AI_FREE_MODE)
+            # Se score sotto soglia E AI vuole aprire → FORZA HOLD
+            # ECCEZIONI: AI_FREE_MODE o DOUBLE_CHECK_AI_ENABLED (AI decide in base a indicatori reali)
             if abs(net_score) < threshold and result.get('operation') == 'open':
                 if AI_FREE_MODE:
                     # AI_FREE_MODE: lascia decidere l'AI, non forzare HOLD
                     print(f"🆓 AI_FREE_MODE: AI vuole OPEN con score={net_score:.1f} (sotto soglia {threshold}) → PERMESSO")
+                elif DOUBLE_CHECK_AI_ENABLED:
+                    # DOUBLE_CHECK: AI ha già validato con indicatori reali, bypassa score threshold
+                    print(f"🔍 DOUBLE_CHECK: AI vuole OPEN con score={net_score:.1f} (sotto soglia {threshold}) → PERMESSO (validato da indicatori)")
                 else:
                     original_decision = f"{result['operation']} {result['direction']}"
                     print(f"⚠️  OVERRIDE OPEN: net_score={net_score:.1f} < threshold={threshold}")
