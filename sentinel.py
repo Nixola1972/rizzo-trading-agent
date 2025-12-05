@@ -486,6 +486,10 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
         funding_val = derivatives_data.get('funding_rate', 0) or 0
         funding_pct = funding_val * 100  # Convert to percentage
 
+        # Log indicator values for visibility
+        log(f"      📊 MACD: {macd_val:.4f} | RSI: {rsi_val:.1f} | ADX: {adx_val:.1f} ({adx_interpretation})")
+        log(f"      💰 Price: ${price_val:,.2f} {price_vs_ema} EMA20 | Funding: {funding_pct:.4f}%")
+
         # === 3. BUILD FOCUSED PROMPT ===
         style_instructions = _get_trading_style_prompt(direction, TRADING_STYLE)
 
