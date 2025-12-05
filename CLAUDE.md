@@ -77,9 +77,9 @@ TRADING_STYLE=moderate  # Options: aggressive | moderate | conservative
 
 | Style | Entry Requirements | Best For |
 |-------|-------------------|----------|
-| **aggressive** | MACD alone is enough (>0.15) | High frequency, volatile markets |
-| **moderate** | MACD + EMA confirmation | Balanced risk/reward (RECOMMENDED) |
-| **conservative** | ALL signals must align | Capital preservation, stable markets |
+| **aggressive** | MACD >0.15 + ADX >15 | High frequency, volatile markets |
+| **moderate** | MACD >0.20 + EMA + ADX >20 | Balanced risk/reward (RECOMMENDED) |
+| **conservative** | ALL signals + ADX >25 | Capital preservation, stable markets |
 
 ### Detailed Style Rules
 
@@ -87,6 +87,7 @@ TRADING_STYLE=moderate  # Options: aggressive | moderate | conservative
 ```
 Entry: Need ONLY ONE strong signal
 - MACD > 0.15 (or < -0.15) = GO
+- ADX > 15 = OK (lower bar for ranging filter)
 - Ignore RSI in 20-80 range
 - EMA is secondary confirmation
 - Whale activity: nice to have, not required
@@ -98,11 +99,13 @@ Bias: When in doubt with strong momentum → OPEN
 Entry: PRIMARY signals + no major contradiction
 Primary:
 - MACD > 0.20 (or < -0.20) = strong signal
+- ADX > 20 = REQUIRED (avoid ranging markets)
 - Price vs EMA20 confirms direction
 Secondary:
 - RSI as exhaustion filter only (< 25 or > 75 = caution)
 - Whale activity: confirming is good, neutral is OK
-Bias: Strong MACD + EMA confirmation = GO
+- Funding rate: check for squeeze risk
+Bias: Strong MACD + EMA + ADX > 20 = GO
 ```
 
 #### CONSERVATIVE (Sniper)
@@ -110,9 +113,11 @@ Bias: Strong MACD + EMA confirmation = GO
 Entry: ALL signals must align
 Required:
 - MACD > 0.25 (or < -0.25)
+- ADX > 25 = REQUIRED (need confirmed trend)
 - Price must confirm vs EMA20
 - RSI must not be exhausted
 - No contradicting whale activity
+- No extreme funding rate
 - Score trend must be stable
 Bias: When in doubt → HOLD
 ```
@@ -150,13 +155,64 @@ The DOUBLE_CHECK prompt assigns different importance to indicators:
 ### Primary Indicators (High Weight)
 - **MACD**: Momentum direction and strength
 - **Price vs EMA20**: Trend confirmation
+- **ADX**: Trend strength filter (CRITICAL for avoiding ranging markets)
 
 ### Secondary Indicators (Medium Weight)
 - **RSI**: Only matters at extremes (<25 or >75)
 - **Whale Activity**: Confirmation signal
+- **Open Interest**: Trend health indicator
+- **Funding Rate**: Squeeze risk detector
 
 ### Tertiary Indicators (Low Weight for short-term trades)
 - **Fear & Greed Index**: Macro sentiment, less relevant for MICRO_GAIN
+
+---
+
+## ADX (Average Directional Index)
+
+ADX is a **trend strength** indicator, NOT a direction indicator. It measures HOW STRONG the current trend is, regardless of whether it's bullish or bearish.
+
+### Why ADX is Critical
+
+**Problem**: Trading in ranging/sideways markets causes losses due to whipsaws and false signals.
+
+**Solution**: ADX filters out ranging markets before opening positions.
+
+### ADX Thresholds
+
+| ADX Value | Interpretation | Trading Action |
+|-----------|---------------|----------------|
+| < 20 | **WEAK/NO TREND** (ranging) | **DO NOT TRADE** - high risk of whipsaw |
+| 20-25 | Emerging trend | OK with strong confirmation |
+| 25-50 | Strong trend | Good for trend-following trades |
+| > 50 | Very strong trend | Trend may be exhausting, watch for reversal |
+
+### ADX in Trading Styles
+
+- **Aggressive**: ADX > 15 (lower bar)
+- **Moderate**: ADX > 20 (avoid ranging)
+- **Conservative**: ADX > 25 (confirmed trend only)
+
+### Data Source
+
+ADX is calculated in `indicators.py` using a 14-period lookback on 15-minute candles.
+
+---
+
+## Open Interest & Funding Rate
+
+### Open Interest (OI)
+- Total value of open derivative positions
+- Rising OI + Rising Price = Healthy bullish trend
+- Rising OI + Falling Price = Healthy bearish trend
+- Falling OI = Positions closing, trend weakening
+
+### Funding Rate
+- Cost of holding leveraged positions
+- Positive funding = Longs pay shorts (bullish bias in market)
+- Negative funding = Shorts pay longs (bearish bias in market)
+- **Extreme negative** (< -0.01%): Short squeeze risk
+- **Extreme positive** (> +0.01%): Long squeeze risk
 
 ---
 
@@ -172,6 +228,12 @@ The DOUBLE_CHECK prompt assigns different importance to indicators:
 | RSI | < 25 | Oversold exhaustion warning |
 | RSI | > 75 | Overbought exhaustion warning |
 | RSI | 30-70 | Neutral (does not block trades) |
+| **ADX** | < 20 | **RANGING MARKET - AVOID TRADING** |
+| ADX | 20-25 | Emerging trend - OK with confirmation |
+| ADX | 25-50 | Strong trend - Good for trading |
+| ADX | > 50 | Very strong trend - Watch exhaustion |
+| Funding | < -0.01% | Short squeeze risk (caution on shorts) |
+| Funding | > +0.01% | Long squeeze risk (caution on longs) |
 
 ---
 
@@ -241,4 +303,4 @@ To modify trading behavior:
 
 ---
 
-*Last updated: December 2024*
+*Last updated: December 2025*

@@ -44,6 +44,19 @@ How Fear & Greed sentiment is changing over time:
 - change: numeric change in sentiment value (positive = toward greed)
 USE THIS TO: Increasing sentiment confirms bullish moves. Decreasing sentiment confirms bearish moves. Divergence (price up but sentiment down) is warning sign.
 
+### ADX (Average Directional Index) - TREND STRENGTH
+ADX measures how STRONG the current trend is (not direction, just strength):
+- ADX < 20 = WEAK/NO TREND (market is ranging/choppy) → AVOID opening positions
+- ADX 20-25 = EMERGING TREND → OK to trade with confirmation
+- ADX 25-50 = STRONG TREND → Good for trend-following trades
+- ADX > 50 = VERY STRONG TREND → Trend is mature, watch for exhaustion
+USE THIS TO: Do NOT open new positions when ADX < 20 (ranging market = whipsaws and losses)
+
+### Open Interest & Funding Rate (derivatives data)
+- Open Interest: Total value of open positions. Rising OI + rising price = healthy trend
+- Funding Rate: Cost of holding positions. Very negative funding = shorts paying (squeeze risk)
+USE THIS TO: Confirm trend health and detect potential squeezes
+
 ## DECISION RULES
 
 ### 🚨 CRITICAL RULES - READ FIRST:

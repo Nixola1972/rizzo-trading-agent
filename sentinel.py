@@ -348,11 +348,13 @@ def _get_trading_style_prompt(direction: str, style: str = "moderate") -> str:
 - **MACD alone is enough**: If |MACD| > 0.15, this is a GO signal
 - **EMA is secondary**: You can enter even if price is slightly against EMA20, if MACD momentum is strong
 - **RSI**: Ignore RSI warnings in the 20-80 range. Only pause if RSI < 15 or RSI > 85
+- **ADX**: Only block if ADX < 15 (completely dead market)
 
 ### DECISION THRESHOLDS for {direction.upper()}:
 {"- MACD < -0.15 = STRONG SHORT signal ✓" if direction == "short" else "- MACD > +0.15 = STRONG LONG signal ✓"}
 {"- MACD < -0.25 = VERY STRONG, enter immediately" if direction == "short" else "- MACD > +0.25 = VERY STRONG, enter immediately"}
 - RSI between 20-80 = IGNORE (neutral zone)
+- ADX > 15 = OK to trade (even weak trend is acceptable)
 - Whale activity: Nice to have confirmation, but not required
 
 ### YOUR BIAS:
@@ -366,12 +368,15 @@ When in doubt with strong momentum → OPEN"""
 1. **MACD must be strong**: |MACD| > 0.25 required
 2. **Price vs EMA20 must confirm**: {"Price MUST be BELOW EMA20 for SHORT" if direction == "short" else "Price MUST be ABOVE EMA20 for LONG"}
 3. **RSI must not be exhausted**: {"RSI must be > 30 (not oversold)" if direction == "short" else "RSI must be < 70 (not overbought)"}
-4. **No contradicting signals**: If whale activity contradicts direction → HOLD
+4. **ADX must show strong trend**: ADX > 25 required (confirms real trend exists)
+5. **No contradicting signals**: If whale activity contradicts direction → HOLD
 
 ### DECISION THRESHOLDS for {direction.upper()}:
 {"- MACD < -0.25 = Required for SHORT" if direction == "short" else "- MACD > +0.25 = Required for LONG"}
 {"- Price < EMA20 = Required confirmation" if direction == "short" else "- Price > EMA20 = Required confirmation"}
 {"- RSI > 30 = Required (avoid catching falling knife)" if direction == "short" else "- RSI < 70 = Required (avoid buying top)"}
+- ADX > 25 = Required (must have confirmed trend)
+- ADX < 25 = Market ranging → HOLD regardless of other signals
 - Score trend must be STABLE or STRENGTHENING
 
 ### YOUR BIAS:
@@ -386,6 +391,7 @@ When in doubt → HOLD. Missing a trade is better than losing money."""
 **PRIMARY SIGNALS (must have at least ONE strong):**
 - MACD: The momentum indicator. {"MACD < -0.20 is strong SHORT" if direction == "short" else "MACD > +0.20 is strong LONG"}
 - Price vs EMA20: {"Price below EMA20 confirms bearish bias" if direction == "short" else "Price above EMA20 confirms bullish bias"}
+- ADX: Trend strength indicator. ADX > 20 means trend exists.
 
 **SECONDARY SIGNALS (confirmation, not required):**
 - RSI: Use as exhaustion filter only
@@ -397,10 +403,13 @@ When in doubt → HOLD. Missing a trade is better than losing money."""
 {"- MACD < -0.20 AND Price < EMA20 = STRONG CONFIRMATION → OPEN" if direction == "short" else "- MACD > +0.20 AND Price > EMA20 = STRONG CONFIRMATION → OPEN"}
 {"- MACD < -0.20 AND Price ≈ EMA20 = ACCEPTABLE if momentum is clear → OPEN" if direction == "short" else "- MACD > +0.20 AND Price ≈ EMA20 = ACCEPTABLE if momentum is clear → OPEN"}
 {"- MACD > -0.15 (weak) = Signal too weak → HOLD" if direction == "short" else "- MACD < +0.15 (weak) = Signal too weak → HOLD"}
+- ADX < 20 = Market is RANGING → Strong bias to HOLD (avoid choppy markets)
+- ADX > 20 = Trend confirmed → OK to trade
 
 ### YOUR BIAS:
-Balance risk and opportunity. Strong MACD + EMA confirmation = GO.
-Neutral RSI does NOT block the trade. Only exhausted RSI (< 25 or > 75) is a warning."""
+Balance risk and opportunity. Strong MACD + EMA confirmation + ADX > 20 = GO.
+Neutral RSI does NOT block the trade. Only exhausted RSI (< 25 or > 75) is a warning.
+If ADX < 20, prefer to HOLD even with good MACD - the market is ranging."""
 
 
 def validate_double_check_ai(symbol: str, direction: str, score: float, trading_mode: str = "MICRO_GAIN") -> dict:
@@ -458,7 +467,24 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
         rsi_val = current_data.get('rsi_7', 50) or 50  # Use rsi_7 not rsi
         ema20_val = current_data.get('ema20', 0) or 0  # Key is 'ema20' not 'ema_20'
         price_val = current_data.get('price', 0) or 0
+        adx_val = current_data.get('adx', 0) or 0  # ADX for trend strength
         price_vs_ema = "ABOVE" if price_val > ema20_val else "BELOW" if price_val < ema20_val else "AT"
+
+        # ADX interpretation
+        if adx_val < 20:
+            adx_interpretation = "WEAK/RANGING ⚠️"
+        elif adx_val < 25:
+            adx_interpretation = "EMERGING TREND"
+        elif adx_val < 50:
+            adx_interpretation = "STRONG TREND ✓"
+        else:
+            adx_interpretation = "VERY STRONG TREND ✓✓"
+
+        # Extract derivatives data (OI, Funding)
+        derivatives_data = indicators_data.get('derivatives', {})
+        oi_val = derivatives_data.get('open_interest_latest', 0) or 0
+        funding_val = derivatives_data.get('funding_rate', 0) or 0
+        funding_pct = funding_val * 100  # Convert to percentage
 
         # === 3. BUILD FOCUSED PROMPT ===
         style_instructions = _get_trading_style_prompt(direction, TRADING_STYLE)
@@ -476,9 +502,14 @@ You are validating a proposed trade. Analyze the REAL DATA and decide if this tr
 ### CURRENT INDICATOR VALUES:
 - **MACD**: {macd_val:.4f} {"(BEARISH)" if macd_val < 0 else "(BULLISH)" if macd_val > 0 else "(NEUTRAL)"}
 - **RSI**: {rsi_val:.1f} {"(OVERSOLD)" if rsi_val < 30 else "(OVERBOUGHT)" if rsi_val > 70 else "(NEUTRAL)"}
+- **ADX**: {adx_val:.1f} ({adx_interpretation})
 - **Price**: ${price_val:,.2f}
 - **EMA20**: ${ema20_val:,.2f}
 - **Price vs EMA20**: {price_vs_ema} {"✓ confirms SHORT" if price_vs_ema == "BELOW" and direction == "short" else "✓ confirms LONG" if price_vs_ema == "ABOVE" and direction == "long" else "⚠ does not confirm"}
+
+### MARKET STRUCTURE:
+- **Open Interest**: ${oi_val:,.0f}
+- **Funding Rate**: {funding_pct:.4f}% {"(shorts paying → squeeze risk)" if funding_val < 0 else "(longs paying)" if funding_val > 0 else "(neutral)"}
 
 ### SCORE HISTORY (last 5):
 {_format_score_history(score_history)}

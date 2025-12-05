@@ -129,6 +129,19 @@ class CryptoTechnicalAnalysisHL:
             high, low, close, window=period
         ).average_true_range()
 
+    def calculate_adx(
+        self, high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
+    ) -> pd.Series:
+        """
+        Calculate ADX (Average Directional Index) - measures trend strength.
+        ADX < 20 = weak/no trend (ranging market)
+        ADX 20-25 = emerging trend
+        ADX 25-50 = strong trend
+        ADX > 50 = very strong trend
+        """
+        adx_indicator = ta.trend.ADXIndicator(high, low, close, window=period)
+        return adx_indicator.adx()
+
     def calculate_pivot_points(
         self, high: float, low: float, close: float
     ) -> Dict[str, float]:
@@ -343,6 +356,7 @@ class CryptoTechnicalAnalysisHL:
         df_15m["macd"] = macd_diff
         df_15m["rsi_7"] = self.calculate_rsi(df_15m["close"], 7)
         df_15m["rsi_14"] = self.calculate_rsi(df_15m["close"], 14)
+        df_15m["adx"] = self.calculate_adx(df_15m["high"], df_15m["low"], df_15m["close"], 14)
 
         last_10_15m = df_15m.tail(10)
 
@@ -396,6 +410,7 @@ class CryptoTechnicalAnalysisHL:
                 "ema20": current_15m["ema_20"],
                 "macd": current_15m["macd"],
                 "rsi_7": current_15m["rsi_7"],
+                "adx": current_15m["adx"],
             },
             "volume": self.get_orderbook_volume(ticker),
             "pivot_points": pivot_points,
@@ -413,6 +428,7 @@ class CryptoTechnicalAnalysisHL:
                 "macd": last_10_15m["macd"].tolist(),
                 "rsi_7": last_10_15m["rsi_7"].tolist(),
                 "rsi_14": last_10_15m["rsi_14"].tolist(),
+                "adx": last_10_15m["adx"].tolist(),
             },
 
             "longer_term_15m": {
@@ -438,7 +454,8 @@ class CryptoTechnicalAnalysisHL:
             f"current_price = {curr['price']:.1f}, "
             f"current_ema20 = {curr['ema20']:.3f}, "
             f"current_macd = {curr['macd']:.3f}, "
-            f"current_rsi (7 period) = {curr['rsi_7']:.3f}\n\n"
+            f"current_rsi (7 period) = {curr['rsi_7']:.3f}, "
+            f"current_adx = {curr['adx']:.1f}\n\n"
         )
         output += f"Volume: {data['volume']}\n\n"
 
@@ -470,7 +487,8 @@ class CryptoTechnicalAnalysisHL:
             f"EMA indicators (20-period): {[round(x, 3) for x in intra['ema_20']]}\n"
             f"MACD indicators: {[round(x, 3) for x in intra['macd']]}\n"
             f"RSI indicators (7-Period): {[round(x, 3) for x in intra['rsi_7']]}\n"
-            f"RSI indicators (14-Period): {[round(x, 3) for x in intra['rsi_14']]}\n\n"
+            f"RSI indicators (14-Period): {[round(x, 3) for x in intra['rsi_14']]}\n"
+            f"ADX indicators: {[round(x, 1) for x in intra['adx']]}\n\n"
         )
 
         lt = data["longer_term_15m"]
