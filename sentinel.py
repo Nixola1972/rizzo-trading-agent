@@ -374,37 +374,44 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
             whale_symbol = {}
 
         # === 2. COSTRUISCI PROMPT FOCALIZZATO ===
-        prompt = f"""## DOUBLE_CHECK VALIDATION - IMMEDIATE DECISION REQUIRED
+        prompt = f"""## DOUBLE_CHECK VALIDATION - TU DECIDI LIBERAMENTE
 
-Validate this {trading_mode} signal NOW. Be decisive.
+⚠️ IMPORTANTE: IGNORA qualsiasi regola di soglia score (+/-20, +/-15, etc.)
+Tu analizzi i DATI REALI e decidi SE questo trade ha senso.
 
-### PROPOSED TRADE:
+### TRADE PROPOSTO:
 - Symbol: {symbol}
 - Direction: {direction.upper()}
-- Score: {score:.1f}
+- Score Sentinel: {score:.1f} (solo informativo, NON vincolante!)
 - Mode: {trading_mode}
 
-### SCORE HISTORY (last 5):
+### SCORE HISTORY (ultimi 5):
 {_format_score_history(score_history)}
 - Trend: {score_trend}
 
 ### WHALE ACTIVITY:
-- Market: {whale_sentiment}
-- {symbol}: {whale_symbol.get('net_sentiment', 'no data')} ({whale_symbol.get('count', 0)} movements)
+- Mercato: {whale_sentiment}
+- {symbol}: {whale_symbol.get('net_sentiment', 'no data')} ({whale_symbol.get('count', 0)} movimenti)
 
-### INDICATORS:
+### INDICATORI TECNICI:
 {_format_quick_indicators(indicators_data)}
 
 ### SENTIMENT:
 - Fear & Greed: {sentiment_data.get('value', 'N/A')} ({sentiment_data.get('sentiment', 'N/A')})
 
-### DECIDE NOW:
-1. Score trend supports direction? 2. Whale confirms? 3. Indicators aligned?
+### LA TUA ANALISI:
+Rispondi a queste domande:
+1. Gli indicatori tecnici (RSI, EMA, MACD) supportano la direzione {direction.upper()}?
+2. Il sentiment whale conferma o contraddice?
+3. Il trend dello score è stabile o in declino?
+4. C'è convergenza tra i segnali?
 
-Respond ONLY with JSON:
-{{"operation": "open|hold", "symbol": "{symbol}", "direction": "{direction}", "reason": "max 30 words", "confidence": "high|medium|low"}}
+### DECIDI ORA:
+- "open" = HAI FIDUCIA nel trade, gli indicatori supportano
+- "hold" = NON HAI FIDUCIA, segnali contrastanti o deboli
 
-"open" = proceed, "hold" = reject
+Rispondi SOLO con JSON:
+{{"operation": "open|hold", "symbol": "{symbol}", "direction": "{direction}", "reason": "max 50 parole con la tua analisi", "confidence": "high|medium|low"}}
 """
 
         log(f"      Chiamata AI...")
