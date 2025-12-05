@@ -1946,6 +1946,77 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
                     close_reason=close_reason
                 )
                 log(f"   📒 Trade Journal: chiuso trade - Net P&L: ${result_close['net_pnl_usd']:.2f}")
+
+                # === TELEGRAM NOTIFICATION ===
+                try:
+                    import telegram_notifier as tg
+
+                    # Get current balance
+                    account_status = bot.get_account_status()
+                    balance = account_status.get("balance", 0)
+
+                    # Get P&L stats
+                    pnl_today = 0.0
+                    pnl_week = 0.0
+                    try:
+                        daily_stats = tj.get_daily_stats()
+                        if daily_stats:
+                            pnl_today = daily_stats.get("net_pnl_usd", 0)
+                        weekly_stats = tj.get_weekly_stats()
+                        if weekly_stats:
+                            pnl_week = weekly_stats.get("net_pnl_usd", 0)
+                    except:
+                        pass
+
+                    # Extract trade data
+                    direction = open_trade.get("direction", "long")
+                    entry_price = float(open_trade.get("entry_price", 0))
+                    entry_time = open_trade.get("entry_time")
+                    leverage = int(open_trade.get("leverage", 1))
+                    size = float(open_trade.get("size", 0))
+                    margin = float(open_trade.get("margin", 0))
+                    value_usd = size * entry_price if size else margin * leverage
+                    score_open = open_trade.get("opening_score", 0)
+
+                    # Calculate P&L
+                    pnl_usd = result_close.get("net_pnl_usd", 0)
+                    pnl_pct = result_close.get("pnl_pct", 0)
+
+                    # Map close reason to string
+                    reason_map = {
+                        tj.CloseReason.TP_HIT: "TP_HIT",
+                        tj.CloseReason.SL_HIT: "SL_HIT",
+                        tj.CloseReason.MANUAL: "EXTERNAL_CLOSE"
+                    }
+                    close_reason_str = reason_map.get(close_reason, str(close_reason))
+
+                    from datetime import datetime
+                    exit_time = datetime.now()
+
+                    tg.notify_trade_summary(
+                        symbol=symbol,
+                        direction=direction,
+                        leverage=leverage,
+                        entry_price=entry_price,
+                        entry_time=entry_time,
+                        size=size,
+                        value_usd=value_usd,
+                        margin=margin,
+                        exit_price=exit_price,
+                        exit_time=exit_time,
+                        close_reason=close_reason_str,
+                        pnl_usd=pnl_usd,
+                        pnl_pct=pnl_pct,
+                        score_open=score_open,
+                        score_close=0,  # No score at external close
+                        balance=balance,
+                        pnl_today=pnl_today,
+                        pnl_week=pnl_week,
+                    )
+                    log(f"   📱 Telegram: notifica inviata per chiusura esterna {close_reason_str}")
+                except Exception as e:
+                    log(f"   ⚠️ Errore notifica Telegram: {e}")
+
             except Exception as e:
                 log(f"   ⚠️ Errore chiusura trade journal: {e}")
 
