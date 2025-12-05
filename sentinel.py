@@ -100,6 +100,10 @@ AI_FREE_MODE = os.getenv('AI_FREE_MODE', 'false').lower() == 'true'
 # DOUBLE_CHECK_AI: se true, aperture MICRO_GAIN passano attraverso AI per validazione
 DOUBLE_CHECK_AI_ENABLED = os.getenv('DOUBLE_CHECK_AI_ENABLED', 'false').lower() == 'true'
 
+# TRADING_STYLE: aggressive | moderate | conservative
+# Controls how strict the DOUBLE_CHECK validation is
+TRADING_STYLE = os.getenv('TRADING_STYLE', 'moderate').lower()
+
 MICRO_GAIN_LEVERAGE = int(os.getenv('MICRO_GAIN_LEVERAGE', '5'))
 MICRO_GAIN_PORTION = float(os.getenv('MICRO_GAIN_PORTION', '0.3'))  # % balance per posizione
 
@@ -325,24 +329,98 @@ def wake_ai_agent(symbol: str, reason: str, sentinel_score: float = None):
 # DOUBLE_CHECK AI: VALIDAZIONE SINCRONA IMMEDIATA
 # ============================================================================
 
-def validate_double_check_ai(symbol: str, direction: str, score: float, trading_mode: str = "MICRO_GAIN") -> dict:
+def _get_trading_style_prompt(direction: str, style: str = "moderate") -> str:
     """
-    Chiama l'AI per validare un segnale MICRO_GAIN/MICRO_PAY prima di aprire.
-    CHIAMATA SINCRONA - aspetta la risposta AI immediatamente.
+    Returns the trading style specific instructions for the DOUBLE_CHECK prompt.
 
     Args:
-        symbol: Simbolo da validare (BTC, ETH, SOL)
-        direction: Direzione proposta ("long" o "short")
-        score: Score che ha generato il segnale
-        trading_mode: Modalità trading (MICRO_GAIN, MICRO_PAY)
+        direction: "long" or "short"
+        style: "aggressive", "moderate", or "conservative"
 
     Returns:
-        dict con:
-        - approved: True se AI conferma, False se rifiuta
-        - operation: "open" o "hold"
-        - reason: Motivo della decisione AI
+        String with style-specific trading rules
     """
-    log(f"   🔍 DOUBLE_CHECK: Validazione AI immediata per {symbol} {direction.upper()}...")
+
+    if style == "aggressive":
+        return f"""## TRADING STYLE: AGGRESSIVE (Momentum Chaser)
+
+### ENTRY CRITERIA (you need ONLY ONE strong signal):
+- **MACD alone is enough**: If |MACD| > 0.15, this is a GO signal
+- **EMA is secondary**: You can enter even if price is slightly against EMA20, if MACD momentum is strong
+- **RSI**: Ignore RSI warnings in the 20-80 range. Only pause if RSI < 15 or RSI > 85
+
+### DECISION THRESHOLDS for {direction.upper()}:
+{"- MACD < -0.15 = STRONG SHORT signal ✓" if direction == "short" else "- MACD > +0.15 = STRONG LONG signal ✓"}
+{"- MACD < -0.25 = VERY STRONG, enter immediately" if direction == "short" else "- MACD > +0.25 = VERY STRONG, enter immediately"}
+- RSI between 20-80 = IGNORE (neutral zone)
+- Whale activity: Nice to have confirmation, but not required
+
+### YOUR BIAS:
+Be aggressive. A strong MACD signal beats neutral secondary indicators.
+When in doubt with strong momentum → OPEN"""
+
+    elif style == "conservative":
+        return f"""## TRADING STYLE: CONSERVATIVE (Sniper)
+
+### ENTRY CRITERIA (you need ALL signals aligned):
+1. **MACD must be strong**: |MACD| > 0.25 required
+2. **Price vs EMA20 must confirm**: {"Price MUST be BELOW EMA20 for SHORT" if direction == "short" else "Price MUST be ABOVE EMA20 for LONG"}
+3. **RSI must not be exhausted**: {"RSI must be > 30 (not oversold)" if direction == "short" else "RSI must be < 70 (not overbought)"}
+4. **No contradicting signals**: If whale activity contradicts direction → HOLD
+
+### DECISION THRESHOLDS for {direction.upper()}:
+{"- MACD < -0.25 = Required for SHORT" if direction == "short" else "- MACD > +0.25 = Required for LONG"}
+{"- Price < EMA20 = Required confirmation" if direction == "short" else "- Price > EMA20 = Required confirmation"}
+{"- RSI > 30 = Required (avoid catching falling knife)" if direction == "short" else "- RSI < 70 = Required (avoid buying top)"}
+- Score trend must be STABLE or STRENGTHENING
+
+### YOUR BIAS:
+Be patient. Only take A+ setups where everything aligns.
+When in doubt → HOLD. Missing a trade is better than losing money."""
+
+    else:  # moderate (default)
+        return f"""## TRADING STYLE: MODERATE (Trend Follower)
+
+### ENTRY CRITERIA (you need PRIMARY signals + no major contradiction):
+
+**PRIMARY SIGNALS (must have at least ONE strong):**
+- MACD: The momentum indicator. {"MACD < -0.20 is strong SHORT" if direction == "short" else "MACD > +0.20 is strong LONG"}
+- Price vs EMA20: {"Price below EMA20 confirms bearish bias" if direction == "short" else "Price above EMA20 confirms bullish bias"}
+
+**SECONDARY SIGNALS (confirmation, not required):**
+- RSI: Use as exhaustion filter only
+  {"- For SHORT: Be cautious if RSI < 25 (might be exhausted)" if direction == "short" else "- For LONG: Be cautious if RSI > 75 (might be exhausted)"}
+  - RSI 30-70 is neutral, does NOT block the trade
+- Whale activity: Confirming is good, neutral is acceptable, contradicting is a warning
+
+### DECISION THRESHOLDS for {direction.upper()}:
+{"- MACD < -0.20 AND Price < EMA20 = STRONG CONFIRMATION → OPEN" if direction == "short" else "- MACD > +0.20 AND Price > EMA20 = STRONG CONFIRMATION → OPEN"}
+{"- MACD < -0.20 AND Price ≈ EMA20 = ACCEPTABLE if momentum is clear → OPEN" if direction == "short" else "- MACD > +0.20 AND Price ≈ EMA20 = ACCEPTABLE if momentum is clear → OPEN"}
+{"- MACD > -0.15 (weak) = Signal too weak → HOLD" if direction == "short" else "- MACD < +0.15 (weak) = Signal too weak → HOLD"}
+
+### YOUR BIAS:
+Balance risk and opportunity. Strong MACD + EMA confirmation = GO.
+Neutral RSI does NOT block the trade. Only exhausted RSI (< 25 or > 75) is a warning."""
+
+
+def validate_double_check_ai(symbol: str, direction: str, score: float, trading_mode: str = "MICRO_GAIN") -> dict:
+    """
+    Validates a trading signal using AI before opening a position.
+    Uses TRADING_STYLE (aggressive/moderate/conservative) to determine strictness.
+
+    Args:
+        symbol: Symbol to validate (BTC, ETH, SOL)
+        direction: Proposed direction ("long" or "short")
+        score: Score that generated the signal
+        trading_mode: Trading mode (MICRO_GAIN, MICRO_PAY)
+
+    Returns:
+        dict with:
+        - approved: True if AI confirms, False if rejected
+        - operation: "open" or "hold"
+        - reason: AI decision rationale
+    """
+    log(f"   🔍 DOUBLE_CHECK [{TRADING_STYLE.upper()}]: Validating {symbol} {direction.upper()}...")
 
     try:
         from trading_agent import previsione_trading_agent
@@ -350,7 +428,7 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
         from sentiment import get_sentiment
         from whalealert import get_whale_alerts_json
 
-        # === 1. RECUPERA CONTESTO ===
+        # === 1. GATHER CONTEXT ===
         score_history = _get_recent_scores(symbol, limit=5)
         score_trend = _analyze_score_trend(score_history)
 
@@ -373,48 +451,56 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
             whale_sentiment = "unavailable"
             whale_symbol = {}
 
-        # === 2. COSTRUISCI PROMPT FOCALIZZATO ===
-        prompt = f"""## DOUBLE_CHECK VALIDATION - TU DECIDI LIBERAMENTE
+        # === 2. EXTRACT INDICATOR VALUES FOR PROMPT ===
+        macd_val = indicators_data.get('macd', 0)
+        rsi_val = indicators_data.get('rsi', 50)
+        ema20_val = indicators_data.get('ema_20', 0)
+        price_val = indicators_data.get('price', 0)
+        price_vs_ema = "ABOVE" if price_val > ema20_val else "BELOW" if price_val < ema20_val else "AT"
 
-⚠️ IMPORTANTE: IGNORA qualsiasi regola di soglia score (+/-20, +/-15, etc.)
-Tu analizzi i DATI REALI e decidi SE questo trade ha senso.
+        # === 3. BUILD FOCUSED PROMPT ===
+        style_instructions = _get_trading_style_prompt(direction, TRADING_STYLE)
 
-### TRADE PROPOSTO:
+        prompt = f"""## DOUBLE_CHECK VALIDATION - TRADE CONFIRMATION
+
+You are validating a proposed trade. Analyze the REAL DATA and decide if this trade makes sense.
+
+### PROPOSED TRADE:
 - Symbol: {symbol}
 - Direction: {direction.upper()}
-- Score Sentinel: {score:.1f} (solo informativo, NON vincolante!)
+- Sentinel Score: {score:.1f} (informational only)
 - Mode: {trading_mode}
 
-### SCORE HISTORY (ultimi 5):
+### CURRENT INDICATOR VALUES:
+- **MACD**: {macd_val:.4f} {"(BEARISH)" if macd_val < 0 else "(BULLISH)" if macd_val > 0 else "(NEUTRAL)"}
+- **RSI**: {rsi_val:.1f} {"(OVERSOLD)" if rsi_val < 30 else "(OVERBOUGHT)" if rsi_val > 70 else "(NEUTRAL)"}
+- **Price**: ${price_val:,.2f}
+- **EMA20**: ${ema20_val:,.2f}
+- **Price vs EMA20**: {price_vs_ema} {"✓ confirms SHORT" if price_vs_ema == "BELOW" and direction == "short" else "✓ confirms LONG" if price_vs_ema == "ABOVE" and direction == "long" else "⚠ does not confirm"}
+
+### SCORE HISTORY (last 5):
 {_format_score_history(score_history)}
 - Trend: {score_trend}
 
 ### WHALE ACTIVITY:
-- Mercato: {whale_sentiment}
-- {symbol}: {whale_symbol.get('net_sentiment', 'no data')} ({whale_symbol.get('count', 0)} movimenti)
-
-### INDICATORI TECNICI:
-{_format_quick_indicators(indicators_data)}
+- Market: {whale_sentiment}
+- {symbol}: {whale_symbol.get('net_sentiment', 'no data')} ({whale_symbol.get('count', 0)} movements)
 
 ### SENTIMENT:
 - Fear & Greed: {sentiment_data.get('value', 'N/A')} ({sentiment_data.get('sentiment', 'N/A')})
 
-### LA TUA ANALISI:
-Rispondi a queste domande:
-1. Gli indicatori tecnici (RSI, EMA, MACD) supportano la direzione {direction.upper()}?
-2. Il sentiment whale conferma o contraddice?
-3. Il trend dello score è stabile o in declino?
-4. C'è convergenza tra i segnali?
+{style_instructions}
 
-### DECIDI ORA:
-- "open" = HAI FIDUCIA nel trade, gli indicatori supportano
-- "hold" = NON HAI FIDUCIA, segnali contrastanti o deboli
+### YOUR DECISION:
+Based on the trading style rules above, decide:
+- "open" = Indicators support the trade according to the style rules
+- "hold" = Signals don't meet the style requirements
 
-Rispondi SOLO con JSON:
-{{"operation": "open|hold", "symbol": "{symbol}", "direction": "{direction}", "reason": "max 50 parole con la tua analisi", "confidence": "high|medium|low"}}
+Respond with JSON only:
+{{"operation": "open|hold", "symbol": "{symbol}", "direction": "{direction}", "reason": "Brief analysis (max 50 words)", "confidence": "high|medium|low"}}
 """
 
-        log(f"      Chiamata AI...")
+        log(f"      Calling AI...")
         ai_response = previsione_trading_agent(prompt, indicators=[indicators_data] if indicators_data else None, sentiment=sentiment_data)
 
         operation = ai_response.get("operation", "hold").lower()
@@ -422,9 +508,9 @@ Rispondi SOLO con JSON:
         approved = operation == "open"
 
         if approved:
-            log(f"      ✅ AI APPROVA: {ai_reason}")
+            log(f"      ✅ AI APPROVED: {ai_reason}")
         else:
-            log(f"      ❌ AI RIFIUTA: {ai_reason}")
+            log(f"      ❌ AI REJECTED: {ai_reason}")
 
         return {
             "approved": approved,
@@ -435,7 +521,7 @@ Rispondi SOLO con JSON:
         }
 
     except Exception as e:
-        log(f"      ⚠️ Errore validazione AI: {e}")
+        log(f"      ⚠️ Validation error: {e}")
         return {"approved": False, "operation": "hold", "reason": f"Error: {str(e)}", "error": str(e)}
 
 
@@ -4189,7 +4275,13 @@ def run_loop(interval: int = None):
         log(f"      Score smoothing: {SCORE_SMOOTHING_SAMPLES} samples, Leverage: {MICRO_GAIN_LEVERAGE}x")
         log(f"      Score range: {SCORE_THRESHOLD_HOLD} - {SCORE_THRESHOLD_OPEN}")
         if DOUBLE_CHECK_AI_ENABLED:
-            log(f"      🔍 DOUBLE_CHECK_AI: validazione AI in tempo reale prima di ogni apertura")
+            log(f"      🔍 DOUBLE_CHECK_AI: enabled with TRADING_STYLE={TRADING_STYLE.upper()}")
+            if TRADING_STYLE == "aggressive":
+                log(f"         → Aggressive: MACD alone is enough, ignores neutral RSI")
+            elif TRADING_STYLE == "conservative":
+                log(f"         → Conservative: Requires ALL signals aligned")
+            else:
+                log(f"         → Moderate: Requires MACD + EMA confirmation")
     if MICRO_PAY_ENABLED:
         log(f"   💵 MICRO_PAY: enabled")
         log(f"      TP: +{MICRO_PAY_TARGET_PERCENT}%, SL: -{MICRO_PAY_STOP_LOSS_PERCENT}%")
