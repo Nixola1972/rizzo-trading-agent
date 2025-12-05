@@ -452,10 +452,12 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
             whale_symbol = {}
 
         # === 2. EXTRACT INDICATOR VALUES FOR PROMPT ===
-        macd_val = indicators_data.get('macd', 0)
-        rsi_val = indicators_data.get('rsi', 50)
-        ema20_val = indicators_data.get('ema_20', 0)
-        price_val = indicators_data.get('price', 0)
+        # Data is nested under 'current' key
+        current_data = indicators_data.get('current', {})
+        macd_val = current_data.get('macd', 0) or 0
+        rsi_val = current_data.get('rsi_7', 50) or 50  # Use rsi_7 not rsi
+        ema20_val = current_data.get('ema20', 0) or 0  # Key is 'ema20' not 'ema_20'
+        price_val = current_data.get('price', 0) or 0
         price_vs_ema = "ABOVE" if price_val > ema20_val else "BELOW" if price_val < ema20_val else "AT"
 
         # === 3. BUILD FOCUSED PROMPT ===
