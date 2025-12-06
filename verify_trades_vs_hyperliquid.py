@@ -239,6 +239,92 @@ def compare_data(hl_analysis, db_trades):
     }
 
 
+def analyze_win_loss(fills, db_trades):
+    """Analizza win/loss rate dai fills matchati e dal database."""
+
+    print("\n" + "="*70)
+    print("🎯 ANALISI WIN/LOSS")
+    print("="*70)
+
+    # Match fills to complete trades for Hyperliquid analysis
+    complete_trades = match_fills_to_trades(fills)
+
+    # Hyperliquid win/loss
+    hl_wins = 0
+    hl_losses = 0
+    hl_total_win_pnl = Decimal('0')
+    hl_total_loss_pnl = Decimal('0')
+
+    for trade in complete_trades:
+        net_pnl = trade.get('net_pnl_usd', Decimal('0'))
+        if net_pnl > 0:
+            hl_wins += 1
+            hl_total_win_pnl += net_pnl
+        else:
+            hl_losses += 1
+            hl_total_loss_pnl += net_pnl
+
+    hl_total = hl_wins + hl_losses
+    hl_win_rate = (hl_wins / hl_total * 100) if hl_total > 0 else 0
+
+    print(f"\n🔷 HYPERLIQUID (da fills matchati):")
+    print(f"   Trade completi: {hl_total}")
+    print(f"   ✅ Wins:        {hl_wins} ({hl_win_rate:.1f}%)")
+    print(f"   ❌ Losses:      {hl_losses} ({100-hl_win_rate:.1f}%)")
+    print(f"   💰 Profitto totale wins:  ${float(hl_total_win_pnl):+.2f}")
+    print(f"   💸 Perdita totale losses: ${float(hl_total_loss_pnl):+.2f}")
+
+    if hl_wins > 0 and hl_losses > 0:
+        avg_win = hl_total_win_pnl / hl_wins
+        avg_loss = abs(hl_total_loss_pnl / hl_losses)
+        profit_factor = abs(hl_total_win_pnl / hl_total_loss_pnl) if hl_total_loss_pnl != 0 else 0
+        print(f"   📊 Avg Win:     ${float(avg_win):.4f}")
+        print(f"   📊 Avg Loss:    ${float(avg_loss):.4f}")
+        print(f"   📊 Profit Factor: {float(profit_factor):.2f}")
+
+    # Database win/loss
+    if db_trades:
+        db_wins = sum(1 for t in db_trades if t.get('profitable') or (t.get('net_pnl_usd') and float(t['net_pnl_usd']) > 0))
+        db_losses = len(db_trades) - db_wins
+        db_total = len(db_trades)
+        db_win_rate = (db_wins / db_total * 100) if db_total > 0 else 0
+
+        db_win_pnl = sum(float(t['net_pnl_usd'] or 0) for t in db_trades if t.get('net_pnl_usd') and float(t['net_pnl_usd']) > 0)
+        db_loss_pnl = sum(float(t['net_pnl_usd'] or 0) for t in db_trades if t.get('net_pnl_usd') and float(t['net_pnl_usd']) <= 0)
+
+        print(f"\n🔶 DATABASE:")
+        print(f"   Trade totali:  {db_total}")
+        print(f"   ✅ Wins:       {db_wins} ({db_win_rate:.1f}%)")
+        print(f"   ❌ Losses:     {db_losses} ({100-db_win_rate:.1f}%)")
+        print(f"   💰 Profitto totale wins:  ${db_win_pnl:+.2f}")
+        print(f"   💸 Perdita totale losses: ${db_loss_pnl:+.2f}")
+
+        # Per symbol dal DB
+        print(f"\n📊 WIN/LOSS PER SYMBOL (Database):")
+        print("-"*60)
+        by_symbol = {}
+        for t in db_trades:
+            sym = t.get('symbol', 'UNKNOWN')
+            if sym not in by_symbol:
+                by_symbol[sym] = {'wins': 0, 'losses': 0, 'pnl': 0}
+            pnl = float(t.get('net_pnl_usd') or 0)
+            by_symbol[sym]['pnl'] += pnl
+            if pnl > 0:
+                by_symbol[sym]['wins'] += 1
+            else:
+                by_symbol[sym]['losses'] += 1
+
+        print(f"{'Symbol':<10} {'Wins':>8} {'Losses':>8} {'Win%':>8} {'Net P&L':>12}")
+        print("-"*60)
+        for sym in sorted(by_symbol.keys()):
+            d = by_symbol[sym]
+            total = d['wins'] + d['losses']
+            wr = (d['wins'] / total * 100) if total > 0 else 0
+            print(f"{sym:<10} {d['wins']:>8} {d['losses']:>8} {wr:>7.1f}% ${d['pnl']:>+10.2f}")
+
+    print("-"*60)
+
+
 def export_fills_csv(fills, filename=None):
     """Esporta i fills in CSV."""
     if not filename:
@@ -631,6 +717,9 @@ def main():
             print(f"   Hyperliquid Net P&L: {result['hl_net']:.4f} USDC")
             print(f"   Database Net P&L:    {result['db_net']:.4f} USDC")
             print(f"   DIFFERENZA:          {result['difference']:.4f} USDC")
+
+    # Analisi Win/Loss (sempre eseguita)
+    analyze_win_loss(fills, db_trades)
 
 
 if __name__ == "__main__":

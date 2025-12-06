@@ -1562,7 +1562,8 @@ def get_daily_trade_count() -> int:
     try:
         with db_utils.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM trades WHERE DATE(created_at) = CURRENT_DATE")
+                # Usa opened_at invece di created_at per evitare di contare trade importati
+                cur.execute("SELECT COUNT(*) FROM trades WHERE DATE(opened_at) = CURRENT_DATE")
                 result = cur.fetchone()
                 return result[0] if result else 0
     except Exception as e:
