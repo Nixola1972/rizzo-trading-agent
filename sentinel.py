@@ -2232,6 +2232,10 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
             # Cleanup tracking
             db_utils.delete_position_tracking(symbol)
 
+            # IMPORTANTE: Attiva cooldown per evitare riapertura immediata!
+            set_cooldown(symbol)
+            log(f"   ⏱️ Cooldown attivato dopo chiusura esterna {symbol}")
+
             # Reset SL level
             sl_key_micro = symbol
             sl_key_normal = f"{symbol}_NORMAL"
