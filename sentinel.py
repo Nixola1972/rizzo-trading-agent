@@ -467,26 +467,59 @@ def _get_trading_style_prompt(direction: str, style: str = "moderate") -> str:
 
     Args:
         direction: "long" or "short"
-        style: "aggressive", "moderate", or "conservative"
+        style: "aggressive", "moderate", "conservative", or "free"
 
     Returns:
         String with style-specific trading rules
     """
 
-    if style == "aggressive":
+    if style == "free":
+        # AI FREE MODE - No hard constraints, AI decides based on all data
+        return f"""## TRADING STYLE: FREE (AI Full Discretion)
+
+You have COMPLETE FREEDOM to analyze all indicators and make your own decision.
+There are NO mandatory thresholds or blocking rules.
+
+### INDICATOR REFERENCE (informational, not rules):
+- **MACD**: Momentum direction and strength. Positive = bullish, Negative = bearish
+- **RSI**: Momentum/exhaustion. 30-70 is normal, <30 oversold, >70 overbought
+- **ADX**: Trend strength. <20 = ranging/choppy, 20-25 = emerging, >25 = strong trend
+- **Bollinger Bands**: Price position relative to volatility bands
+- **OBV**: Volume trend confirmation
+- **EMA Alignment**: Trend structure (Golden Cross = bullish, Death Cross = bearish)
+
+### YOUR TASK:
+1. Analyze ALL indicators holistically
+2. Consider the proposed direction ({direction.upper()})
+3. Weigh pros and cons of entering now
+4. Decide: Is this a good trade opportunity?
+
+### CONSIDERATIONS:
+- Low ADX (ranging market) = higher risk but NOT automatically blocked
+- Strong MACD momentum can work even in ranging markets
+- Look for confluence: multiple indicators agreeing
+- Consider risk/reward: Is the potential gain worth the risk?
+
+### YOUR DECISION:
+- "open" = You believe this is a good trade based on your analysis
+- "hold" = You see too much risk or conflicting signals
+
+You are the expert. Trust your judgment based on the complete picture."""
+
+    elif style == "aggressive":
         return f"""## TRADING STYLE: AGGRESSIVE (Momentum Chaser)
 
 ### ENTRY CRITERIA (you need ONLY ONE strong signal):
 - **MACD alone is enough**: If |MACD| > 0.15, this is a GO signal
 - **EMA is secondary**: You can enter even if price is slightly against EMA20, if MACD momentum is strong
 - **RSI**: Ignore RSI warnings in the 20-80 range. Only pause if RSI < 15 or RSI > 85
-- **ADX**: Only block if ADX < 15 (completely dead market)
+- **ADX**: Informational only - low ADX is caution, not a block
 
 ### DECISION THRESHOLDS for {direction.upper()}:
 {"- MACD < -0.15 = STRONG SHORT signal ✓" if direction == "short" else "- MACD > +0.15 = STRONG LONG signal ✓"}
 {"- MACD < -0.25 = VERY STRONG, enter immediately" if direction == "short" else "- MACD > +0.25 = VERY STRONG, enter immediately"}
 - RSI between 20-80 = IGNORE (neutral zone)
-- ADX > 15 = OK to trade (even weak trend is acceptable)
+- ADX is informational - consider it but it doesn't block
 - Whale activity: Nice to have confirmation, but not required
 
 ### YOUR BIAS:
@@ -496,52 +529,53 @@ When in doubt with strong momentum → OPEN"""
     elif style == "conservative":
         return f"""## TRADING STYLE: CONSERVATIVE (Sniper)
 
-### ENTRY CRITERIA (you need ALL signals aligned):
-1. **MACD must be strong**: |MACD| > 0.25 required
-2. **Price vs EMA20 must confirm**: {"Price MUST be BELOW EMA20 for SHORT" if direction == "short" else "Price MUST be ABOVE EMA20 for LONG"}
-3. **RSI must not be exhausted**: {"RSI must be > 30 (not oversold)" if direction == "short" else "RSI must be < 70 (not overbought)"}
-4. **ADX must show strong trend**: ADX > 25 required (confirms real trend exists)
-5. **No contradicting signals**: If whale activity contradicts direction → HOLD
+### ENTRY CRITERIA (prefer multiple signals aligned):
+1. **MACD should be strong**: |MACD| > 0.25 preferred
+2. **Price vs EMA20 confirmation**: {"Price below EMA20 supports SHORT" if direction == "short" else "Price above EMA20 supports LONG"}
+3. **RSI not exhausted**: {"RSI > 30 preferred (avoid catching falling knife)" if direction == "short" else "RSI < 70 preferred (avoid buying top)"}
+4. **ADX shows trend**: ADX > 25 adds confidence (but not mandatory blocker)
+5. **Whale activity**: Look for confirmation, contradicting is a warning
 
-### DECISION THRESHOLDS for {direction.upper()}:
-{"- MACD < -0.25 = Required for SHORT" if direction == "short" else "- MACD > +0.25 = Required for LONG"}
-{"- Price < EMA20 = Required confirmation" if direction == "short" else "- Price > EMA20 = Required confirmation"}
-{"- RSI > 30 = Required (avoid catching falling knife)" if direction == "short" else "- RSI < 70 = Required (avoid buying top)"}
-- ADX > 25 = Required (must have confirmed trend)
-- ADX < 25 = Market ranging → HOLD regardless of other signals
-- Score trend must be STABLE or STRENGTHENING
+### DECISION GUIDANCE for {direction.upper()}:
+{"- MACD < -0.25 + Price < EMA20 = High confidence SHORT" if direction == "short" else "- MACD > +0.25 + Price > EMA20 = High confidence LONG"}
+- Multiple indicators aligned = OPEN with confidence
+- Mixed signals = prefer HOLD
 
 ### YOUR BIAS:
-Be patient. Only take A+ setups where everything aligns.
+Be patient. Prefer high-quality setups with multiple confirmations.
 When in doubt → HOLD. Missing a trade is better than losing money."""
 
     else:  # moderate (default)
-        return f"""## TRADING STYLE: MODERATE (Trend Follower)
+        return f"""## TRADING STYLE: MODERATE (Balanced)
 
-### ENTRY CRITERIA (you need PRIMARY signals + no major contradiction):
+### ENTRY GUIDANCE (look for confluence):
 
-**PRIMARY SIGNALS (must have at least ONE strong):**
-- MACD: The momentum indicator. {"MACD < -0.20 is strong SHORT" if direction == "short" else "MACD > +0.20 is strong LONG"}
-- Price vs EMA20: {"Price below EMA20 confirms bearish bias" if direction == "short" else "Price above EMA20 confirms bullish bias"}
-- ADX: Trend strength indicator. ADX > 20 means trend exists.
+**BULLISH signals for LONG:**
+- MACD > 0 (positive momentum)
+- Price > EMA20 (uptrend)
+- OBV RISING (volume confirms)
+- Golden Cross (EMA20 > EMA50)
 
-**SECONDARY SIGNALS (confirmation, not required):**
-- RSI: Use as exhaustion filter only
-  {"- For SHORT: Be cautious if RSI < 25 (might be exhausted)" if direction == "short" else "- For LONG: Be cautious if RSI > 75 (might be exhausted)"}
-  - RSI 30-70 is neutral, does NOT block the trade
-- Whale activity: Confirming is good, neutral is acceptable, contradicting is a warning
+**BEARISH signals for SHORT:**
+- MACD < 0 (negative momentum)
+- Price < EMA20 (downtrend)
+- OBV FALLING (volume confirms)
+- Death Cross (EMA20 < EMA50)
 
-### DECISION THRESHOLDS for {direction.upper()}:
-{"- MACD < -0.20 AND Price < EMA20 = STRONG CONFIRMATION → OPEN" if direction == "short" else "- MACD > +0.20 AND Price > EMA20 = STRONG CONFIRMATION → OPEN"}
-{"- MACD < -0.20 AND Price ≈ EMA20 = ACCEPTABLE if momentum is clear → OPEN" if direction == "short" else "- MACD > +0.20 AND Price ≈ EMA20 = ACCEPTABLE if momentum is clear → OPEN"}
-{"- MACD > -0.15 (weak) = Signal too weak → HOLD" if direction == "short" else "- MACD < +0.15 (weak) = Signal too weak → HOLD"}
-- ADX < 20 = Market is RANGING → Strong bias to HOLD (avoid choppy markets)
-- ADX > 20 = Trend confirmed → OK to trade
+**CONTEXT indicators (informational):**
+- ADX: Higher = stronger trend (more confidence), Lower = ranging (more caution, but not blocking)
+- RSI: Extreme values (<25 or >75) suggest caution
+- Bollinger: Breakouts can indicate continuation
+
+### DECISION GUIDANCE for {direction.upper()}:
+- Strong MACD + EMA confirmation = High confidence → OPEN
+- Strong MACD alone = Medium confidence → Consider OPEN
+- Weak/mixed signals = Low confidence → HOLD
 
 ### YOUR BIAS:
-Balance risk and opportunity. Strong MACD + EMA confirmation + ADX > 20 = GO.
-Neutral RSI does NOT block the trade. Only exhausted RSI (< 25 or > 75) is a warning.
-If ADX < 20, prefer to HOLD even with good MACD - the market is ranging."""
+Balance risk and opportunity. Look for 2-3 confirming indicators.
+ADX is context, NOT a blocker - use your judgment.
+When signals are clearly mixed → prefer HOLD."""
 
 
 def validate_double_check_ai(symbol: str, direction: str, score: float, trading_mode: str = "MICRO_GAIN") -> dict:
