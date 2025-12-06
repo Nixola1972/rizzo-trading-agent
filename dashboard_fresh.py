@@ -101,11 +101,12 @@ try:
     trades_data = query_db(f"""
         SELECT
             COUNT(*) as total_trades,
-            COUNT(*) FILTER (WHERE pnl_usd > 0) as wins,
-            COUNT(*) FILTER (WHERE pnl_usd <= 0) as losses,
-            COALESCE(SUM(pnl_usd), 0) as total_pnl
-        FROM trade_journal
-        WHERE closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
+            COUNT(*) FILTER (WHERE net_pnl_usd > 0) as wins,
+            COUNT(*) FILTER (WHERE net_pnl_usd <= 0) as losses,
+            COALESCE(SUM(net_pnl_usd), 0) as total_pnl
+        FROM trades
+        WHERE status = 'CLOSED'
+          AND closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
     """)
 
     if not trades_data.empty and trades_data['total_trades'].iloc[0] > 0:
@@ -192,6 +193,116 @@ with tab1:
     except Exception as e:
         st.error(f"Errore: {e}")
 
+    # ===== CUMULATIVE P&L CHART =====
+    st.subheader("📈 Cumulative Trading P&L (Solo Profitti/Perdite)")
+
+    try:
+        cumulative_pnl = query_db(f"""
+            SELECT
+                closed_at,
+                net_pnl_usd,
+                SUM(net_pnl_usd) OVER (ORDER BY closed_at) as cumulative_pnl
+            FROM trades
+            WHERE status = 'CLOSED'
+              AND closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
+            ORDER BY closed_at ASC
+        """)
+
+        if not cumulative_pnl.empty and len(cumulative_pnl) > 0:
+            total_pnl = cumulative_pnl['cumulative_pnl'].iloc[-1]
+
+            fig_cum = go.Figure()
+            fig_cum.add_trace(go.Scatter(
+                x=cumulative_pnl['closed_at'],
+                y=cumulative_pnl['cumulative_pnl'],
+                mode='lines+markers',
+                name='Cumulative P&L',
+                line=dict(color='#00ff00' if total_pnl >= 0 else '#ff0000', width=2),
+                marker=dict(size=6),
+                fill='tozeroy',
+                fillcolor='rgba(0,255,0,0.2)' if total_pnl >= 0 else 'rgba(255,0,0,0.2)'
+            ))
+
+            # Add zero line
+            fig_cum.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+
+            fig_cum.update_layout(
+                title=f"Cumulative P&L (Trading Only) - Total: ${total_pnl:+.2f}",
+                xaxis_title="Date",
+                yaxis_title="Cumulative P&L (USD)",
+                hovermode='x unified',
+                height=400
+            )
+
+            st.plotly_chart(fig_cum, use_container_width=True)
+        else:
+            st.info("Nessun trade chiuso ancora per calcolare il P&L cumulativo")
+    except Exception as e:
+        st.error(f"Errore cumulative P&L: {e}")
+
+    # ===== DAILY P&L BAR CHART =====
+    st.subheader("📊 Daily P&L (Istogramma Giornaliero)")
+
+    try:
+        daily_pnl = query_db(f"""
+            SELECT
+                DATE(closed_at) as day,
+                SUM(net_pnl_usd) as daily_pnl,
+                COUNT(*) as num_trades,
+                COUNT(*) FILTER (WHERE net_pnl_usd > 0) as wins,
+                COUNT(*) FILTER (WHERE net_pnl_usd <= 0) as losses
+            FROM trades
+            WHERE status = 'CLOSED'
+              AND closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
+            GROUP BY DATE(closed_at)
+            ORDER BY day ASC
+        """)
+
+        if not daily_pnl.empty:
+            # Color bars based on profit/loss
+            colors = ['#00ff00' if x > 0 else '#ff0000' for x in daily_pnl['daily_pnl']]
+
+            fig_daily = go.Figure()
+            fig_daily.add_trace(go.Bar(
+                x=daily_pnl['day'],
+                y=daily_pnl['daily_pnl'],
+                marker_color=colors,
+                text=[f"${x:.2f}<br>{w}W/{l}L" for x, w, l in zip(
+                    daily_pnl['daily_pnl'],
+                    daily_pnl['wins'],
+                    daily_pnl['losses']
+                )],
+                textposition='outside',
+                name='Daily P&L'
+            ))
+
+            # Add zero line
+            fig_daily.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+
+            # Stats
+            best_day = daily_pnl.loc[daily_pnl['daily_pnl'].idxmax()]
+            worst_day = daily_pnl.loc[daily_pnl['daily_pnl'].idxmin()]
+            avg_daily = daily_pnl['daily_pnl'].mean()
+
+            fig_daily.update_layout(
+                title=f"Daily P&L | Best: ${best_day['daily_pnl']:.2f} | Worst: ${worst_day['daily_pnl']:.2f} | Avg: ${avg_daily:.2f}",
+                xaxis_title="Day",
+                yaxis_title="P&L (USD)",
+                hovermode='x unified',
+                height=400
+            )
+
+            st.plotly_chart(fig_daily, use_container_width=True)
+
+            # Summary table
+            daily_pnl['win_rate'] = (daily_pnl['wins'] / daily_pnl['num_trades'] * 100).round(1)
+            daily_pnl['daily_pnl'] = daily_pnl['daily_pnl'].round(2)
+            st.dataframe(daily_pnl[['day', 'daily_pnl', 'num_trades', 'wins', 'losses', 'win_rate']], use_container_width=True)
+        else:
+            st.info("Nessun trade chiuso ancora per mostrare il P&L giornaliero")
+    except Exception as e:
+        st.error(f"Errore daily P&L: {e}")
+
     # P&L per Symbol
     st.subheader("💰 P&L by Symbol (dal start)")
 
@@ -202,11 +313,12 @@ with tab1:
             pnl_by_symbol = query_db(f"""
                 SELECT
                     symbol,
-                    SUM(pnl_usd) as total_pnl,
+                    SUM(net_pnl_usd) as total_pnl,
                     COUNT(*) as num_trades,
-                    AVG(pnl_usd) as avg_pnl
-                FROM trade_journal
-                WHERE closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
+                    AVG(net_pnl_usd) as avg_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
                 GROUP BY symbol
                 ORDER BY total_pnl DESC
             """)
@@ -270,14 +382,15 @@ with tab2:
                 direction,
                 entry_price,
                 exit_price,
-                pnl_usd,
-                pnl_percent,
+                net_pnl_usd as pnl_usd,
+                net_pnl_percent as pnl_percent,
                 opened_at,
                 closed_at,
-                duration_minutes,
+                ROUND(duration_seconds / 60.0, 1) as duration_minutes,
                 close_reason
-            FROM trade_journal
-            WHERE closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
+            FROM trades
+            WHERE status = 'CLOSED'
+              AND closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
             ORDER BY closed_at DESC
             LIMIT 50
         """)
