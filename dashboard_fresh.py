@@ -193,8 +193,8 @@ with tab1:
     except Exception as e:
         st.error(f"Errore: {e}")
 
-    # ===== CUMULATIVE P&L CHART =====
-    st.subheader("📈 Cumulative Trading P&L (Solo Profitti/Perdite)")
+    # ===== CUMULATIVE P&L CHART (NET - after fees) =====
+    st.subheader("📈 Cumulative Trading P&L (Netto - dopo fees)")
 
     try:
         cumulative_pnl = query_db(f"""
@@ -227,7 +227,7 @@ with tab1:
             fig_cum.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
 
             fig_cum.update_layout(
-                title=f"Cumulative P&L (Trading Only) - Total: ${total_pnl:+.2f}",
+                title=f"Cumulative P&L (Netto) - Total: ${total_pnl:+.2f}",
                 xaxis_title="Date",
                 yaxis_title="Cumulative P&L (USD)",
                 hovermode='x unified',
@@ -239,6 +239,84 @@ with tab1:
             st.info("Nessun trade chiuso ancora per calcolare il P&L cumulativo")
     except Exception as e:
         st.error(f"Errore cumulative P&L: {e}")
+
+    # ===== GROSS vs NET P&L (impatto fees) =====
+    st.subheader("💰 P&L Lordo vs Netto (Impatto Fees)")
+
+    try:
+        pnl_comparison = query_db(f"""
+            SELECT
+                closed_at,
+                pnl_usd,
+                fee_total,
+                net_pnl_usd,
+                SUM(pnl_usd) OVER (ORDER BY closed_at) as cumulative_gross,
+                SUM(fee_total) OVER (ORDER BY closed_at) as cumulative_fees,
+                SUM(net_pnl_usd) OVER (ORDER BY closed_at) as cumulative_net
+            FROM trades
+            WHERE status = 'CLOSED'
+              AND closed_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
+            ORDER BY closed_at ASC
+        """)
+
+        if not pnl_comparison.empty and len(pnl_comparison) > 0:
+            total_gross = pnl_comparison['cumulative_gross'].iloc[-1]
+            total_fees = pnl_comparison['cumulative_fees'].iloc[-1]
+            total_net = pnl_comparison['cumulative_net'].iloc[-1]
+
+            # Show metrics
+            col_g, col_f, col_n = st.columns(3)
+            col_g.metric("P&L Lordo", f"${total_gross:+.2f}")
+            col_f.metric("Fees Pagate", f"${total_fees:.2f}", delta=f"-${total_fees:.2f}", delta_color="inverse")
+            col_n.metric("P&L Netto (Reale)", f"${total_net:+.2f}")
+
+            fig_compare = go.Figure()
+
+            # Gross P&L line (before fees)
+            fig_compare.add_trace(go.Scatter(
+                x=pnl_comparison['closed_at'],
+                y=pnl_comparison['cumulative_gross'],
+                mode='lines',
+                name='P&L Lordo (prima fees)',
+                line=dict(color='#2196F3', width=2, dash='dot')
+            ))
+
+            # Net P&L line (after fees)
+            fig_compare.add_trace(go.Scatter(
+                x=pnl_comparison['closed_at'],
+                y=pnl_comparison['cumulative_net'],
+                mode='lines',
+                name='P&L Netto (dopo fees)',
+                line=dict(color='#00ff00' if total_net >= 0 else '#ff0000', width=3)
+            ))
+
+            # Cumulative fees (negative area)
+            fig_compare.add_trace(go.Scatter(
+                x=pnl_comparison['closed_at'],
+                y=-pnl_comparison['cumulative_fees'],
+                mode='lines',
+                name='Fees Cumulative',
+                line=dict(color='#ff9800', width=1),
+                fill='tozeroy',
+                fillcolor='rgba(255,152,0,0.2)'
+            ))
+
+            fig_compare.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+
+            fig_compare.update_layout(
+                title=f"Lordo ${total_gross:+.2f} - Fees ${total_fees:.2f} = Netto ${total_net:+.2f}",
+                xaxis_title="Date",
+                yaxis_title="USD",
+                hovermode='x unified',
+                height=450,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+
+            st.plotly_chart(fig_compare, use_container_width=True)
+        else:
+            st.info("Nessun trade per il confronto P&L")
+    except Exception as e:
+        st.error(f"Errore confronto P&L: {e}")
 
     # ===== DAILY P&L BAR CHART =====
     st.subheader("📊 Daily P&L (Istogramma Giornaliero)")
@@ -445,8 +523,7 @@ with tab3:
                     mark_price,
                     size,
                     leverage,
-                    pnl_usd,
-                    created_at
+                    pnl_usd
                 FROM open_positions
                 WHERE snapshot_id = {snap_id}
                 ORDER BY symbol
@@ -485,8 +562,9 @@ with tab4:
                 symbol,
                 operation,
                 direction,
-                confidence,
-                reasoning,
+                leverage,
+                raw_payload->>'confidence' as confidence,
+                raw_payload->>'reasoning' as reasoning,
                 created_at
             FROM bot_operations
             WHERE created_at >= '{START_DATE.strftime('%Y-%m-%d %H:%M:%S')}'
