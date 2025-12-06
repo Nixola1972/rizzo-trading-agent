@@ -63,6 +63,29 @@ class HyperLiquidTrader:
         tick_size = self._get_tick_size(symbol)
         return round(round(price / tick_size) * tick_size, 8)
 
+    def _round_to_tick_for_tp(self, price: float, symbol: str, is_long: bool) -> float:
+        """
+        Arrotonda il prezzo TP al tick size nella direzione corretta.
+
+        Per LONG TP (sell to close): arrotonda verso l'ALTO (ceil) per essere conservativi
+        Per SHORT TP (buy to close): arrotonda verso il BASSO (floor) per evitare fill immediati
+
+        Questo previene il bug dove il TP di uno SHORT viene arrotondato SOPRA l'entry price.
+        """
+        import math
+        tick_size = self._get_tick_size(symbol)
+        ticks = price / tick_size
+
+        if is_long:
+            # LONG TP: vendiamo sopra entry, arrotondiamo verso il basso per sicurezza
+            rounded_ticks = math.floor(ticks)
+        else:
+            # SHORT TP: compriamo sotto entry, arrotondiamo verso il basso
+            # Questo assicura che il TP sia SOTTO l'entry, non sopra
+            rounded_ticks = math.floor(ticks)
+
+        return round(rounded_ticks * tick_size, 8)
+
     def _to_hl_size(self, size_decimal: Decimal) -> str:
         # HL accetta max 8 decimali
         size_clamped = size_decimal.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
@@ -352,7 +375,9 @@ class HyperLiquidTrader:
                             target_price = entry_price * (1 - price_change_pct / 100)
 
                         # Arrotonda il prezzo target al tick size corretto per l'asset
-                        target_price = self._round_to_tick(target_price, symbol)
+                        # USA _round_to_tick_for_tp per arrotondare nella direzione corretta
+                        # e evitare che SHORT TP finisca SOPRA l'entry (bug DOGE 2024-12)
+                        target_price = self._round_to_tick_for_tp(target_price, symbol, is_buy)
 
                         print(f"  🎯 {trading_mode}: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%, tick={self._get_tick_size(symbol)})")
 
