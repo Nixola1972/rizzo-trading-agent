@@ -9,6 +9,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Leggi ENABLED_SYMBOLS da env (dinamico)
+def get_enabled_symbols():
+    """Ottiene la lista dei simboli abilitati dal file .env"""
+    symbols_str = os.getenv('ENABLED_SYMBOLS', 'BTC,ETH,SOL')
+    return [s.strip() for s in symbols_str.split(',')]
+
+ENABLED_SYMBOLS = get_enabled_symbols()
+
 # Configurazione pagina
 st.set_page_config(
     page_title="Trading Agent Dashboard",
@@ -621,7 +629,7 @@ with tab2:
     with col_filter2:
         symbol_filter = st.selectbox(
             "Symbol",
-            ["All", "BTC", "ETH", "SOL"]
+            ["All"] + ENABLED_SYMBOLS
         )
 
     with col_filter3:
@@ -1120,7 +1128,7 @@ with tab4:
             with col_f2:
                 symbol_filter_ai = st.selectbox(
                     "🪙 Filtra per Symbol",
-                    ["Tutti", "BTC", "ETH", "SOL"],
+                    ["Tutti"] + ENABLED_SYMBOLS,
                     key="ai_symbol_filter"
                 )
 
@@ -1732,9 +1740,9 @@ with tab6:
         with col_cfg1:
             bt_symbols = st.multiselect(
                 "📊 Simboli da Testare",
-                ["BTC", "ETH", "SOL"],
-                default=["BTC", "ETH", "SOL"],
-                help="Seleziona le crypto da includere. Consigliato: tutte e 3"
+                ENABLED_SYMBOLS,
+                default=ENABLED_SYMBOLS,
+                help="Seleziona le crypto da includere"
             )
 
         with col_cfg2:
@@ -2191,7 +2199,7 @@ with tab8:
     with col_filter2:
         journal_symbol = st.selectbox(
             "💱 Symbol",
-            ["All", "BTC", "ETH", "SOL"],
+            ["All"] + ENABLED_SYMBOLS,
             key="journal_symbol"
         )
     with col_filter3:
