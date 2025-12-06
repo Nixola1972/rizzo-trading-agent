@@ -239,6 +239,92 @@ def compare_data(hl_analysis, db_trades):
     }
 
 
+def analyze_win_loss(fills, db_trades):
+    """Analizza win/loss rate dai fills matchati e dal database."""
+
+    print("\n" + "="*70)
+    print("🎯 ANALISI WIN/LOSS")
+    print("="*70)
+
+    # Match fills to complete trades for Hyperliquid analysis
+    complete_trades = match_fills_to_trades(fills)
+
+    # Hyperliquid win/loss
+    hl_wins = 0
+    hl_losses = 0
+    hl_total_win_pnl = Decimal('0')
+    hl_total_loss_pnl = Decimal('0')
+
+    for trade in complete_trades:
+        net_pnl = trade.get('net_pnl_usd', Decimal('0'))
+        if net_pnl > 0:
+            hl_wins += 1
+            hl_total_win_pnl += net_pnl
+        else:
+            hl_losses += 1
+            hl_total_loss_pnl += net_pnl
+
+    hl_total = hl_wins + hl_losses
+    hl_win_rate = (hl_wins / hl_total * 100) if hl_total > 0 else 0
+
+    print(f"\n🔷 HYPERLIQUID (da fills matchati):")
+    print(f"   Trade completi: {hl_total}")
+    print(f"   ✅ Wins:        {hl_wins} ({hl_win_rate:.1f}%)")
+    print(f"   ❌ Losses:      {hl_losses} ({100-hl_win_rate:.1f}%)")
+    print(f"   💰 Profitto totale wins:  ${float(hl_total_win_pnl):+.2f}")
+    print(f"   💸 Perdita totale losses: ${float(hl_total_loss_pnl):+.2f}")
+
+    if hl_wins > 0 and hl_losses > 0:
+        avg_win = hl_total_win_pnl / hl_wins
+        avg_loss = abs(hl_total_loss_pnl / hl_losses)
+        profit_factor = abs(hl_total_win_pnl / hl_total_loss_pnl) if hl_total_loss_pnl != 0 else 0
+        print(f"   📊 Avg Win:     ${float(avg_win):.4f}")
+        print(f"   📊 Avg Loss:    ${float(avg_loss):.4f}")
+        print(f"   📊 Profit Factor: {float(profit_factor):.2f}")
+
+    # Database win/loss
+    if db_trades:
+        db_wins = sum(1 for t in db_trades if t.get('profitable') or (t.get('net_pnl_usd') and float(t['net_pnl_usd']) > 0))
+        db_losses = len(db_trades) - db_wins
+        db_total = len(db_trades)
+        db_win_rate = (db_wins / db_total * 100) if db_total > 0 else 0
+
+        db_win_pnl = sum(float(t['net_pnl_usd'] or 0) for t in db_trades if t.get('net_pnl_usd') and float(t['net_pnl_usd']) > 0)
+        db_loss_pnl = sum(float(t['net_pnl_usd'] or 0) for t in db_trades if t.get('net_pnl_usd') and float(t['net_pnl_usd']) <= 0)
+
+        print(f"\n🔶 DATABASE:")
+        print(f"   Trade totali:  {db_total}")
+        print(f"   ✅ Wins:       {db_wins} ({db_win_rate:.1f}%)")
+        print(f"   ❌ Losses:     {db_losses} ({100-db_win_rate:.1f}%)")
+        print(f"   💰 Profitto totale wins:  ${db_win_pnl:+.2f}")
+        print(f"   💸 Perdita totale losses: ${db_loss_pnl:+.2f}")
+
+        # Per symbol dal DB
+        print(f"\n📊 WIN/LOSS PER SYMBOL (Database):")
+        print("-"*60)
+        by_symbol = {}
+        for t in db_trades:
+            sym = t.get('symbol', 'UNKNOWN')
+            if sym not in by_symbol:
+                by_symbol[sym] = {'wins': 0, 'losses': 0, 'pnl': 0}
+            pnl = float(t.get('net_pnl_usd') or 0)
+            by_symbol[sym]['pnl'] += pnl
+            if pnl > 0:
+                by_symbol[sym]['wins'] += 1
+            else:
+                by_symbol[sym]['losses'] += 1
+
+        print(f"{'Symbol':<10} {'Wins':>8} {'Losses':>8} {'Win%':>8} {'Net P&L':>12}")
+        print("-"*60)
+        for sym in sorted(by_symbol.keys()):
+            d = by_symbol[sym]
+            total = d['wins'] + d['losses']
+            wr = (d['wins'] / total * 100) if total > 0 else 0
+            print(f"{sym:<10} {d['wins']:>8} {d['losses']:>8} {wr:>7.1f}% ${d['pnl']:>+10.2f}")
+
+    print("-"*60)
+
+
 def export_fills_csv(fills, filename=None):
     """Esporta i fills in CSV."""
     if not filename:
@@ -295,6 +381,272 @@ def export_fills_json(fills, filename=None):
 
     print(f"💾 JSON esportato: {filename}")
     return filename
+
+
+def match_fills_to_trades(fills):
+    """
+    Match fills to complete trades (open + close pairs).
+    Returns list of complete trades with entry/exit info.
+    """
+    from collections import defaultdict
+
+    # Group fills by coin and sort by time
+    by_coin = defaultdict(list)
+    for fill in fills:
+        coin = fill.get('coin', 'UNKNOWN')
+        by_coin[coin].append(fill)
+
+    complete_trades = []
+
+    for coin, coin_fills in by_coin.items():
+        # Sort by timestamp
+        coin_fills.sort(key=lambda x: x.get('time', 0))
+
+        # Track position
+        position = Decimal('0')
+        current_trade = None
+
+        for fill in coin_fills:
+            ts = fill.get('time', 0)
+            dt = datetime.fromtimestamp(ts / 1000) if ts > 0 else None
+
+            side = fill.get('side', '')  # B = Buy, A = Sell
+            size = Decimal(str(fill.get('sz', '0')))
+            price = Decimal(str(fill.get('px', '0')))
+            closed_pnl = Decimal(str(fill.get('closedPnl', '0')))
+            fee = Decimal(str(fill.get('fee', '0')))
+            dir_str = fill.get('dir', '')  # "Open Long", "Close Long", etc.
+
+            # Determine position change
+            if side == 'B':
+                position_change = size
+            else:  # 'A' = Sell
+                position_change = -size
+
+            old_position = position
+            position += position_change
+
+            # Check if this is opening a new position
+            if current_trade is None and abs(position) > 0:
+                # Opening a new trade
+                direction = 'LONG' if position > 0 else 'SHORT'
+                current_trade = {
+                    'symbol': coin,
+                    'direction': direction,
+                    'opened_at': dt,
+                    'entry_price': price,
+                    'entry_size': abs(position_change),
+                    'total_size': abs(position),
+                    'fee_open': fee,
+                    'fills_open': [fill],
+                    'fills_close': []
+                }
+            elif current_trade is not None:
+                # Check if we're adding to position or closing
+                if closed_pnl != 0:
+                    # This is a closing fill
+                    current_trade['fills_close'].append(fill)
+                    current_trade['fee_close'] = current_trade.get('fee_close', Decimal('0')) + fee
+                    current_trade['closed_pnl'] = current_trade.get('closed_pnl', Decimal('0')) + closed_pnl
+
+                    # Check if position is fully closed
+                    if abs(position) < Decimal('0.0000001'):  # Nearly zero
+                        # Complete trade!
+                        current_trade['closed_at'] = dt
+                        current_trade['exit_price'] = price
+                        current_trade['exit_size'] = abs(position_change)
+
+                        # Calculate net P&L
+                        fee_total = current_trade.get('fee_open', Decimal('0')) + current_trade.get('fee_close', Decimal('0'))
+                        gross_pnl = current_trade.get('closed_pnl', Decimal('0'))
+                        net_pnl = gross_pnl - fee_total
+
+                        current_trade['pnl_usd'] = gross_pnl
+                        current_trade['fee_total'] = fee_total
+                        current_trade['net_pnl_usd'] = net_pnl
+                        current_trade['profitable'] = net_pnl > 0
+
+                        # Calculate duration
+                        if current_trade['opened_at'] and current_trade['closed_at']:
+                            duration = (current_trade['closed_at'] - current_trade['opened_at']).total_seconds()
+                            current_trade['duration_seconds'] = int(duration)
+
+                        complete_trades.append(current_trade)
+                        current_trade = None
+                        position = Decimal('0')
+                else:
+                    # Adding to position or partial fill
+                    current_trade['fills_open'].append(fill)
+                    current_trade['fee_open'] = current_trade.get('fee_open', Decimal('0')) + fee
+                    current_trade['total_size'] = abs(position)
+                    # Update average entry price (simplified - just use latest)
+
+    return complete_trades
+
+
+def get_existing_trade_timestamps(conn):
+    """Get all existing trade timestamps from DB to avoid duplicates."""
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""
+        SELECT symbol, opened_at, closed_at, entry_price, net_pnl_usd
+        FROM trades
+        WHERE status = 'CLOSED'
+        ORDER BY opened_at
+    """)
+    trades = cur.fetchall()
+    cur.close()
+
+    # Create set of (symbol, opened_at rounded to minute) for dedup
+    existing = set()
+    for t in trades:
+        if t['opened_at']:
+            # Round to minute for matching
+            opened_minute = t['opened_at'].replace(second=0, microsecond=0)
+            existing.add((t['symbol'], opened_minute))
+
+    return existing
+
+
+def import_missing_trades(fills):
+    """Import trades from Hyperliquid fills that are missing in DB."""
+    import uuid
+
+    if not PSYCOPG2_AVAILABLE or not DATABASE_URL:
+        print("❌ Database non configurato!")
+        return 0
+
+    print("\n" + "="*70)
+    print("📥 IMPORT TRADES MANCANTI")
+    print("="*70)
+
+    # Match fills to trades
+    print("\n🔗 Matching fills to complete trades...")
+    complete_trades = match_fills_to_trades(fills)
+    print(f"   Trovati {len(complete_trades)} trade completi dai fills")
+
+    # Connect to DB
+    conn = psycopg2.connect(DATABASE_URL)
+
+    # Get existing trades
+    print("\n🔍 Checking existing trades in DB...")
+    existing = get_existing_trade_timestamps(conn)
+    print(f"   {len(existing)} trade esistenti nel DB")
+
+    # Find missing trades
+    missing_trades = []
+    for trade in complete_trades:
+        if trade.get('opened_at'):
+            opened_minute = trade['opened_at'].replace(second=0, microsecond=0)
+            key = (trade['symbol'], opened_minute)
+            if key not in existing:
+                missing_trades.append(trade)
+
+    print(f"\n📊 Trade mancanti da importare: {len(missing_trades)}")
+
+    if not missing_trades:
+        print("   ✅ Nessun trade mancante!")
+        conn.close()
+        return 0
+
+    # Import missing trades
+    cur = conn.cursor()
+    imported = 0
+    errors = 0
+
+    for trade in missing_trades:
+        try:
+            # Calculate derived values
+            entry_price = float(trade.get('entry_price', 0))
+            exit_price = float(trade.get('exit_price', 0))
+            size = float(trade.get('total_size', trade.get('entry_size', 0)))
+
+            notional = size * entry_price
+            leverage = 3  # Default
+            margin_used = notional / leverage if leverage > 0 else notional
+
+            pnl_usd = float(trade.get('pnl_usd', 0))
+            fee_total = float(trade.get('fee_total', 0))
+            net_pnl_usd = float(trade.get('net_pnl_usd', 0))
+
+            pnl_percent = (pnl_usd / margin_used * 100) if margin_used > 0 else 0
+            net_pnl_percent = (net_pnl_usd / margin_used * 100) if margin_used > 0 else 0
+
+            # Determine close reason
+            if net_pnl_usd > 0:
+                close_reason = 'TP_HIT'
+            elif net_pnl_usd < -margin_used * 0.01:  # More than 1% loss
+                close_reason = 'SL_HIT'
+            else:
+                close_reason = 'MANUAL'
+
+            cur.execute("""
+                INSERT INTO trades (
+                    trade_uuid, symbol, direction, trading_mode, status,
+                    opened_at, closed_at, duration_seconds,
+                    entry_price, exit_price, size, leverage,
+                    notional_value, margin_used,
+                    pnl_percent, pnl_usd,
+                    fee_open, fee_close, fee_total,
+                    net_pnl_usd, net_pnl_percent, profitable,
+                    close_reason, open_source
+                ) VALUES (
+                    %s, %s, %s, %s, 'CLOSED',
+                    %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s
+                )
+            """, (
+                str(uuid.uuid4()),
+                trade['symbol'],
+                trade['direction'],
+                'IMPORTED',  # Mark as imported
+                trade.get('opened_at'),
+                trade.get('closed_at'),
+                trade.get('duration_seconds', 0),
+                entry_price,
+                exit_price,
+                size,
+                leverage,
+                notional,
+                margin_used,
+                pnl_percent,
+                pnl_usd,
+                float(trade.get('fee_open', 0)),
+                float(trade.get('fee_close', 0)),
+                fee_total,
+                net_pnl_usd,
+                net_pnl_percent,
+                trade.get('profitable', False),
+                close_reason,
+                'HL_IMPORT'  # Source = Hyperliquid Import
+            ))
+
+            imported += 1
+
+            if imported <= 10:  # Show first 10
+                print(f"   ✅ {trade['symbol']} {trade['direction']} @ {trade.get('opened_at')} -> ${net_pnl_usd:+.4f}")
+            elif imported == 11:
+                print(f"   ... (importing more trades)")
+
+        except Exception as e:
+            errors += 1
+            if errors <= 3:
+                print(f"   ❌ Error: {e}")
+            continue
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    print(f"\n✅ Importati: {imported} trade")
+    if errors > 0:
+        print(f"❌ Errori: {errors}")
+
+    return imported
 
 
 def main():
@@ -354,8 +706,20 @@ def main():
             print("       Potrebbero esserci trade mancanti nel database.")
 
     if do_import:
-        print("\n⚠️ Funzione import non ancora implementata.")
-        print("   Per importare i fills mancanti, usa i dati dal JSON esportato.")
+        imported = import_missing_trades(fills)
+        if imported > 0:
+            print(f"\n🔄 Ricalcolo dati dopo import...")
+            # Re-fetch DB trades
+            db_trades = get_db_trades()
+            hl_analysis = analyze_fills(fills)
+            result = compare_data(hl_analysis, db_trades)
+            print(f"\n📋 NUOVO SUMMARY (dopo import):")
+            print(f"   Hyperliquid Net P&L: {result['hl_net']:.4f} USDC")
+            print(f"   Database Net P&L:    {result['db_net']:.4f} USDC")
+            print(f"   DIFFERENZA:          {result['difference']:.4f} USDC")
+
+    # Analisi Win/Loss (sempre eseguita)
+    analyze_win_loss(fills, db_trades)
 
 
 if __name__ == "__main__":
