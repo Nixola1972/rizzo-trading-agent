@@ -1279,6 +1279,10 @@ def upsert_position_tracking(
 
     Returns: dict con i dati aggiornati del tracking
     """
+    # Converti numpy types a Python native types per evitare errore "schema np does not exist"
+    entry_price = float(entry_price) if entry_price is not None else 0.0
+    current_price = float(current_price) if current_price is not None else 0.0
+    opening_score = float(opening_score) if opening_score is not None else None
 
     with get_connection() as conn:
         with conn.cursor() as cur:
