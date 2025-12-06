@@ -2,20 +2,22 @@
 """
 Sentinel - Monitoraggio continuo trailing stop e stop loss.
 
+ARCHITETTURA FAST/SLOW:
+- FAST (2-5s): Price checks, SL updates, TP checks, trailing stop
+- SLOW (30-60s): Score calculations, AI validation, position opening
+- BOTH: Legacy mode, runs everything together (default)
+
 Script leggero che gira frequentemente (ogni 1-2 minuti) per:
 1. Controllare i prezzi correnti delle posizioni aperte
 2. Aggiornare il peak_price nel database
 3. Chiudere posizioni se trailing stop o stop loss viene triggerato
 
-NON fa:
-- Chiamate AI
-- Calcolo indicatori
-- Analisi di mercato
-
 Uso:
-    python sentinel.py              # Esegue un singolo controllo
-    python sentinel.py --loop       # Esegue in loop continuo
-    python sentinel.py --interval 60  # Loop con intervallo personalizzato
+    python sentinel.py                      # Singolo check (mode=both)
+    python sentinel.py --loop               # Loop continuo (mode=both)
+    python sentinel.py --mode fast --loop   # Solo FAST in loop (2-5s)
+    python sentinel.py --mode slow --loop   # Solo SLOW in loop (30-60s)
+    python sentinel.py --interval 60        # Loop con intervallo personalizzato
 """
 
 import os
@@ -62,6 +64,23 @@ except ImportError:
 SENTINEL_ENABLED = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
 SENTINEL_INTERVAL = int(os.getenv('SENTINEL_INTERVAL_SECONDS', '60'))
 SENTINEL_TELEGRAM_NOTIFY = os.getenv('SENTINEL_TELEGRAM_NOTIFY', 'true').lower() == 'true'
+
+# FAST/SLOW Mode Configuration
+SENTINEL_FAST_INTERVAL = int(os.getenv('SENTINEL_FAST_INTERVAL', '3'))  # 3 seconds for price checks
+SENTINEL_SLOW_INTERVAL = int(os.getenv('SENTINEL_SLOW_INTERVAL', '30'))  # 30 seconds for score/AI
+
+# Sentinel Lock for FAST/SLOW coordination
+try:
+    from sentinel_lock import SentinelLock, SentinelState, init_sentinel_tables, is_symbol_busy, signal_slow_active, is_slow_active
+    SENTINEL_LOCK_ENABLED = True
+    # Initialize tables on first import
+    init_sentinel_tables()
+    print("[SENTINEL] ✅ sentinel_lock initialized")
+except ImportError:
+    SENTINEL_LOCK_ENABLED = False
+    SentinelLock = None
+    SentinelState = None
+    print("[SENTINEL] ⚠️ sentinel_lock not available, running in legacy mode")
 
 # Trailing Stop Config
 TRAILING_STOP_ENABLED = os.getenv('TRAILING_STOP_ENABLED', 'true').lower() == 'true'
@@ -4644,20 +4663,307 @@ def run_loop(interval: int = None):
         log("Sentinel interrotto (Ctrl+C)")
 
 
+# =============================================================================
+# SENTINEL FAST - Price checks, SL updates, TP checks (every 2-5 seconds)
+# =============================================================================
+
+def run_sentinel_fast():
+    """
+    SENTINEL-FAST: Operazioni leggere e veloci.
+
+    Esegue SOLO:
+    - Check prezzi correnti
+    - Aggiornamento trailing stop
+    - Verifica/correzione ordini SL
+    - Check Take Profit
+    - Detect posizioni chiuse esternamente
+
+    NON esegue:
+    - Calcolo score
+    - Validazione AI
+    - Apertura posizioni
+    """
+    if not SENTINEL_ENABLED:
+        return
+
+    if not PRIVATE_KEY or not WALLET_ADDRESS:
+        log("[FAST] PRIVATE_KEY o WALLET_ADDRESS mancanti")
+        return
+
+    try:
+        from hyperliquid_trader import HyperLiquidTrader
+        import db_utils
+        import telegram_notifier as tg
+    except ImportError as e:
+        log(f"[FAST] Errore import: {e}")
+        return
+
+    try:
+        # Connetti a Hyperliquid
+        bot = HyperLiquidTrader(
+            secret_key=PRIVATE_KEY,
+            account_address=WALLET_ADDRESS,
+            testnet=TESTNET
+        )
+
+        # Ottieni posizioni aperte
+        account_status = bot.get_account_status()
+        positions = account_status.get("open_positions", [])
+        existing_symbols = [p.get("symbol") for p in positions]
+
+        # === DETECT EXTERNALLY CLOSED POSITIONS ===
+        detect_externally_closed_positions(bot, existing_symbols)
+
+        if not positions:
+            # Nessuna posizione, niente da fare per FAST
+            return
+
+        log(f"[FAST] Controllo {len(positions)} posizioni...")
+
+        for pos in positions:
+            symbol = pos.get("symbol", "")
+            direction = pos.get("side", "")
+            entry_price = float(pos.get("entry_price", 0))
+            mark_price = float(pos.get("mark_price", 0))
+            position_size = float(pos.get("size", 0))
+
+            # Parse leverage
+            leverage_raw = pos.get("leverage", 1)
+            if isinstance(leverage_raw, str):
+                import re
+                match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+                pos_leverage = float(match.group(1)) if match else 1.0
+            else:
+                pos_leverage = float(leverage_raw)
+
+            # Ottieni tracking dal DB
+            tracking_data = db_utils.get_position_tracking(symbol)
+            trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+
+            # === CHECK TAKE PROFIT ===
+            tp_result = check_take_profit(pos)
+            pnl_pct = tp_result.get("pnl_pct", 0)
+
+            # === CHECK/UPDATE SL (con lock per evitare conflitti con SLOW) ===
+            if SENTINEL_LOCK_ENABLED:
+                with SentinelLock(symbol, "sl_update", "FAST") as lock:
+                    if lock.acquired:
+                        _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, mark_price, position_size, pos_leverage)
+                    else:
+                        log(f"   [FAST] {symbol}: SL update skipped (SLOW has lock)")
+            else:
+                _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, mark_price, position_size, pos_leverage)
+
+            # === CHECK TRAILING STOP TRIGGER ===
+            result = check_trailing_stop(pos, tracking_data)
+
+            # Log stato sintetico
+            trailing_status = "ACTIVE" if result.get("trailing_active") else "inactive"
+            log(f"   [FAST] {symbol}: {direction.upper()} P&L={pnl_pct:+.2f}% trailing={trailing_status}")
+
+            # Se trailing/SL triggered, gestisci chiusura
+            if result.get("triggered"):
+                _handle_position_close(bot, pos, tracking_data, "CLOSE_TRAILING_STOP", result.get("reason", "Trailing Stop"))
+
+            # Se TP triggered
+            if tp_result.get("triggered"):
+                _handle_position_close(bot, pos, tracking_data, "CLOSE_TAKE_PROFIT", tp_result.get("reason", "Take Profit"))
+
+        # === VERIFICA ORDINI SL ===
+        run_order_verification(bot, positions)
+
+        # === PASSIVE SL VERIFICATION ===
+        run_passive_sl_verification(bot, positions)
+
+    except Exception as e:
+        log(f"[FAST] ❌ Errore: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, mark_price, position_size, pos_leverage):
+    """Helper per aggiornare SL di una posizione."""
+    symbol = pos.get("symbol", "")
+    direction = pos.get("side", "")
+
+    if trading_mode == "MICRO_GAIN" and tracking_data:
+        # Initialize MICRO_GAIN SL level
+        if position_size > 0:
+            initialize_micro_gain_sl_level(bot, symbol, direction, entry_price)
+            update_micro_gain_sl_order(bot, symbol, direction, entry_price, mark_price, position_size)
+
+    elif trading_mode == "NORMAL" and NORMAL_TRAILING_ENABLED:
+        if position_size > 0:
+            place_normal_initial_sl(bot, symbol, direction, entry_price, position_size, pos_leverage)
+            update_normal_sl_order(bot, symbol, direction, entry_price, mark_price, position_size, pos_leverage)
+
+
+def _handle_position_close(bot, pos, tracking_data, action_taken, reason):
+    """Helper per gestire la chiusura di una posizione."""
+    symbol = pos.get("symbol", "")
+    direction = pos.get("side", "")
+    position_size = float(pos.get("size", 0))
+
+    try:
+        log(f"   [FAST] 🔻 {symbol}: Chiusura per {action_taken}")
+        # La chiusura effettiva viene gestita dall'ordine SL su exchange
+        # Qui aggiorniamo solo tracking se necessario
+    except Exception as e:
+        log(f"   [FAST] ❌ Errore chiusura {symbol}: {e}")
+
+
+def run_loop_fast(interval: int = None):
+    """Esegue SENTINEL-FAST in loop continuo."""
+    interval = interval or SENTINEL_FAST_INTERVAL
+
+    log(f"🚀 SENTINEL-FAST avviato (intervallo: {interval}s)")
+    log(f"   Funzioni: Price check, SL update, TP check, Trailing stop")
+    log(f"   Lock: {'ENABLED' if SENTINEL_LOCK_ENABLED else 'DISABLED (legacy mode)'}")
+
+    try:
+        while True:
+            run_sentinel_fast()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        log("SENTINEL-FAST interrotto (Ctrl+C)")
+
+
+# =============================================================================
+# SENTINEL SLOW - Score calculations, AI validation, position opening (every 30-60s)
+# =============================================================================
+
+def run_sentinel_slow():
+    """
+    SENTINEL-SLOW: Operazioni pesanti e infrequenti.
+
+    Esegue SOLO:
+    - Calcolo score (indicatori, signal_scorer)
+    - Validazione AI (DOUBLE_CHECK)
+    - Apertura posizioni (MICRO_GAIN, MICRO_PAY)
+    - Check reversal
+    - Wake AI per NORMAL range
+
+    NON esegue:
+    - Check prezzi continui (lo fa FAST)
+    - Aggiornamento SL (lo fa FAST)
+    """
+    if not SENTINEL_ENABLED:
+        return
+
+    if not MICRO_GAIN_AUTO_OPEN:
+        log("[SLOW] MICRO_GAIN_AUTO_OPEN disabled, nothing to do")
+        return
+
+    if not PRIVATE_KEY or not WALLET_ADDRESS:
+        log("[SLOW] PRIVATE_KEY o WALLET_ADDRESS mancanti")
+        return
+
+    try:
+        from hyperliquid_trader import HyperLiquidTrader
+        import db_utils
+    except ImportError as e:
+        log(f"[SLOW] Errore import: {e}")
+        return
+
+    try:
+        # Connetti a Hyperliquid
+        bot = HyperLiquidTrader(
+            secret_key=PRIVATE_KEY,
+            account_address=WALLET_ADDRESS,
+            testnet=TESTNET
+        )
+
+        # Ottieni posizioni aperte
+        account_status = bot.get_account_status()
+        positions = account_status.get("open_positions", [])
+        existing_symbols = [p.get("symbol") for p in positions]
+
+        log(f"[SLOW] Posizioni aperte: {len(positions)}/{MICRO_GAIN_MAX_POSITIONS}")
+
+        # === CHECK MICRO_GAIN AUTO-OPEN ===
+        if len(positions) < MICRO_GAIN_MAX_POSITIONS:
+            log(f"[SLOW] 🔍 Calcolo score e check opportunità...")
+
+            # Segnala a FAST che SLOW è attivo (evita conflitti)
+            if SENTINEL_LOCK_ENABLED:
+                for symbol in ENABLED_SYMBOLS:
+                    signal_slow_active(symbol, True)
+
+            try:
+                check_and_open_micro_gain(bot, existing_symbols)
+            finally:
+                # Rilascia segnale SLOW attivo
+                if SENTINEL_LOCK_ENABLED:
+                    for symbol in ENABLED_SYMBOLS:
+                        signal_slow_active(symbol, False)
+
+        # === CHECK MICRO_GAIN REVERSAL (per posizioni esistenti) ===
+        for pos in positions:
+            symbol = pos.get("symbol", "")
+            tracking_data = db_utils.get_position_tracking(symbol)
+            trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+
+            if trading_mode == "MICRO_GAIN" and tracking_data:
+                micro_gain_result = check_micro_gain_reversal(pos, tracking_data)
+                if micro_gain_result.get("triggered"):
+                    log(f"[SLOW] ⚠️ {symbol}: Reversal detected (score={micro_gain_result.get('quick_score', 0):.1f})")
+
+        # === CHECK AI WAKE FOR NORMAL RANGE ===
+        log("[SLOW] 🤖 Check wake AI per range NORMAL...")
+        check_and_wake_ai_for_normal(bot, positions)
+
+    except Exception as e:
+        log(f"[SLOW] ❌ Errore: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def run_loop_slow(interval: int = None):
+    """Esegue SENTINEL-SLOW in loop continuo."""
+    interval = interval or SENTINEL_SLOW_INTERVAL
+
+    log(f"🧠 SENTINEL-SLOW avviato (intervallo: {interval}s)")
+    log(f"   Funzioni: Score calculation, AI validation, Position opening")
+    log(f"   Lock: {'ENABLED' if SENTINEL_LOCK_ENABLED else 'DISABLED (legacy mode)'}")
+    if DOUBLE_CHECK_AI_ENABLED:
+        log(f"   🔍 DOUBLE_CHECK_AI: enabled with TRADING_STYLE={TRADING_STYLE.upper()}")
+
+    try:
+        while True:
+            run_sentinel_slow()
+            log(f"[SLOW] 💤 Prossimo check tra {interval}s...")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        log("SENTINEL-SLOW interrotto (Ctrl+C)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sentinel - Monitoraggio trailing stop")
     parser.add_argument("--loop", action="store_true", help="Esegui in loop continuo")
     parser.add_argument("--interval", type=int, default=None, help="Intervallo in secondi (default: da .env)")
+    parser.add_argument("--mode", type=str, default="both", choices=["fast", "slow", "both"],
+                        help="Modalità: fast (price/SL), slow (score/AI), both (legacy)")
     args = parser.parse_args()
 
     print("=" * 50)
     print("🛡️  SENTINEL - Trailing Stop Monitor")
+    print(f"   Mode: {args.mode.upper()}")
     print("=" * 50)
 
     if args.loop:
-        run_loop(args.interval)
+        if args.mode == "fast":
+            run_loop_fast(args.interval)
+        elif args.mode == "slow":
+            run_loop_slow(args.interval)
+        else:
+            run_loop(args.interval)
     else:
-        run_sentinel_check()
+        if args.mode == "fast":
+            run_sentinel_fast()
+        elif args.mode == "slow":
+            run_sentinel_slow()
+        else:
+            run_sentinel_check()
 
 
 if __name__ == "__main__":
