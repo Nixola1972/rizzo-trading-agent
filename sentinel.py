@@ -612,6 +612,25 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
         else:
             adx_interpretation = "VERY STRONG TREND ✓✓"
 
+        # === NEW V2 INDICATORS ===
+        # Bollinger Bands
+        bollinger_data = indicators_data.get('bollinger', {})
+        bb_position = bollinger_data.get('position', 'UNKNOWN')
+        bb_bandwidth = bollinger_data.get('bandwidth', 0) or 0
+        bb_squeeze = bollinger_data.get('squeeze', False)
+        bb_percent_b = bollinger_data.get('percent_b', 0.5) or 0.5
+
+        # OBV Trend
+        obv_data = indicators_data.get('obv', {})
+        obv_trend = obv_data.get('trend', 'UNKNOWN')
+
+        # MACD Histogram Trend
+        macd_analysis = indicators_data.get('macd_analysis', {})
+        macd_hist_trend = macd_analysis.get('histogram_trend', 'UNKNOWN')
+
+        # EMA Alignment
+        ema_alignment = indicators_data.get('ema_alignment', 'NEUTRAL')
+
         # Extract derivatives data (OI, Funding)
         derivatives_data = indicators_data.get('derivatives', {})
         oi_val = derivatives_data.get('open_interest_latest', 0) or 0
@@ -621,6 +640,7 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
         # Log indicator values for visibility
         log(f"      📊 MACD: {macd_val:.4f} | RSI: {rsi_val:.1f} | ADX: {adx_val:.1f} ({adx_interpretation})")
         log(f"      💰 Price: ${price_val:,.2f} {price_vs_ema} EMA20 | Funding: {funding_pct:.4f}%")
+        log(f"      📊 BB: {bb_position} | OBV: {obv_trend} | MACD Hist: {macd_hist_trend} | EMA: {ema_alignment}")
 
         # === 2.5 BTC CORRELATION FILTER ===
         # Block trades on ALT coins if BTC is trending opposite direction
@@ -670,11 +690,18 @@ You are validating a proposed trade. Analyze the REAL DATA and decide if this tr
 
 ### CURRENT INDICATOR VALUES:
 - **MACD**: {macd_val:.4f} {"(BEARISH)" if macd_val < 0 else "(BULLISH)" if macd_val > 0 else "(NEUTRAL)"}
-- **RSI**: {rsi_val:.1f} {"(OVERSOLD)" if rsi_val < 30 else "(OVERBOUGHT)" if rsi_val > 70 else "(NEUTRAL)"}
+- **MACD Histogram**: {macd_hist_trend} {"(momentum growing)" if macd_hist_trend == "EXPANDING" else "(momentum fading)" if macd_hist_trend == "CONTRACTING" else ""}
+- **RSI**: {rsi_val:.1f} {"(OVERSOLD)" if rsi_val < 30 else "(OVERBOUGHT)" if rsi_val > 70 else "(BULLISH zone 55-70)" if 55 <= rsi_val <= 70 else "(BEARISH zone 30-45)" if 30 <= rsi_val <= 45 else "(NEUTRAL)"}
 - **ADX**: {adx_val:.1f} ({adx_interpretation})
 - **Price**: ${price_val:,.2f}
 - **EMA20**: ${ema20_val:,.2f}
 - **Price vs EMA20**: {price_vs_ema} {"✓ confirms SHORT" if price_vs_ema == "BELOW" and direction == "short" else "✓ confirms LONG" if price_vs_ema == "ABOVE" and direction == "long" else "⚠ does not confirm"}
+- **EMA Alignment**: {ema_alignment} {"✓ bullish structure" if ema_alignment == "GOLDEN_CROSS" else "✓ bearish structure" if ema_alignment == "DEATH_CROSS" else ""}
+
+### BOLLINGER BANDS & VOLUME:
+- **BB Position**: {bb_position} (%B={bb_percent_b:.2f}) {"✓ bullish breakout" if bb_position == "ABOVE_UPPER" else "⚠ bearish breakdown" if bb_position == "BELOW_LOWER" else "mild bullish" if bb_position == "UPPER_HALF" else "mild bearish" if bb_position == "LOWER_HALF" else ""}
+- **BB Bandwidth**: {bb_bandwidth:.2f}% {"⚠ SQUEEZE (low volatility → breakout expected)" if bb_squeeze else "(normal volatility)"}
+- **OBV Trend**: {obv_trend} {"✓ volume confirms uptrend" if obv_trend == "RISING" else "⚠ volume confirms downtrend" if obv_trend == "FALLING" else "(no volume confirmation)"}
 
 ### MARKET STRUCTURE:
 - **Open Interest**: ${oi_val:,.0f}
@@ -1387,15 +1414,12 @@ def check_score_confirmation(symbol: str, threshold: float) -> dict:
 
 def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
     """
-    Calcola lo score COMPLETO usando signal_scorer.py + sentiment cache.
+    Calcola lo score usando signal_scorer.py (V1 o V2) + sentiment cache.
 
-    Usa gli stessi pesi e logica di main.py per garantire coerenza:
-    - RSI: peso 15 (overbought/oversold)
-    - Trend (EMA+MACD): peso 10
-    - MACD solo: peso 5
-    - Fear & Greed: peso 8 (da cache DB)
-    - Volume: peso 4
-    - Forecast: skip (non disponibile nel sentinel)
+    V1: Logica binaria on/off
+    V2: Logica graduale con indicatori aggiuntivi (Bollinger, OBV, MACD Histogram, EMA Alignment)
+
+    Seleziona V1 o V2 tramite USE_SMART_SCORE_V2 in .env
 
     Args:
         symbol: Simbolo da analizzare
@@ -1403,12 +1427,15 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
 
     Returns:
         float: Score positivo = bullish, negativo = bearish
-               Range tipico: -40 a +40 (con F&G incluso)
+               Range tipico: -50 a +50 (con indicatori V2)
     """
     try:
         from indicators import CryptoTechnicalAnalysisHL
-        from signal_scorer import calculate_signal_score
+        from signal_scorer import calculate_signal_score, calculate_smart_score_v2
         import db_utils
+
+        # Check if V2 scoring is enabled
+        use_v2 = os.getenv("USE_SMART_SCORE_V2", "false").lower() == "true"
 
         analyzer = CryptoTechnicalAnalysisHL(testnet=TESTNET)
         data = analyzer.get_complete_analysis(symbol)
@@ -1428,11 +1455,22 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
         macd_array = intraday.get('macd', [0])
         macd = macd_array[-1] if macd_array else 0
 
+        macd_signal_array = intraday.get('macd_signal', [0])
+        macd_signal = macd_signal_array[-1] if macd_signal_array else 0
+
         ema_array = intraday.get('ema_20', [0])
         ema20 = ema_array[-1] if ema_array else 0
 
+        # EMA50 per V2
+        ema50_array = intraday.get('ema_50', [0])
+        ema50 = ema50_array[-1] if ema50_array else 0
+
         prices_array = intraday.get('mid_prices', [0])
         price = prices_array[-1] if prices_array else 0
+
+        # ADX per V2 filtering
+        adx_array = intraday.get('adx', [25])
+        adx = adx_array[-1] if adx_array else 25
 
         # Estrai volume dal data structure
         volume_str = data.get('volume', '')
@@ -1447,6 +1485,12 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
                 volume_ask = float(ask_str)
             except Exception:
                 pass
+
+        # === NUOVI INDICATORI V2 ===
+        bollinger_data = data.get('bollinger', {})
+        obv_data = data.get('obv', {})
+        macd_analysis = data.get('macd_analysis', {})
+        ema_alignment = data.get('ema_alignment', 'NEUTRAL')
 
         # Leggi Fear & Greed dalla cache (aggiornata da main.py ogni 15 min)
         fear_greed = 50  # Default neutral
@@ -1472,20 +1516,45 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
         if verbose:
             log(f"      📈 {symbol} Indicatori: RSI={rsi:.1f}, MACD={macd:.4f}, Price=${price:.2f}, EMA20=${ema20:.2f}")
             log(f"      📈 {symbol} F&G={fear_greed} ({fg_source}), Vol Bid={volume_bid:.1f}, Ask={volume_ask:.1f}")
+            if use_v2:
+                bb_pos = bollinger_data.get('position', 'N/A')
+                obv_trend = obv_data.get('trend', 'N/A')
+                log(f"      📈 {symbol} V2: ADX={adx:.1f}, BB={bb_pos}, OBV={obv_trend}, EMA={ema_alignment}")
 
-        # Usa calculate_signal_score per calcolo COMPLETO
-        # Forecast = 0 perché Prophet non è disponibile nel sentinel
-        score_result = calculate_signal_score(
-            price=price,
-            ema20=ema20,
-            rsi=rsi,
-            macd=macd,
-            fear_greed=fear_greed,
-            forecast_change_pct=0.0,  # Skip forecast nel sentinel
-            volume_bid=volume_bid,
-            volume_ask=volume_ask,
-            symbol=symbol  # Per volume smoothing history
-        )
+        # Seleziona scorer V1 o V2
+        if use_v2:
+            score_result = calculate_smart_score_v2(
+                price=price,
+                ema20=ema20,
+                ema50=ema50,
+                rsi=rsi,
+                macd=macd,
+                macd_signal=macd_signal,
+                fear_greed=fear_greed,
+                forecast_change_pct=0.0,  # Skip forecast nel sentinel
+                volume_bid=volume_bid,
+                volume_ask=volume_ask,
+                symbol=symbol,
+                # Nuovi indicatori V2
+                bollinger=bollinger_data,
+                obv_trend=obv_data.get('trend'),
+                macd_histogram_trend=macd_analysis.get('histogram_trend'),
+                ema_alignment=ema_alignment,
+                adx=adx
+            )
+        else:
+            # V1: Logica originale
+            score_result = calculate_signal_score(
+                price=price,
+                ema20=ema20,
+                rsi=rsi,
+                macd=macd,
+                fear_greed=fear_greed,
+                forecast_change_pct=0.0,
+                volume_bid=volume_bid,
+                volume_ask=volume_ask,
+                symbol=symbol
+            )
 
         net_score = score_result.get('net_score', 0.0)
 
@@ -1497,7 +1566,11 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
                 dir_sign = "+" if s.get('direction') == 'BULLISH' else "-"
                 signal_details.append(f"{s.get('indicator')}={dir_sign}{s.get('contribution'):.1f}")
 
-            log(f"      📊 {symbol} Score: bull={score_result.get('score_bullish'):.1f} bear={score_result.get('score_bearish'):.1f}")
+            version_tag = "V2" if use_v2 else "V1"
+            adx_mult = score_result.get('adx_multiplier', 1.0)
+            adx_note = f" (ADX mult={adx_mult:.2f})" if use_v2 and adx_mult < 1.0 else ""
+
+            log(f"      📊 {symbol} [{version_tag}] Score: bull={score_result.get('score_bullish'):.1f} bear={score_result.get('score_bearish'):.1f}{adx_note}")
             if signal_details:
                 log(f"      📊 {symbol} Signals: {' | '.join(signal_details)}")
             log(f"      📊 {symbol} Net Score (raw): {net_score:+.1f} → {score_result.get('direction')}")

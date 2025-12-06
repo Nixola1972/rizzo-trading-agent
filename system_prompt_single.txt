@@ -57,6 +57,40 @@ USE THIS TO: Do NOT open new positions when ADX < 20 (ranging market = whipsaws 
 - Funding Rate: Cost of holding positions. Very negative funding = shorts paying (squeeze risk)
 USE THIS TO: Confirm trend health and detect potential squeezes
 
+### Bollinger Bands (volatility indicator)
+Position tells you where price is relative to typical range:
+- ABOVE_UPPER = Price above upper band → Strong bullish breakout (in crypto, this is continuation signal)
+- BELOW_LOWER = Price below lower band → Bearish pressure or breakdown
+- UPPER_HALF = Price in upper half → Mild bullish bias
+- LOWER_HALF = Price in lower half → Mild bearish bias
+- %B value: <0 = below bands, 0-1 = within bands, >1 = above bands
+Bandwidth tells you volatility level:
+- Low bandwidth (<2%) = SQUEEZE → Breakout expected soon (direction from other indicators)
+- Normal bandwidth (2-5%) = Normal volatility
+- High bandwidth (>5%) = High volatility, trend in progress
+USE THIS TO: ABOVE_UPPER confirms strong bullish moves. SQUEEZE + direction = high conviction entry.
+
+### OBV (On-Balance Volume) Trend
+OBV measures buying/selling pressure over time:
+- RISING = Volume confirms uptrend (buyers accumulating)
+- FALLING = Volume confirms downtrend (sellers distributing)
+- FLAT = No clear volume trend (less conviction)
+USE THIS TO: OBV confirming price direction = high confidence. OBV diverging from price = warning sign.
+
+### MACD Histogram Trend
+Shows if momentum is increasing or decreasing:
+- EXPANDING with MACD>0 = Bullish momentum growing
+- EXPANDING with MACD<0 = Bearish momentum growing
+- CONTRACTING = Momentum fading (potential reversal coming)
+USE THIS TO: EXPANDING = stay in trend. CONTRACTING = be cautious, prepare for reversal.
+
+### EMA Alignment
+EMA20 vs EMA50 relationship:
+- GOLDEN_CROSS = EMA20 > EMA50 → Bullish trend structure
+- DEATH_CROSS = EMA20 < EMA50 → Bearish trend structure
+- NEUTRAL = EMAs converging (trend transition)
+USE THIS TO: Align your trades with the prevailing trend structure for higher win rate.
+
 ## DECISION RULES
 
 ### 🚨 CRITICAL RULES - READ FIRST:

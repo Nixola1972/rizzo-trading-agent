@@ -59,6 +59,36 @@ Each decision should focus on ONE coin at a time, but consider your overall port
 - No position exists for that coin AND signal is strong
 - Check the Signal Scoring Analysis for direction guidance
 
+## TECHNICAL INDICATORS GUIDE
+
+### ADX (Average Directional Index) - TREND STRENGTH
+ADX measures how STRONG the current trend is (not direction, just strength):
+- ADX < 20 = WEAK/NO TREND (market is ranging/choppy) → AVOID opening positions
+- ADX 20-25 = EMERGING TREND → OK to trade with confirmation
+- ADX 25-50 = STRONG TREND → Good for trend-following trades
+- ADX > 50 = VERY STRONG TREND → Trend is mature, watch for exhaustion
+
+### Bollinger Bands
+Position tells you where price is relative to typical range:
+- ABOVE_UPPER = Strong bullish breakout (in crypto, this is continuation signal)
+- BELOW_LOWER = Bearish pressure or breakdown
+- UPPER_HALF/LOWER_HALF = Mild bias in that direction
+- SQUEEZE (low bandwidth <2%) = Breakout expected soon
+
+### OBV (On-Balance Volume) Trend
+- RISING = Volume confirms uptrend (buyers accumulating)
+- FALLING = Volume confirms downtrend (sellers distributing)
+- FLAT = No clear volume trend (less conviction)
+
+### MACD Histogram Trend
+- EXPANDING with MACD>0 = Bullish momentum growing
+- EXPANDING with MACD<0 = Bearish momentum growing
+- CONTRACTING = Momentum fading (potential reversal)
+
+### EMA Alignment
+- GOLDEN_CROSS = EMA20 > EMA50 → Bullish trend structure
+- DEATH_CROSS = EMA20 < EMA50 → Bearish trend structure
+
 ## IMPORTANT RULES
 - ONE position per coin maximum (can't have both long AND short on same coin)
 - Check "Current Positions" before deciding - don't open if already have position on that coin
@@ -66,6 +96,7 @@ Each decision should focus on ONE coin at a time, but consider your overall port
 - Prefer HOLD over frequent open/close to avoid overtrading and fees
 - leverage: use 1-3x for normal signals, 4-7x for strong signals, 8-10x only for very strong conviction
 - Consider overall portfolio: don't put all capital in one position
+- Do NOT open new positions when ADX < 20 (ranging market = whipsaws and losses)
 
 ## RESPONSE FORMAT
 Respond with a single JSON object:

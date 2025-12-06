@@ -142,6 +142,97 @@ class CryptoTechnicalAnalysisHL:
         adx_indicator = ta.trend.ADXIndicator(high, low, close, window=period)
         return adx_indicator.adx()
 
+    def calculate_bollinger_bands(
+        self, close: pd.Series, period: int = 20, std_dev: float = 2.0
+    ) -> Dict[str, pd.Series]:
+        """
+        Calculate Bollinger Bands.
+
+        Returns dict with:
+        - upper: Upper band (SMA + std_dev * STD)
+        - middle: Middle band (SMA)
+        - lower: Lower band (SMA - std_dev * STD)
+        - bandwidth: (upper - lower) / middle * 100 (volatility measure)
+        - percent_b: (price - lower) / (upper - lower) (position within bands)
+        """
+        bb = ta.volatility.BollingerBands(close, window=period, window_dev=std_dev)
+        upper = bb.bollinger_hband()
+        middle = bb.bollinger_mavg()
+        lower = bb.bollinger_lband()
+
+        # Bandwidth: misura la volatilità (bande strette = squeeze)
+        bandwidth = ((upper - lower) / middle) * 100
+
+        # Percent B: dove si trova il prezzo rispetto alle bande (0 = lower, 1 = upper)
+        percent_b = (close - lower) / (upper - lower)
+
+        return {
+            'upper': upper,
+            'middle': middle,
+            'lower': lower,
+            'bandwidth': bandwidth,
+            'percent_b': percent_b
+        }
+
+    def calculate_obv(self, close: pd.Series, volume: pd.Series) -> pd.Series:
+        """
+        Calculate On-Balance Volume (OBV).
+
+        OBV is a cumulative indicator that adds volume on up days
+        and subtracts volume on down days.
+
+        Rising OBV = buying pressure (accumulation)
+        Falling OBV = selling pressure (distribution)
+        OBV divergence from price = potential reversal signal
+        """
+        return ta.volume.OnBalanceVolumeIndicator(close, volume).on_balance_volume()
+
+    def get_obv_trend(self, obv_series: pd.Series, periods: int = 5) -> str:
+        """
+        Determine OBV trend direction.
+
+        Returns: 'RISING', 'FALLING', or 'FLAT'
+        """
+        if len(obv_series) < periods:
+            return 'FLAT'
+
+        recent = obv_series.tail(periods)
+        first_val = recent.iloc[0]
+        last_val = recent.iloc[-1]
+
+        if first_val == 0:
+            return 'FLAT'
+
+        change_pct = (last_val - first_val) / abs(first_val) * 100
+
+        if change_pct > 2:
+            return 'RISING'
+        elif change_pct < -2:
+            return 'FALLING'
+        else:
+            return 'FLAT'
+
+    def get_macd_histogram_trend(self, macd_hist_series: pd.Series, periods: int = 3) -> str:
+        """
+        Determine MACD histogram trend (acceleration/deceleration).
+
+        Returns: 'EXPANDING', 'CONTRACTING', or 'FLAT'
+        """
+        if len(macd_hist_series) < periods:
+            return 'FLAT'
+
+        recent = macd_hist_series.tail(periods).tolist()
+
+        # Check if bars are getting larger (in absolute terms) or smaller
+        abs_recent = [abs(x) for x in recent]
+
+        if abs_recent[-1] > abs_recent[0] * 1.1:  # 10% larger
+            return 'EXPANDING'
+        elif abs_recent[-1] < abs_recent[0] * 0.9:  # 10% smaller
+            return 'CONTRACTING'
+        else:
+            return 'FLAT'
+
     def calculate_pivot_points(
         self, high: float, low: float, close: float
     ) -> Dict[str, float]:
@@ -352,11 +443,25 @@ class CryptoTechnicalAnalysisHL:
         df_15m = self.fetch_ohlcv(coin, "15m", limit=200)
 
         df_15m["ema_20"] = self.calculate_ema(df_15m["close"], 20)
+        df_15m["ema_50"] = self.calculate_ema(df_15m["close"], 50)  # NEW: EMA50 per alignment
         macd_line, signal_line, macd_diff = self.calculate_macd(df_15m["close"])
         df_15m["macd"] = macd_diff
+        df_15m["macd_line"] = macd_line      # NEW: MACD line per analisi
+        df_15m["macd_signal"] = signal_line  # NEW: Signal line
         df_15m["rsi_7"] = self.calculate_rsi(df_15m["close"], 7)
         df_15m["rsi_14"] = self.calculate_rsi(df_15m["close"], 14)
         df_15m["adx"] = self.calculate_adx(df_15m["high"], df_15m["low"], df_15m["close"], 14)
+
+        # NEW: Bollinger Bands
+        bb = self.calculate_bollinger_bands(df_15m["close"], period=20, std_dev=2.0)
+        df_15m["bb_upper"] = bb['upper']
+        df_15m["bb_middle"] = bb['middle']
+        df_15m["bb_lower"] = bb['lower']
+        df_15m["bb_bandwidth"] = bb['bandwidth']
+        df_15m["bb_percent_b"] = bb['percent_b']
+
+        # NEW: OBV (On-Balance Volume)
+        df_15m["obv"] = self.calculate_obv(df_15m["close"], df_15m["volume"])
 
         last_10_15m = df_15m.tail(10)
 
@@ -378,6 +483,10 @@ class CryptoTechnicalAnalysisHL:
 
         avg_volume = longer_term["volume"].tail(20).mean()
         last_10_longer = longer_term.tail(10)
+
+        # NEW: Calcola trend OBV e MACD histogram
+        obv_trend = self.get_obv_trend(df_15m["obv"], periods=5)
+        macd_hist_trend = self.get_macd_histogram_trend(df_15m["macd"], periods=3)
 
         # 3) PIVOT POINTS daily
         df_daily = self.fetch_ohlcv(coin, "1d", limit=2)
@@ -401,19 +510,67 @@ class CryptoTechnicalAnalysisHL:
         current_15m = df_15m.iloc[-1]
         current_longer = longer_term.iloc[-1]
 
+        # Determina posizione prezzo rispetto a Bollinger
+        bb_position = "MIDDLE"
+        if current_15m["close"] > current_15m["bb_upper"]:
+            bb_position = "ABOVE_UPPER"
+        elif current_15m["close"] < current_15m["bb_lower"]:
+            bb_position = "BELOW_LOWER"
+        elif current_15m["close"] > current_15m["bb_middle"]:
+            bb_position = "UPPER_HALF"
+        else:
+            bb_position = "LOWER_HALF"
+
+        # Determina EMA alignment (Golden/Death Cross)
+        ema_alignment = "NEUTRAL"
+        if current_15m["ema_20"] > current_15m["ema_50"]:
+            ema_alignment = "GOLDEN_CROSS"
+        elif current_15m["ema_20"] < current_15m["ema_50"]:
+            ema_alignment = "DEATH_CROSS"
+
         result = {
             "ticker": ticker,
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            
+
             "current": {
                 "price": current_15m["close"],
                 "ema20": current_15m["ema_20"],
+                "ema50": current_15m["ema_50"],  # NEW
                 "macd": current_15m["macd"],
+                "macd_line": current_15m["macd_line"],  # NEW
+                "macd_signal": current_15m["macd_signal"],  # NEW
                 "rsi_7": current_15m["rsi_7"],
+                "rsi_14": current_15m["rsi_14"],  # NEW: aggiunto anche rsi_14 a current
                 "adx": current_15m["adx"],
             },
             "volume": self.get_orderbook_volume(ticker),
             "pivot_points": pivot_points,
+
+            # NEW: Bollinger Bands section
+            "bollinger": {
+                "upper": current_15m["bb_upper"],
+                "middle": current_15m["bb_middle"],
+                "lower": current_15m["bb_lower"],
+                "bandwidth": current_15m["bb_bandwidth"],
+                "percent_b": current_15m["bb_percent_b"],
+                "position": bb_position,
+                "squeeze": current_15m["bb_bandwidth"] < 2.0,  # Squeeze se bandwidth < 2%
+            },
+
+            # NEW: OBV section
+            "obv": {
+                "current": current_15m["obv"],
+                "trend": obv_trend,
+            },
+
+            # NEW: MACD histogram trend
+            "macd_analysis": {
+                "histogram_trend": macd_hist_trend,
+                "line_above_signal": current_15m["macd_line"] > current_15m["macd_signal"],
+            },
+
+            # NEW: EMA alignment
+            "ema_alignment": ema_alignment,
 
             "derivatives": {
                 "open_interest_latest": oi_data["latest"],
@@ -425,10 +582,15 @@ class CryptoTechnicalAnalysisHL:
             "intraday": {
                 "mid_prices": last_10_15m["close"].tolist(),
                 "ema_20": last_10_15m["ema_20"].tolist(),
+                "ema_50": last_10_15m["ema_50"].tolist(),  # NEW
                 "macd": last_10_15m["macd"].tolist(),
                 "rsi_7": last_10_15m["rsi_7"].tolist(),
                 "rsi_14": last_10_15m["rsi_14"].tolist(),
                 "adx": last_10_15m["adx"].tolist(),
+                "bb_upper": last_10_15m["bb_upper"].tolist(),  # NEW
+                "bb_lower": last_10_15m["bb_lower"].tolist(),  # NEW
+                "bb_bandwidth": last_10_15m["bb_bandwidth"].tolist(),  # NEW
+                "obv": last_10_15m["obv"].tolist(),  # NEW
             },
 
             "longer_term_15m": {
