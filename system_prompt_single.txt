@@ -92,7 +92,7 @@ Respond with ONLY a JSON object:
 ```json
 {{
   "operation": "open|close|hold",
-  "symbol": "BTC|ETH|SOL",
+  "symbol": "<the symbol from context>",
   "direction": "long|short",
   "target_portion_of_balance": 0.25,
   "leverage": 3,

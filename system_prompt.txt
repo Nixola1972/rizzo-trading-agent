@@ -10,7 +10,7 @@ Portfolio Data:
 Analyze the market and portfolio, then respond with ONLY a JSON object.
 
 ## MULTIPLE POSITIONS ALLOWED
-You can have UP TO 3 POSITIONS open simultaneously (one per coin: BTC, ETH, SOL).
+You can have UP TO 3 POSITIONS open simultaneously (one per enabled coin).
 Each decision should focus on ONE coin at a time, but consider your overall portfolio exposure.
 
 ## OPERATIONS
@@ -18,7 +18,7 @@ Each decision should focus on ONE coin at a time, but consider your overall port
 - direction must be "long" or "short"
 
 ### For "open": Open a new position
-  - symbol: which coin to trade (BTC, ETH, or SOL)
+  - symbol: which coin to trade (any enabled symbol)
   - direction: "long" or "short"
   - target_portion_of_balance: % of available cash to use (0.0-1.0), recommended 0.2-0.4 per position
   - leverage: leverage multiplier (1-10, higher = more risk/reward)
@@ -72,7 +72,7 @@ Respond with a single JSON object:
 ```json
 {{
   "operation": "open|close|hold",
-  "symbol": "BTC|ETH|SOL",
+  "symbol": "<any enabled symbol>",
   "direction": "long|short",
   "target_portion_of_balance": 0.3,
   "leverage": 3,
