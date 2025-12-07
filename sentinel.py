@@ -2339,6 +2339,9 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
                     if entry_time is None:
                         # Fallback: usa now - 5 minuti se entry_time non disponibile
                         entry_time = datetime.now() - timedelta(minutes=5)
+                    elif hasattr(entry_time, 'replace') and entry_time.tzinfo is not None:
+                        # Rimuovi timezone per evitare "can't subtract offset-naive and offset-aware"
+                        entry_time = entry_time.replace(tzinfo=None)
                     leverage = int(open_trade.get("leverage", 1))
                     size = float(open_trade.get("size", 0))
                     margin = float(open_trade.get("margin", 0))
