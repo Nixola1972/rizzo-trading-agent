@@ -60,6 +60,16 @@ except ImportError:
     MAX_TRADES_PER_DAY = int(os.getenv('MAX_TRADES_PER_DAY', '30'))
     print(f"[SENTINEL] ⚠️ risk_config non trovato, uso env: Symbols={ENABLED_SYMBOLS}")
 
+# Smart Exit Optimizer - Import opzionale
+try:
+    import smart_exit
+    SMART_EXIT_AVAILABLE = True
+    print(f"[SENTINEL] ✅ smart_exit: Enabled={smart_exit.SMART_EXIT_ENABLED}")
+except ImportError:
+    SMART_EXIT_AVAILABLE = False
+    smart_exit = None
+    print("[SENTINEL] ⚠️ smart_exit non disponibile")
+
 # Configurazione
 SENTINEL_ENABLED = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
 SENTINEL_INTERVAL = int(os.getenv('SENTINEL_INTERVAL_SECONDS', '60'))
@@ -2395,6 +2405,10 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
             for key in [sl_key_micro, sl_key_normal, sl_key_micropay]:
                 if key in _current_sl_level:
                     del _current_sl_level[key]
+
+            # Pulisci Smart Exit price history
+            if SMART_EXIT_AVAILABLE:
+                smart_exit.clear_price_history(symbol)
 
     except Exception as e:
         log(f"⚠️ Errore detect_externally_closed_positions: {e}")
@@ -4919,6 +4933,41 @@ def run_sentinel_fast():
             trailing_status = "ACTIVE" if result.get("trailing_active") else "inactive"
             log(f"   [FAST] {symbol}: {direction.upper()} P&L={pnl_pct:+.2f}% trailing={trailing_status}")
 
+            # === SMART EXIT ANALYSIS ===
+            if SMART_EXIT_AVAILABLE and smart_exit.SMART_EXIT_ENABLED:
+                try:
+                    # Ottieni entry_time dal tracking
+                    entry_time = tracking_data.get("entry_time")
+                    if entry_time:
+                        if isinstance(entry_time, datetime):
+                            entry_timestamp = entry_time.timestamp()
+                        else:
+                            entry_timestamp = float(entry_time)
+                    else:
+                        entry_timestamp = time.time() - 300  # Default: 5 min fa
+
+                    # Chiama Smart Exit Optimizer
+                    smart_rec = smart_exit.get_smart_exit_recommendation(
+                        symbol=symbol,
+                        direction=direction,
+                        entry_price=entry_price,
+                        current_price=mark_price,
+                        position_size=position_size,
+                        leverage=pos_leverage,
+                        entry_time=entry_timestamp,
+                        market_indicators=None,  # TODO: passare indicatori dal SLOW loop
+                        funding_rate=0.0  # TODO: fetch funding rate
+                    )
+
+                    # Log raccomandazione
+                    if smart_rec.get("enabled"):
+                        smart_log = smart_exit.format_smart_exit_log(smart_rec, symbol)
+                        if smart_log:
+                            log(smart_log)
+
+                except Exception as e:
+                    log(f"   [SMART] ⚠️ Errore: {e}")
+
             # Se trailing/SL triggered, gestisci chiusura
             if result.get("triggered"):
                 _handle_position_close(bot, pos, tracking_data, "CLOSE_TRAILING_STOP", result.get("reason", "Trailing Stop"))
@@ -4964,6 +5013,11 @@ def _handle_position_close(bot, pos, tracking_data, action_taken, reason):
 
     try:
         log(f"   [FAST] 🔻 {symbol}: Chiusura per {action_taken}")
+
+        # Pulisci Smart Exit price history
+        if SMART_EXIT_AVAILABLE:
+            smart_exit.clear_price_history(symbol)
+
         # La chiusura effettiva viene gestita dall'ordine SL su exchange
         # Qui aggiorniamo solo tracking se necessario
     except Exception as e:
