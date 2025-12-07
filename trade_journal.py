@@ -292,6 +292,20 @@ def calculate_fees(notional_value: Decimal, is_taker: bool = True) -> Decimal:
     return notional_value * rate
 
 
+def _to_native_float(value):
+    """Convert numpy types to native Python float for PostgreSQL compatibility."""
+    if value is None:
+        return None
+    return float(value)
+
+
+def _to_native_int(value):
+    """Convert numpy types to native Python int for PostgreSQL compatibility."""
+    if value is None:
+        return None
+    return int(value)
+
+
 def open_trade(
     symbol: str,
     direction: str,
@@ -321,6 +335,19 @@ def open_trade(
     Open a new trade and record it in the journal.
     Returns the trade_uuid.
     """
+    # Convert numpy types to native Python types for PostgreSQL
+    score = _to_native_float(score)
+    rsi = _to_native_float(rsi)
+    macd = _to_native_float(macd)
+    fg = _to_native_int(fg)
+    volume_ratio = _to_native_float(volume_ratio)
+    sl_percent = _to_native_float(sl_percent)
+    tp_percent = _to_native_float(tp_percent)
+    trailing_activation = _to_native_float(trailing_activation)
+    trailing_gap = _to_native_float(trailing_gap)
+    price_vs_ema20 = _to_native_float(price_vs_ema20)
+    atr = _to_native_float(atr)
+
     trade_uuid = str(uuid.uuid4())
 
     entry_price_dec = Decimal(str(entry_price))
