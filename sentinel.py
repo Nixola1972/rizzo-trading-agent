@@ -4066,6 +4066,26 @@ def run_order_verification(bot, positions: list) -> dict:
 
         trading_mode = tracking_data.get("trading_mode", "NORMAL")
 
+        # === PROTEZIONE RACE CONDITION: Skip verifiche per posizioni appena aperte ===
+        # Se la posizione è stata aperta da meno di 60 secondi, NON verificare/correggere SL
+        # Questo evita che valori stale in _current_sl_level sovrascrivano SL corretti
+        created_at = tracking_data.get("created_at") or tracking_data.get("entry_time")
+        if created_at:
+            try:
+                from datetime import datetime as dt_check
+                if isinstance(created_at, str):
+                    created_dt = dt_check.fromisoformat(created_at.replace('Z', '+00:00').replace('+00:00', ''))
+                else:
+                    created_dt = created_at
+                if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
+                    created_dt = created_dt.replace(tzinfo=None)
+                age_seconds = (dt_check.now() - created_dt).total_seconds()
+                if age_seconds < 60:
+                    log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica SL (< 60s)")
+                    continue
+            except Exception as e:
+                log(f"   ⚠️ {symbol}: Errore calcolo età posizione: {e}")
+
         # Recupera current_sl_level dalla memoria (aggiornato dal trailing)
         # La chiave dipende dal trading_mode:
         # - MICRO_GAIN: symbol (es. "SOL")
@@ -5052,19 +5072,41 @@ def run_sentinel_fast():
 
             trading_mode = tracking_data.get("trading_mode", "NORMAL")
 
+            # === PROTEZIONE RACE CONDITION: Skip SL update per posizioni appena aperte ===
+            # Se la posizione è stata aperta da meno di 30 secondi, NON aggiornare SL
+            # Questo evita che initialize_micro_gain_sl_level usi valori stale
+            position_age_ok = True
+            created_at = tracking_data.get("created_at") or tracking_data.get("entry_time")
+            if created_at:
+                try:
+                    from datetime import datetime as dt_fast
+                    if isinstance(created_at, str):
+                        created_dt = dt_fast.fromisoformat(created_at.replace('Z', '+00:00').replace('+00:00', ''))
+                    else:
+                        created_dt = created_at
+                    if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
+                        created_dt = created_dt.replace(tzinfo=None)
+                    age_seconds = (dt_fast.now() - created_dt).total_seconds()
+                    if age_seconds < 30:
+                        log(f"   [FAST] ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip SL update (< 30s)")
+                        position_age_ok = False
+                except Exception as e:
+                    pass  # In caso di errore, procedi normalmente
+
             # === CHECK TAKE PROFIT ===
             tp_result = check_take_profit(pos)
             pnl_pct = tp_result.get("pnl_pct", 0)
 
             # === CHECK/UPDATE SL (con lock per evitare conflitti con SLOW) ===
-            if SENTINEL_LOCK_ENABLED:
-                with SentinelLock(symbol, "sl_update", "FAST") as lock:
-                    if lock.acquired:
-                        _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, mark_price, position_size, pos_leverage)
-                    else:
-                        log(f"   [FAST] {symbol}: SL update skipped (SLOW has lock)")
-            else:
-                _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, mark_price, position_size, pos_leverage)
+            if position_age_ok:  # Skip se posizione troppo recente
+                if SENTINEL_LOCK_ENABLED:
+                    with SentinelLock(symbol, "sl_update", "FAST") as lock:
+                        if lock.acquired:
+                            _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, mark_price, position_size, pos_leverage)
+                        else:
+                            log(f"   [FAST] {symbol}: SL update skipped (SLOW has lock)")
+                else:
+                    _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, mark_price, position_size, pos_leverage)
 
             # === CHECK TRAILING STOP TRIGGER ===
             result = check_trailing_stop(pos, tracking_data)
