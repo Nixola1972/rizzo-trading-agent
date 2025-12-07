@@ -1882,6 +1882,9 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
         size: Size della posizione
         leverage: Leva effettiva della posizione (se None usa MICRO_GAIN_LEVERAGE)
     """
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
+
     try:
         # Usa la leva passata o il default
         actual_leverage = leverage if leverage is not None else MICRO_GAIN_LEVERAGE
@@ -1948,6 +1951,9 @@ def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price
         bool: True se il livello è stato inizializzato/trovato
     """
     global _current_sl_level
+
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
 
     # Se già esiste, non fare nulla
     if symbol in _current_sl_level:
@@ -2160,6 +2166,9 @@ def place_micro_pay_sl_order(bot, symbol: str, direction: str, entry_price: floa
         size: Size della posizione
         leverage: Leva effettiva della posizione (se None usa MICRO_PAY_LEVERAGE)
     """
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
+
     try:
         # Usa la leva passata o il default
         actual_leverage = leverage if leverage is not None else MICRO_PAY_LEVERAGE
@@ -2447,6 +2456,9 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
     """
     global _current_sl_level
 
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
+
     # Se trailing disabilitato, esci subito
     if MICRO_GAIN_TRAILING_MODE == "disable":
         return False
@@ -2660,6 +2672,9 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
     """
     global _current_sl_level
 
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
+
     if not NORMAL_TRAILING_ENABLED:
         return False
 
@@ -2835,6 +2850,9 @@ def place_normal_initial_sl(bot, symbol: str, direction: str, entry_price: float
         size: Size della posizione
         leverage: Leva usata
     """
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
+
     if not NORMAL_TRAILING_ENABLED:
         return False
 
@@ -2947,6 +2965,9 @@ def calculate_expected_sl_price(entry_price: float, direction: str, leverage: fl
         trading_mode: 'MICRO_GAIN', 'MICRO_PAY' o 'NORMAL'
         current_sl_level: Livello SL corrente in % (es. -5.0 o +0.6). Se None, usa il default.
     """
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
+
     # Determina la leva da usare
     if trading_mode == "MICRO_GAIN":
         lev = MICRO_GAIN_LEVERAGE
@@ -3007,6 +3028,9 @@ def verify_sl_order_complete(bot, symbol: str, direction: str, entry_price: floa
             - issues: list - lista problemi rilevati
             - error: str - messaggio errore se c'è problema
     """
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
+
     result = {
         "exists": False,
         "is_trigger": False,
@@ -3133,6 +3157,9 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
     Returns:
         dict con status della verifica/fix
     """
+    # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
+    direction = direction.lower()
+
     import telegram_notifier as tg
 
     result = {

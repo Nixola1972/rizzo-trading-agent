@@ -162,24 +162,55 @@ Nei log Smart Exit, il tempo in posizione ora riflette la durata reale:
 
 ---
 
-## 2025-12-07: Fix Direction Case-Sensitivity Bug
+## 2025-12-07: Fix Direction Case-Sensitivity Bug (COMPLETO)
 
 ### Problema
-Potenziale bug critico: il confronto `direction == "long"` falliva se Hyperliquid ritornava "Long" (maiuscolo).
-Questo poteva causare calcoli SL errati (calcolati come SHORT invece di LONG).
+**BUG CRITICO**: Il confronto `direction == "long"` falliva se Hyperliquid ritornava "Long" (maiuscolo).
+Questo causava il calcolo SL con formula SHORT invece di LONG:
+- Entry: $90,279 → SL errato: $90,312 (SOPRA entry per LONG!)
+- Posizione chiusa immediatamente dal SL sbagliato
 
 ### Causa
-In diverse funzioni, `direction` veniva estratto senza `.lower()`:
+**Root Cause identificata in `initialize_micro_gain_sl_level`:**
 ```python
-direction = pos.get("side", "")  # Poteva essere "Long" invece di "long"
+if direction == "long":  # Fallisce se direction="Long"!
+    price_diff_pct = ((trigger_price - entry_price) / entry_price) * 100
+else:
+    # ESEGUE FORMULA SHORT - calcola valore POSITIVO invece di negativo!
+    price_diff_pct = ((entry_price - trigger_price) / entry_price) * 100
+
+_current_sl_level[symbol] = calculated_sl_level  # Diventa POSITIVO!
 ```
 
-### Fix
-Aggiunto `.lower()` in tutte le estrazioni di direction:
-- `_update_sl_for_position` (line 5032)
-- `_handle_position_close` (line 5050)
-- SLOW loop (line 4375)
-- FAST loop (line 4893)
+`_current_sl_level` positivo → SL calcolato SOPRA entry price → trigger immediato
+
+### Fix (COMPLETO)
+Aggiunto `direction = direction.lower()` in TUTTE le funzioni critiche:
+
+**Funzioni che ricevono direction come parametro:**
+- `initialize_micro_gain_sl_level`
+- `calculate_expected_sl_price`
+- `verify_sl_order_complete`
+- `verify_and_fix_sl_order`
+- `place_micro_gain_sl_order`
+- `place_micro_pay_sl_order`
+- `update_micro_gain_sl_order`
+- `update_normal_sl_order`
+- `place_normal_initial_sl`
+
+**Punti di estrazione direction da position:**
+- `_update_sl_for_position`
+- `_handle_position_close`
+- SLOW loop
+- FAST loop
+
+### Come Verificare
+Lo SL per LONG deve essere SOTTO entry price:
+```
+Entry: $90,279 → SL corretto: ~$88,480 (sotto entry)
+```
+
+Se vedi SL SOPRA entry per LONG = bug ancora presente
 
 ---
 
