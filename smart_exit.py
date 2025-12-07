@@ -685,8 +685,15 @@ def get_smart_exit_recommendation(
     return result
 
 
-def format_smart_exit_log(recommendation: dict, symbol: str) -> str:
-    """Formatta il log per la raccomandazione smart exit."""
+def format_smart_exit_log(recommendation: dict, symbol: str, verbose: bool = True) -> str:
+    """
+    Formatta il log per la raccomandazione smart exit.
+
+    Args:
+        recommendation: Dict con metriche e raccomandazione
+        symbol: Simbolo
+        verbose: Se True, mostra tutti i calcoli dettagliati
+    """
     if not recommendation.get("enabled"):
         return ""
 
@@ -706,24 +713,66 @@ def format_smart_exit_log(recommendation: dict, symbol: str) -> str:
 
     # Colore per net P&L
     net_pnl = m.get("net_pnl_pct", 0)
+    gross_pnl = m.get("gross_pnl_pct", 0)
     pnl_indicator = "🟢" if net_pnl > 0.5 else "🟡" if net_pnl > 0 else "🔴"
 
     trend_indicator = "📈" if m.get("trend_aligned") else "📉"
 
-    # Step info
-    step_info = ""
-    if m.get("next_step_trigger", 0) > 0:
-        step_info = f" | Next@{m.get('next_step_trigger')}%→SL {m.get('next_step_sl')}%"
-
     log_lines = [
         f"   [SMART] {symbol}: {action_emoji} {action} ({confidence}%)",
-        f"           {pnl_indicator} Net: {net_pnl:+.2f}% | Gross: {m.get('gross_pnl_pct', 0):+.2f}% | Fees: ${m.get('fees_total_usd', 0):.2f}",
-        f"           {trend_indicator} Trend: {m.get('pos_trend_slope', 0):+.2f} (R²={m.get('trend_strength', 0):.2f}){step_info}",
     ]
 
-    if should_accelerate:
-        log_lines.append(f"           ⚡ ACCELERATE → SL a {recommendation.get('next_step_sl')}%")
+    if verbose:
+        # Linea 1: P&L dettagliato
+        fees = m.get("fees_total_usd", 0)
+        net_usd = m.get("net_pnl_usd", 0)
+        log_lines.append(
+            f"           {pnl_indicator} P&L: Gross {gross_pnl:+.2f}% → Net {net_pnl:+.2f}% (${net_usd:+.2f}) | Fees: ${fees:.2f}"
+        )
 
+        # Linea 2: Breakeven e tempo
+        be_price = m.get("breakeven_price", 0)
+        time_sec = m.get("time_in_position_sec", 0)
+        time_min = time_sec // 60
+        time_sec_rem = time_sec % 60
+        log_lines.append(
+            f"           💰 Breakeven: ${be_price:.2f} | ⏱️ In posizione: {time_min}m {time_sec_rem}s"
+        )
+
+        # Linea 3: Trend analysis
+        slope = m.get("pos_trend_slope", 0)
+        strength = m.get("trend_strength", 0)
+        history_size = m.get("price_history_size", 0)
+        aligned = "ALIGNED" if m.get("trend_aligned") else "AGAINST"
+        log_lines.append(
+            f"           {trend_indicator} Trend: slope={slope:+.3f} R²={strength:.2f} ({history_size} samples) [{aligned}]"
+        )
+
+        # Linea 4: Step info
+        current_sl = m.get("current_sl_pct", 0)
+        next_trigger = m.get("next_step_trigger", 0)
+        next_sl = m.get("next_step_sl", 0)
+        if next_trigger > 0:
+            log_lines.append(
+                f"           📊 SL attuale: {current_sl:+.1f}% | Prossimo step: @{next_trigger}% → SL {next_sl:+.1f}%"
+            )
+    else:
+        # Versione compatta
+        step_info = ""
+        if m.get("next_step_trigger", 0) > 0:
+            step_info = f" | Next@{m.get('next_step_trigger')}%→SL {m.get('next_step_sl')}%"
+        log_lines.append(
+            f"           {pnl_indicator} Net: {net_pnl:+.2f}% | Gross: {gross_pnl:+.2f}% | Fees: ${m.get('fees_total_usd', 0):.2f}"
+        )
+        log_lines.append(
+            f"           {trend_indicator} Trend: {m.get('pos_trend_slope', 0):+.2f} (R²={m.get('trend_strength', 0):.2f}){step_info}"
+        )
+
+    # Azione ACCELERATE
+    if should_accelerate:
+        log_lines.append(f"           ⚡ ESEGUO ACCELERATE → SL da {m.get('current_sl_pct', 0):+.1f}% a {recommendation.get('next_step_sl')}%")
+
+    # Reason
     log_lines.append(f"           💡 {reason}")
 
     return "\n".join(log_lines)
