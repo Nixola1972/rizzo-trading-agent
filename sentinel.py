@@ -1222,9 +1222,20 @@ def run_passive_sl_verification(bot, positions: list):
 
             trading_mode = tracking.get("trading_mode", "NORMAL")
 
+            # IMPORTANTE: Parse leverage REALE dalla posizione (può cambiare con leverage scaling)
+            leverage_raw = pos.get("leverage", 1)
+            if isinstance(leverage_raw, str):
+                import re
+                match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+                leverage = float(match.group(1)) if match else 1.0
+            else:
+                leverage = float(leverage_raw)
+
             # Determina SL atteso - USA current_sl_level se disponibile (trailing attivo)
             if trading_mode == "MICRO_GAIN":
-                leverage = MICRO_GAIN_LEVERAGE
+                # Usa leva reale, fallback al default solo se 0
+                if leverage <= 0:
+                    leverage = MICRO_GAIN_LEVERAGE
                 # Usa current_sl_level se disponibile (trailing potrebbe averlo modificato)
                 sl_key = symbol
                 current_sl_level = _current_sl_level.get(sl_key)
@@ -1233,17 +1244,12 @@ def run_passive_sl_verification(bot, positions: list):
                 else:
                     sl_pct = -MICRO_GAIN_STOP_LOSS_PERCENT
             elif trading_mode == "MICRO_PAY":
-                leverage = MICRO_PAY_LEVERAGE
+                # Usa leva reale, fallback al default solo se 0
+                if leverage <= 0:
+                    leverage = MICRO_PAY_LEVERAGE
                 sl_pct = -MICRO_PAY_STOP_LOSS_PERCENT
             else:
-                # Parse leverage dalla posizione
-                leverage_raw = pos.get("leverage", 1)
-                if isinstance(leverage_raw, str):
-                    import re
-                    match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
-                    leverage = float(match.group(1)) if match else 1.0
-                else:
-                    leverage = float(leverage_raw)
+                # Per NORMAL, leverage già parsato sopra
                 # Usa current_sl_level se disponibile
                 sl_key = f"{symbol}_NORMAL"
                 current_sl_level = _current_sl_level.get(sl_key)
@@ -3055,14 +3061,16 @@ def calculate_expected_sl_price(entry_price: float, direction: str, leverage: fl
     direction = direction.lower()
 
     # Determina la leva da usare
+    # IMPORTANTE: Usa SEMPRE la leva reale passata come parametro
+    # perché il leverage scaling può cambiarla durante la posizione
     if trading_mode == "MICRO_GAIN":
-        lev = MICRO_GAIN_LEVERAGE
+        lev = leverage if leverage > 0 else MICRO_GAIN_LEVERAGE
         default_sl_pct = MICRO_GAIN_STOP_LOSS_PERCENT
     elif trading_mode == "MICRO_PAY":
-        lev = MICRO_PAY_LEVERAGE
+        lev = leverage if leverage > 0 else MICRO_PAY_LEVERAGE
         default_sl_pct = MICRO_PAY_STOP_LOSS_PERCENT
     else:
-        lev = leverage
+        lev = leverage if leverage > 0 else 1.0  # Fallback a 1x se leverage non specificato
         default_sl_pct = NORMAL_STOP_LOSS_PERCENT
 
     # Usa current_sl_level se fornito, altrimenti il default
