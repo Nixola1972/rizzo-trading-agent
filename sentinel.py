@@ -4946,6 +4946,20 @@ def run_sentinel_fast():
                     else:
                         entry_timestamp = time.time() - 300  # Default: 5 min fa
 
+                    # Ottieni current SL level
+                    if trading_mode == "MICRO_GAIN":
+                        current_sl = _current_sl_level.get(symbol, -MICRO_GAIN_STOP_LOSS_PERCENT)
+                        trailing_steps = MICRO_GAIN_TRAILING_STEPS_STR
+                    elif trading_mode == "MICRO_PAY":
+                        current_sl = _current_sl_level.get(f"{symbol}_MICROPAY", -MICRO_PAY_STOP_LOSS_PERCENT)
+                        trailing_steps = ""  # MICRO_PAY non ha trailing steps
+                    else:
+                        current_sl = _current_sl_level.get(f"{symbol}_NORMAL", -NORMAL_STOP_LOSS_PERCENT)
+                        trailing_steps = NORMAL_TRAILING_STEPS_STR if NORMAL_TRAILING_MODE == "steps" else ""
+
+                    # Fetch funding rate (con cache)
+                    funding_rate = smart_exit.fetch_funding_rate(bot, symbol)
+
                     # Chiama Smart Exit Optimizer
                     smart_rec = smart_exit.get_smart_exit_recommendation(
                         symbol=symbol,
@@ -4955,8 +4969,10 @@ def run_sentinel_fast():
                         position_size=position_size,
                         leverage=pos_leverage,
                         entry_time=entry_timestamp,
+                        current_sl_pct=current_sl,
+                        trailing_steps=trailing_steps,
                         market_indicators=None,  # TODO: passare indicatori dal SLOW loop
-                        funding_rate=0.0  # TODO: fetch funding rate
+                        funding_rate=funding_rate
                     )
 
                     # Log raccomandazione
@@ -4964,6 +4980,15 @@ def run_sentinel_fast():
                         smart_log = smart_exit.format_smart_exit_log(smart_rec, symbol)
                         if smart_log:
                             log(smart_log)
+
+                        # Se should_accelerate è True, anticipa lo step
+                        if smart_rec.get("should_accelerate") and smart_rec.get("next_step_sl") is not None:
+                            next_sl = smart_rec.get("next_step_sl")
+                            log(f"   [SMART] ⚡ Accelerando SL da {current_sl:+.1f}% a {next_sl:+.1f}%")
+                            if trading_mode == "MICRO_GAIN":
+                                _current_sl_level[symbol] = next_sl
+                            elif trading_mode == "NORMAL":
+                                _current_sl_level[f"{symbol}_NORMAL"] = next_sl
 
                 except Exception as e:
                     log(f"   [SMART] ⚠️ Errore: {e}")

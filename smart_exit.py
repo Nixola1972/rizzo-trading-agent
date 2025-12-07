@@ -1,32 +1,46 @@
 """
-Smart Exit Optimizer - Massimizza profitti considerando fees e trend.
+Smart Exit Optimizer - Accelera trailing step quando il trend gira.
 
-Questo modulo calcola:
-1. P&L netto reale (incluse fees apertura, chiusura, funding)
-2. Trend della posizione vs trend di mercato
-3. Raccomandazione smart per exit ottimale
+IMPORTANTE: Questo modulo NON chiude posizioni direttamente.
+Lavora IN SINERGIA con il sistema di trailing stop esistente.
+
+Funzionalità:
+1. Calcola P&L netto reale (fees apertura, chiusura, funding)
+2. Analizza trend posizione vs trend mercato
+3. Suggerisce ACCELERATE (anticipa prossimo step) quando trend gira
+4. Il trailing stop esistente rimane INTATTO
 """
 
 import os
 import time
+import json
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
 from collections import deque
-from decimal import Decimal
 import numpy as np
 
-# Fee structure Hyperliquid
-TAKER_FEE_RATE = 0.00035  # 0.035% per side
-MAKER_FEE_RATE = 0.0001   # 0.01% per side
+# =============================================================================
+# FEE STRUCTURE HYPERLIQUID (Tier 0: ≤ $5M volume)
+# =============================================================================
+# Perps Taker: 0.0450%
+# Perps Maker: 0.0150%
+# Queste sono le fee REALI di Hyperliquid
+TAKER_FEE_RATE = 0.00045  # 0.045% per side
+MAKER_FEE_RATE = 0.00015  # 0.015% per side
 
-# Price history settings
-PRICE_HISTORY_SIZE = int(os.getenv('SMART_EXIT_HISTORY_SIZE', '20'))  # Ultimi 20 prezzi
-TREND_WINDOW = int(os.getenv('SMART_EXIT_TREND_WINDOW', '10'))  # Finestra per calcolo trend
-
-# Smart exit thresholds (configurabili)
+# =============================================================================
+# CONFIGURAZIONE (da .env)
+# =============================================================================
 SMART_EXIT_ENABLED = os.getenv('SMART_EXIT_ENABLED', 'false').lower() == 'true'
-MIN_PROFIT_TO_EXIT = float(os.getenv('SMART_EXIT_MIN_PROFIT', '0.3'))  # % minimo netto per uscita anticipata
-TREND_MISALIGN_EXIT = float(os.getenv('SMART_EXIT_TREND_MISALIGN', '-0.5'))  # Soglia disallineamento per exit
+PRICE_HISTORY_SIZE = int(os.getenv('SMART_EXIT_HISTORY_SIZE', '100'))  # 100 letture default
+TREND_WINDOW = int(os.getenv('SMART_EXIT_TREND_WINDOW', '30'))  # Finestra per calcolo trend
+
+# Soglie per decisione ACCELERATE
+ACCELERATE_CONFIDENCE_THRESHOLD = int(os.getenv('SMART_EXIT_ACCELERATE_CONFIDENCE', '75'))
+MIN_PROFIT_FOR_ACCELERATE = float(os.getenv('SMART_EXIT_MIN_PROFIT', '0.3'))  # % minimo netto
+
+# AI Decision
+SMART_EXIT_AI_ENABLED = os.getenv('SMART_EXIT_AI_ENABLED', 'false').lower() == 'true'
 
 
 @dataclass
@@ -59,7 +73,7 @@ class PositionMetrics:
     pos_trend_slope: float = 0.0     # Pendenza trend posizione (-1 to +1)
     mkt_trend_slope: float = 0.0     # Pendenza trend mercato
     trend_aligned: bool = True       # Trend posizione = trend mercato?
-    trend_strength: float = 0.0      # Forza del trend (0-1)
+    trend_strength: float = 0.0      # Forza del trend (R², 0-1)
 
     # Break-even analysis
     breakeven_price: float = 0.0     # Prezzo per uscire a zero dopo fees
@@ -68,15 +82,32 @@ class PositionMetrics:
     # Time analysis
     time_in_position_sec: int = 0    # Secondi in posizione
 
+    # Trailing step info
+    current_sl_pct: float = 0.0      # SL attuale (% P&L)
+    next_step_trigger: float = 0.0   # P&L per prossimo step
+    next_step_sl: float = 0.0        # SL del prossimo step
+
     # Smart recommendation
-    action: str = "HOLD"             # "HOLD", "TAKE_PROFIT", "CUT_LOSS", "TRAIL_TIGHT", "TRAIL_WIDE"
+    action: str = "HOLD"             # "HOLD" o "ACCELERATE"
     confidence: float = 0.0          # 0-100%
     reason: str = ""                 # Spiegazione
 
 
-# Storage per price history per simbolo (persiste tra cicli FAST)
+# =============================================================================
+# STORAGE GLOBALE
+# =============================================================================
+# Price history per simbolo (persiste tra cicli FAST)
 _price_histories: Dict[str, deque] = {}
 
+# Cache funding rate (aggiornato periodicamente)
+_funding_rates: Dict[str, dict] = {}
+_funding_rates_last_update: float = 0
+FUNDING_RATE_CACHE_SECONDS = 300  # Aggiorna ogni 5 minuti
+
+
+# =============================================================================
+# PRICE HISTORY FUNCTIONS
+# =============================================================================
 
 def get_price_history(symbol: str) -> deque:
     """Ottiene o crea la price history per un simbolo."""
@@ -100,60 +131,127 @@ def clear_price_history(symbol: str):
         _price_histories[symbol].clear()
 
 
-def calculate_trend_slope(prices: List[float]) -> Tuple[float, float]:
+def get_history_duration_seconds(symbol: str) -> float:
+    """Ritorna la durata in secondi della price history raccolta."""
+    history = get_price_history(symbol)
+    if len(history) < 2:
+        return 0
+    return history[-1]['timestamp'] - history[0]['timestamp']
+
+
+# =============================================================================
+# FUNDING RATE FUNCTIONS
+# =============================================================================
+
+def fetch_funding_rate(bot, symbol: str) -> float:
     """
-    Calcola la pendenza del trend usando regressione lineare.
+    Fetch funding rate reale da Hyperliquid API.
+
+    Args:
+        bot: HyperLiquidTrader instance
+        symbol: Simbolo (BTC, ETH, SOL)
 
     Returns:
-        (slope, r_squared): slope normalizzato (-1 to +1), forza del trend (0-1)
+        Funding rate in % (es. 0.01 = 0.01%)
     """
-    if len(prices) < 3:
-        return 0.0, 0.0
+    global _funding_rates, _funding_rates_last_update
+
+    current_time = time.time()
+
+    # Usa cache se recente
+    if (current_time - _funding_rates_last_update) < FUNDING_RATE_CACHE_SECONDS:
+        if symbol in _funding_rates:
+            return _funding_rates[symbol].get('rate', 0.0)
 
     try:
-        # Normalizza i prezzi per evitare problemi numerici
-        prices_arr = np.array(prices)
-        mean_price = np.mean(prices_arr)
-        if mean_price == 0:
-            return 0.0, 0.0
+        # Hyperliquid API per funding rates
+        meta = bot.info.meta()
 
-        # Regressione lineare semplice
-        x = np.arange(len(prices_arr))
+        if meta and 'universe' in meta:
+            for asset_info in meta['universe']:
+                if asset_info.get('name') == symbol:
+                    funding = asset_info.get('funding', 0)
+                    _funding_rates[symbol] = {
+                        'rate': float(funding) * 100,  # Converti in %
+                        'timestamp': current_time
+                    }
+                    _funding_rates_last_update = current_time
+                    return _funding_rates[symbol]['rate']
 
-        # Calcola slope
-        x_mean = np.mean(x)
-        y_mean = np.mean(prices_arr)
+        return 0.0
 
-        numerator = np.sum((x - x_mean) * (prices_arr - y_mean))
-        denominator = np.sum((x - x_mean) ** 2)
+    except Exception as e:
+        # In caso di errore, ritorna 0 (meglio sottostimare che bloccare)
+        return 0.0
 
-        if denominator == 0:
-            return 0.0, 0.0
 
-        slope = numerator / denominator
+# =============================================================================
+# TRAILING STEPS PARSER
+# =============================================================================
 
-        # Normalizza slope in percentuale per periodo
-        slope_pct = (slope / mean_price) * 100  # % change per step
+def parse_trailing_steps(steps_str: str) -> List[Tuple[float, float]]:
+    """
+    Parsa la stringa degli step di trailing.
 
-        # Calcola R-squared per la forza del trend
-        y_pred = slope * x + (y_mean - slope * x_mean)
-        ss_res = np.sum((prices_arr - y_pred) ** 2)
-        ss_tot = np.sum((prices_arr - y_mean) ** 2)
+    Args:
+        steps_str: Formato "pnl1:sl1,pnl2:sl2,..." es. "0.8:-2.0,1.4:0.3,2.2:1.0"
 
-        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-        r_squared = max(0, min(1, r_squared))  # Clamp 0-1
+    Returns:
+        Lista di tuple (trigger_pnl, sl_level) ordinate per trigger_pnl
+    """
+    if not steps_str:
+        return []
 
-        # Normalizza slope a range -1 to +1 (assumendo max 0.5% per step)
-        normalized_slope = max(-1, min(1, slope_pct / 0.5))
-
-        return normalized_slope, r_squared
-
+    steps = []
+    try:
+        for pair in steps_str.split(','):
+            trigger, sl = pair.split(':')
+            steps.append((float(trigger.strip()), float(sl.strip())))
+        # Ordina per trigger P&L crescente
+        steps.sort(key=lambda x: x[0])
+        return steps
     except Exception:
-        return 0.0, 0.0
+        return []
 
+
+def find_current_and_next_step(current_pnl: float, steps: List[Tuple[float, float]]) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """
+    Trova lo step corrente e il prossimo step basato sul P&L attuale.
+
+    Args:
+        current_pnl: P&L attuale in %
+        steps: Lista di (trigger_pnl, sl_level)
+
+    Returns:
+        (current_step, next_step) - tuple (trigger, sl) per ognuno
+        next_step è None se siamo all'ultimo step
+    """
+    if not steps:
+        return (None, None), (None, None)
+
+    current_step = (0, steps[0][1])  # Default: primo SL
+    next_step = None
+
+    for i, (trigger, sl) in enumerate(steps):
+        if current_pnl >= trigger:
+            current_step = (trigger, sl)
+            # Prossimo step se esiste
+            if i + 1 < len(steps):
+                next_step = steps[i + 1]
+        else:
+            # Non abbiamo ancora raggiunto questo step
+            next_step = (trigger, sl)
+            break
+
+    return current_step, next_step
+
+
+# =============================================================================
+# FEE CALCULATIONS
+# =============================================================================
 
 def calculate_fees(notional: float, is_taker: bool = True) -> float:
-    """Calcola le fees per un lato del trade."""
+    """Calcola le fees per un lato del trade (apertura o chiusura)."""
     rate = TAKER_FEE_RATE if is_taker else MAKER_FEE_RATE
     return notional * rate
 
@@ -163,7 +261,14 @@ def calculate_breakeven_price(entry_price: float, direction: str,
     """
     Calcola il prezzo di breakeven considerando le fees.
 
-    total_fees_pct: fees totali come % del notional (es. 0.07 per 0.07%)
+    Args:
+        entry_price: Prezzo di entrata
+        direction: 'long' o 'short'
+        leverage: Leva usata
+        total_fees_pct: fees totali come % del notional (es. 0.09 per 0.09%)
+
+    Returns:
+        Prezzo breakeven
     """
     # Fee come % del movimento prezzo necessario
     fee_price_impact = total_fees_pct / leverage
@@ -176,6 +281,66 @@ def calculate_breakeven_price(entry_price: float, direction: str,
         return entry_price * (1 - fee_price_impact / 100)
 
 
+# =============================================================================
+# TREND ANALYSIS
+# =============================================================================
+
+def calculate_trend_slope(prices: List[float]) -> Tuple[float, float]:
+    """
+    Calcola la pendenza del trend usando regressione lineare.
+
+    Args:
+        prices: Lista di prezzi
+
+    Returns:
+        (slope, r_squared): slope normalizzato (-1 to +1), forza del trend (0-1)
+    """
+    if len(prices) < 3:
+        return 0.0, 0.0
+
+    try:
+        prices_arr = np.array(prices)
+        mean_price = np.mean(prices_arr)
+        if mean_price == 0:
+            return 0.0, 0.0
+
+        # Regressione lineare
+        x = np.arange(len(prices_arr))
+        x_mean = np.mean(x)
+        y_mean = np.mean(prices_arr)
+
+        numerator = np.sum((x - x_mean) * (prices_arr - y_mean))
+        denominator = np.sum((x - x_mean) ** 2)
+
+        if denominator == 0:
+            return 0.0, 0.0
+
+        slope = numerator / denominator
+
+        # Normalizza slope in percentuale per periodo
+        slope_pct = (slope / mean_price) * 100
+
+        # R-squared per forza del trend
+        y_pred = slope * x + (y_mean - slope * x_mean)
+        ss_res = np.sum((prices_arr - y_pred) ** 2)
+        ss_tot = np.sum((prices_arr - y_mean) ** 2)
+
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+        r_squared = max(0, min(1, r_squared))
+
+        # Normalizza slope a range -1 to +1
+        normalized_slope = max(-1, min(1, slope_pct / 0.3))
+
+        return normalized_slope, r_squared
+
+    except Exception:
+        return 0.0, 0.0
+
+
+# =============================================================================
+# MAIN METRICS CALCULATION
+# =============================================================================
+
 def calculate_position_metrics(
     symbol: str,
     direction: str,
@@ -184,6 +349,8 @@ def calculate_position_metrics(
     position_size: float,
     leverage: float,
     entry_time: float,
+    current_sl_pct: float = None,
+    trailing_steps: str = None,
     market_indicators: dict = None,
     funding_rate: float = 0.0
 ) -> PositionMetrics:
@@ -198,8 +365,10 @@ def calculate_position_metrics(
         position_size: Size in coin
         leverage: Leva usata
         entry_time: Timestamp apertura
-        market_indicators: Dict con EMA, MACD, etc. dal mercato
-        funding_rate: Funding rate corrente (% per 8h)
+        current_sl_pct: SL attuale in % (dal trailing stop)
+        trailing_steps: Stringa degli step (es. "0.8:-2.0,1.4:0.3,...")
+        market_indicators: Dict con EMA, MACD, etc.
+        funding_rate: Funding rate in % (se 0, verrà stimato)
 
     Returns:
         PositionMetrics con tutti i calcoli
@@ -235,10 +404,8 @@ def calculate_position_metrics(
     metrics.time_in_position_sec = int(time.time() - entry_time)
     hours_held = metrics.time_in_position_sec / 3600
 
-    # Funding ogni 8h, proporzionale al tempo
     if funding_rate != 0:
-        funding_periods = hours_held / 8
-        # Funding positivo = long paga, negativo = short paga
+        funding_periods = hours_held / 8  # Funding ogni 8h
         if direction == "long":
             metrics.funding_paid_usd = metrics.notional_current * (funding_rate / 100) * funding_periods
         else:
@@ -248,7 +415,6 @@ def calculate_position_metrics(
     total_fees_usd = metrics.fee_open_usd + metrics.fee_close_usd + abs(metrics.funding_paid_usd)
     metrics.net_pnl_usd = metrics.gross_pnl_usd - total_fees_usd
 
-    # Net P&L come percentuale del margin
     margin_used = metrics.notional_entry / leverage
     if margin_used > 0:
         metrics.net_pnl_pct = (metrics.net_pnl_usd / margin_used) * 100
@@ -270,31 +436,39 @@ def calculate_position_metrics(
 
     if len(history) >= 3:
         prices = [h['price'] for h in history]
-        metrics.price_history = prices[-TREND_WINDOW:]
-        metrics.pos_trend_slope, metrics.trend_strength = calculate_trend_slope(prices[-TREND_WINDOW:])
+        window = min(TREND_WINDOW, len(prices))
+        metrics.price_history = prices[-window:]
+        metrics.pos_trend_slope, metrics.trend_strength = calculate_trend_slope(prices[-window:])
 
-    # === MARKET TREND (se disponibile) ===
+    # === MARKET TREND ===
     if market_indicators:
-        # Usa MACD come proxy per trend di mercato
         macd = market_indicators.get('macd', 0)
-        ema_diff = market_indicators.get('price_vs_ema20', 0)  # % sopra/sotto EMA20
+        ema_diff = market_indicators.get('price_vs_ema20', 0)
 
-        # Combina MACD e EMA per trend score
         if macd > 0.2 and ema_diff > 0:
             metrics.mkt_trend_slope = min(1.0, (macd + ema_diff/10) / 2)
         elif macd < -0.2 and ema_diff < 0:
             metrics.mkt_trend_slope = max(-1.0, (macd + ema_diff/10) / 2)
         else:
-            metrics.mkt_trend_slope = macd / 2  # Trend debole
+            metrics.mkt_trend_slope = macd / 2
 
     # === TREND ALIGNMENT ===
-    # Allineato se entrambi positivi o entrambi negativi
     if direction == "long":
-        # Long vuole trend positivo
-        metrics.trend_aligned = (metrics.pos_trend_slope > 0 and metrics.mkt_trend_slope > 0)
+        metrics.trend_aligned = (metrics.pos_trend_slope > 0)
     else:
-        # Short vuole trend negativo
-        metrics.trend_aligned = (metrics.pos_trend_slope < 0 and metrics.mkt_trend_slope < 0)
+        metrics.trend_aligned = (metrics.pos_trend_slope < 0)
+
+    # === TRAILING STEPS INFO ===
+    if current_sl_pct is not None:
+        metrics.current_sl_pct = current_sl_pct
+
+    if trailing_steps:
+        steps = parse_trailing_steps(trailing_steps)
+        current_step, next_step = find_current_and_next_step(metrics.gross_pnl_pct, steps)
+
+        if next_step:
+            metrics.next_step_trigger = next_step[0]
+            metrics.next_step_sl = next_step[1]
 
     # === SMART RECOMMENDATION ===
     metrics.action, metrics.confidence, metrics.reason = _calculate_smart_action(metrics)
@@ -302,74 +476,129 @@ def calculate_position_metrics(
     return metrics
 
 
+# =============================================================================
+# DECISION LOGIC - HOLD vs ACCELERATE
+# =============================================================================
+
 def _calculate_smart_action(m: PositionMetrics) -> Tuple[str, float, str]:
     """
-    Calcola l'azione raccomandata basata sulle metriche.
+    Calcola se suggerire ACCELERATE (anticipa prossimo step) o HOLD.
+
+    IMPORTANTE: Non suggerisce MAI di chiudere la posizione.
+    Il trailing stop esistente gestisce le chiusure.
 
     Returns:
         (action, confidence, reason)
     """
     net = m.net_pnl_pct
+    gross = m.gross_pnl_pct
     aligned = m.trend_aligned
     trend = m.pos_trend_slope
     strength = m.trend_strength
-    time_sec = m.time_in_position_sec
+
+    # Se non c'è prossimo step, non possiamo accelerare
+    if m.next_step_trigger == 0:
+        return "HOLD", 50, "Nessun prossimo step disponibile"
+
+    # Quanto manca al prossimo step?
+    distance_to_next = m.next_step_trigger - gross
+
+    # Quanto guadagneremmo di protezione accelerando?
+    sl_improvement = m.next_step_sl - m.current_sl_pct
 
     # === REGOLE DI DECISIONE ===
 
-    # 1. LOSS SIGNIFICATIVA - esci
-    if net < -3.0:
-        return "CUT_LOSS", 90, f"Perdita netta {net:.1f}% supera soglia"
-
-    # 2. LOSS MODERATA + TREND CONTRARIO - esci presto
-    if net < -1.0 and not aligned and strength > 0.5:
-        return "CUT_LOSS", 75, f"Perdita {net:.1f}% con trend contrario (slope={trend:.2f})"
-
-    # 3. LOSS LEGGERA + TREND A FAVORE - aspetta
-    if -1.0 <= net < 0 and aligned:
-        return "HOLD", 60, f"In perdita {net:.1f}% ma trend allineato, attendo recupero"
-
-    # 4. LOSS LEGGERA + TREND CONTRARIO - esci
-    if -1.0 <= net < 0 and not aligned and time_sec > 120:
-        return "CUT_LOSS", 65, f"Perdita {net:.1f}% con trend contrario dopo {time_sec}s"
-
-    # 5. BREAKEVEN ZONE - decisione basata su trend
-    if 0 <= net < 0.5:
-        if aligned and strength > 0.3:
-            return "HOLD", 55, f"Zona breakeven ma trend favorevole (slope={trend:.2f})"
-        elif not aligned:
-            return "TAKE_PROFIT", 60, f"Zona breakeven con trend contrario, prendi {net:.1f}%"
+    # 1. Siamo in profitto E il trend è chiaramente contrario
+    if net > MIN_PROFIT_FOR_ACCELERATE and not aligned and strength > 0.4:
+        # Trend sta girando forte
+        if abs(trend) > 0.5:
+            return "ACCELERATE", 85, f"Trend invertito (slope={trend:.2f}), anticipa step per proteggere +{net:.1f}%"
         else:
-            return "HOLD", 50, "Zona breakeven, trend neutro"
+            return "ACCELERATE", 70, f"Trend in inversione, proteggi profitto +{net:.1f}%"
 
-    # 6. PICCOLO PROFITTO (0.5-1.5%) - valuta trend
-    if 0.5 <= net < 1.5:
-        if not aligned and strength > 0.4:
-            return "TAKE_PROFIT", 70, f"Profitto {net:.1f}% con trend contrario, esci"
-        elif aligned and strength > 0.5:
-            return "TRAIL_TIGHT", 65, f"Profitto {net:.1f}% con trend favorevole, trailing stretto"
-        else:
-            return "HOLD", 55, f"Profitto {net:.1f}%, trend neutro"
+    # 2. Siamo vicini al prossimo step MA trend gira
+    if distance_to_next < 0.5 and not aligned:
+        return "ACCELERATE", 75, f"Vicino a step (manca {distance_to_next:.1f}%) ma trend gira, anticipa"
 
-    # 7. BUON PROFITTO (1.5-3%) - proteggi
-    if 1.5 <= net < 3.0:
-        if aligned and strength > 0.6:
-            return "TRAIL_WIDE", 75, f"Profitto {net:.1f}% con trend forte, lascia correre"
-        elif not aligned:
-            return "TAKE_PROFIT", 80, f"Profitto {net:.1f}% ma trend gira, prendi profitto"
-        else:
-            return "TRAIL_TIGHT", 70, f"Profitto {net:.1f}%, trailing per proteggere"
+    # 3. Abbiamo buon profitto (>2%) e trend neutro/debole
+    if net > 2.0 and strength < 0.3:
+        return "ACCELERATE", 65, f"Profitto {net:.1f}% con trend debole, meglio proteggere"
 
-    # 8. OTTIMO PROFITTO (>3%) - quasi sempre proteggi
-    if net >= 3.0:
-        if aligned and strength > 0.7:
-            return "TRAIL_WIDE", 80, f"Ottimo profitto {net:.1f}% con trend forte"
-        else:
-            return "TAKE_PROFIT", 85, f"Ottimo profitto {net:.1f}%, prendi e ringrazia"
+    # 4. Trend fortemente contrario anche con profitto basso
+    if not aligned and abs(trend) > 0.7 and strength > 0.5:
+        if net > 0:
+            return "ACCELERATE", 80, f"Trend fortemente contrario (slope={trend:.2f}), proteggi ora"
 
-    # Default
-    return "HOLD", 50, "Situazione standard"
+    # 5. Tutto ok, trend allineato - lascia correre
+    if aligned and strength > 0.3:
+        return "HOLD", 70, f"Trend allineato (slope={trend:.2f}), lascia correre"
 
+    # Default: HOLD
+    return "HOLD", 50, "Situazione normale, step esistenti sufficienti"
+
+
+# =============================================================================
+# AI PROMPT FOR DECISION (optional)
+# =============================================================================
+
+def get_ai_decision_prompt(metrics: PositionMetrics) -> str:
+    """
+    Genera il prompt per far decidere all'AI se ACCELERARE.
+
+    Returns:
+        Prompt string per l'AI
+    """
+    return f"""You are analyzing a trading position that already has trailing stop protection.
+Your job is NOT to close the position, but to decide if we should ACCELERATE
+the trailing stop to the next step to lock more profit.
+
+POSITION DATA:
+- Symbol: {metrics.symbol}
+- Direction: {metrics.direction.upper()}
+- Entry: ${metrics.entry_price:.2f}
+- Current: ${metrics.current_price:.2f}
+- Leverage: {metrics.leverage}x
+
+P&L ANALYSIS:
+- Gross P&L: {metrics.gross_pnl_pct:+.2f}%
+- Net P&L (after fees): {metrics.net_pnl_pct:+.2f}% (${metrics.net_pnl_usd:+.2f})
+- Total Fees: ${metrics.fee_open_usd + metrics.fee_close_usd:.2f}
+- Breakeven price: ${metrics.breakeven_price:.2f}
+
+CURRENT TRAILING STOP:
+- Current SL level: {metrics.current_sl_pct:+.1f}%
+- Next step triggers at: {metrics.next_step_trigger:+.1f}% P&L
+- Next step would set SL to: {metrics.next_step_sl:+.1f}%
+
+TREND ANALYSIS (based on last {len(metrics.price_history)} prices):
+- Position trend slope: {metrics.pos_trend_slope:+.2f} (range: -1 to +1)
+- Trend strength (R²): {metrics.trend_strength:.2f}
+- Trend aligned with position: {"YES" if metrics.trend_aligned else "NO"}
+
+TIME IN POSITION: {metrics.time_in_position_sec} seconds
+
+DECISION OPTIONS:
+1. HOLD - Keep current SL, let the normal trailing steps work
+2. ACCELERATE - Move SL to next step level NOW (before reaching trigger)
+
+Respond in JSON only:
+{{
+  "decision": "HOLD" or "ACCELERATE",
+  "confidence": 0-100,
+  "reason": "brief explanation (max 50 words)"
+}}
+
+GUIDELINES:
+- ACCELERATE only when trend is clearly reversing against the position
+- If trend is aligned and strong, always HOLD to capture more profit
+- When in doubt, prefer HOLD (let the normal trailing work)
+- ACCELERATE is about locking profit early, not cutting losses (SL handles that)
+"""
+
+
+# =============================================================================
+# PUBLIC API
+# =============================================================================
 
 def get_smart_exit_recommendation(
     symbol: str,
@@ -379,11 +608,26 @@ def get_smart_exit_recommendation(
     position_size: float,
     leverage: float,
     entry_time: float,
+    current_sl_pct: float = None,
+    trailing_steps: str = None,
     market_indicators: dict = None,
     funding_rate: float = 0.0
 ) -> dict:
     """
     API principale per ottenere raccomandazione smart exit.
+
+    Args:
+        symbol: Simbolo (BTC, ETH, SOL)
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        current_price: Prezzo corrente
+        position_size: Size in coin
+        leverage: Leva usata
+        entry_time: Timestamp apertura
+        current_sl_pct: SL attuale (% P&L)
+        trailing_steps: Stringa step trailing (es. "0.8:-2.0,1.4:0.3,...")
+        market_indicators: Dict con indicatori mercato
+        funding_rate: Funding rate in %
 
     Returns:
         dict con action, confidence, reason e metriche dettagliate
@@ -404,29 +648,41 @@ def get_smart_exit_recommendation(
         position_size=position_size,
         leverage=leverage,
         entry_time=entry_time,
+        current_sl_pct=current_sl_pct,
+        trailing_steps=trailing_steps,
         market_indicators=market_indicators,
         funding_rate=funding_rate
     )
 
-    return {
+    result = {
         "enabled": True,
         "action": metrics.action,
         "confidence": metrics.confidence,
         "reason": metrics.reason,
+        "should_accelerate": metrics.action == "ACCELERATE" and metrics.confidence >= ACCELERATE_CONFIDENCE_THRESHOLD,
+        "next_step_sl": metrics.next_step_sl if metrics.action == "ACCELERATE" else None,
         "metrics": {
             "gross_pnl_pct": round(metrics.gross_pnl_pct, 2),
             "net_pnl_pct": round(metrics.net_pnl_pct, 2),
             "net_pnl_usd": round(metrics.net_pnl_usd, 2),
             "fees_total_usd": round(metrics.fee_open_usd + metrics.fee_close_usd + abs(metrics.funding_paid_usd), 2),
             "breakeven_price": round(metrics.breakeven_price, 2),
-            "distance_to_breakeven_pct": round(metrics.distance_to_breakeven_pct, 2),
+            "current_sl_pct": round(metrics.current_sl_pct, 2),
+            "next_step_trigger": round(metrics.next_step_trigger, 2),
+            "next_step_sl": round(metrics.next_step_sl, 2),
             "pos_trend_slope": round(metrics.pos_trend_slope, 3),
-            "mkt_trend_slope": round(metrics.mkt_trend_slope, 3),
-            "trend_aligned": metrics.trend_aligned,
             "trend_strength": round(metrics.trend_strength, 2),
-            "time_in_position_sec": metrics.time_in_position_sec
+            "trend_aligned": metrics.trend_aligned,
+            "time_in_position_sec": metrics.time_in_position_sec,
+            "price_history_size": len(metrics.price_history)
         }
     }
+
+    # Se AI enabled e decisione incerta, genera prompt
+    if SMART_EXIT_AI_ENABLED and 40 < metrics.confidence < 80:
+        result["ai_prompt"] = get_ai_decision_prompt(metrics)
+
+    return result
 
 
 def format_smart_exit_log(recommendation: dict, symbol: str) -> str:
@@ -438,26 +694,36 @@ def format_smart_exit_log(recommendation: dict, symbol: str) -> str:
     action = recommendation.get("action", "HOLD")
     confidence = recommendation.get("confidence", 0)
     reason = recommendation.get("reason", "")
+    should_accelerate = recommendation.get("should_accelerate", False)
 
     # Emoji per action
-    action_emoji = {
-        "HOLD": "⏸️",
-        "TAKE_PROFIT": "💰",
-        "CUT_LOSS": "🛑",
-        "TRAIL_TIGHT": "🎯",
-        "TRAIL_WIDE": "🚀"
-    }.get(action, "❓")
+    if should_accelerate:
+        action_emoji = "⚡"  # Accelerate attivo
+    elif action == "ACCELERATE":
+        action_emoji = "🔶"  # Accelerate suggerito ma sotto soglia
+    else:
+        action_emoji = "✅"  # Hold
 
     # Colore per net P&L
     net_pnl = m.get("net_pnl_pct", 0)
     pnl_indicator = "🟢" if net_pnl > 0.5 else "🟡" if net_pnl > 0 else "🔴"
 
-    trend_indicator = "✅" if m.get("trend_aligned") else "⚠️"
+    trend_indicator = "📈" if m.get("trend_aligned") else "📉"
 
-    return (
-        f"   [SMART] {symbol}: {action_emoji} {action} ({confidence}%)\n"
-        f"           {pnl_indicator} Net P&L: {net_pnl:+.2f}% (${m.get('net_pnl_usd', 0):+.2f})\n"
-        f"           💸 Fees: ${m.get('fees_total_usd', 0):.2f} | BE: ${m.get('breakeven_price', 0):.2f}\n"
-        f"           {trend_indicator} Trend: pos={m.get('pos_trend_slope', 0):+.2f} mkt={m.get('mkt_trend_slope', 0):+.2f}\n"
-        f"           💡 {reason}"
-    )
+    # Step info
+    step_info = ""
+    if m.get("next_step_trigger", 0) > 0:
+        step_info = f" | Next@{m.get('next_step_trigger')}%→SL {m.get('next_step_sl')}%"
+
+    log_lines = [
+        f"   [SMART] {symbol}: {action_emoji} {action} ({confidence}%)",
+        f"           {pnl_indicator} Net: {net_pnl:+.2f}% | Gross: {m.get('gross_pnl_pct', 0):+.2f}% | Fees: ${m.get('fees_total_usd', 0):.2f}",
+        f"           {trend_indicator} Trend: {m.get('pos_trend_slope', 0):+.2f} (R²={m.get('trend_strength', 0):.2f}){step_info}",
+    ]
+
+    if should_accelerate:
+        log_lines.append(f"           ⚡ ACCELERATE → SL a {recommendation.get('next_step_sl')}%")
+
+    log_lines.append(f"           💡 {reason}")
+
+    return "\n".join(log_lines)
