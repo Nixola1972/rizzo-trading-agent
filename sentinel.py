@@ -3875,7 +3875,14 @@ def run_order_verification(bot, positions: list) -> dict:
 
         # Determina trading mode
         tracking_data = db_utils.get_position_tracking(symbol)
-        trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+
+        # IMPORTANTE: se non esiste tracking, la posizione è ancora in fase di apertura
+        # NON verificare/correggere SL per evitare race condition con MICRO_GAIN
+        if not tracking_data:
+            log(f"   ⏳ {symbol}: Tracking non trovato, skip verifica (apertura in corso?)")
+            continue
+
+        trading_mode = tracking_data.get("trading_mode", "NORMAL")
 
         # Recupera current_sl_level dalla memoria (aggiornato dal trailing)
         # La chiave dipende dal trading_mode:
@@ -4331,7 +4338,14 @@ def run_sentinel_check():
             tracking_data = db_utils.get_position_tracking(symbol)
 
             # Ottieni trading_mode dal tracking
-            trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+            # IMPORTANTE: se non esiste tracking, la posizione è ancora in fase di apertura
+            # NON piazzare SL automaticamente per evitare race condition con MICRO_GAIN
+            if not tracking_data:
+                # Skip questa posizione - il processo di apertura deve ancora completare
+                log(f"   ⏳ {symbol}: Tracking non trovato, skip (apertura in corso?)")
+                continue
+
+            trading_mode = tracking_data.get("trading_mode", "NORMAL")
 
             # === CHECK TAKE PROFIT (prima del trailing stop) ===
             tp_result = check_take_profit(pos)
@@ -4846,7 +4860,14 @@ def run_sentinel_fast():
 
             # Ottieni tracking dal DB
             tracking_data = db_utils.get_position_tracking(symbol)
-            trading_mode = tracking_data.get("trading_mode", "NORMAL") if tracking_data else "NORMAL"
+
+            # IMPORTANTE: se non esiste tracking, la posizione è ancora in fase di apertura
+            # NON piazzare/modificare SL per evitare race condition con MICRO_GAIN
+            if not tracking_data:
+                log(f"   ⏳ [FAST] {symbol}: Tracking non trovato, skip (apertura in corso?)")
+                continue
+
+            trading_mode = tracking_data.get("trading_mode", "NORMAL")
 
             # === CHECK TAKE PROFIT ===
             tp_result = check_take_profit(pos)
