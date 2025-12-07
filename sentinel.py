@@ -2415,7 +2415,7 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
 
 
 def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float,
-                                current_price: float, size: float):
+                                current_price: float, size: float, leverage: int = None):
     """
     Aggiorna l'ordine SL per MICRO_GAIN.
 
@@ -2452,13 +2452,15 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
         return False
 
     try:
-        # Calcola P&L corrente
+        # Calcola P&L corrente (usa leva reale se passata, altrimenti default)
+        actual_leverage = leverage if leverage is not None else MICRO_GAIN_LEVERAGE
+
         if direction == "long":
             price_change_pct = ((current_price - entry_price) / entry_price) * 100
         else:
             price_change_pct = ((entry_price - current_price) / entry_price) * 100
 
-        pnl_pct = price_change_pct * MICRO_GAIN_LEVERAGE
+        pnl_pct = price_change_pct * actual_leverage
 
         # SL corrente (iniziale = -STOP_LOSS_PERCENT)
         current_sl = _current_sl_level.get(symbol, -MICRO_GAIN_STOP_LOSS_PERCENT)
@@ -4418,7 +4420,8 @@ def run_sentinel_check():
                 # === UPDATE MICRO_GAIN TRAILING SL (lock-in profit) ===
                 if position_size > 0:
                     update_micro_gain_sl_order(
-                        bot, symbol, direction, entry_price, mark_price, position_size
+                        bot, symbol, direction, entry_price, mark_price, position_size,
+                        leverage=int(pos_leverage)
                     )
 
             elif trading_mode == "NORMAL" and NORMAL_TRAILING_ENABLED:
@@ -4936,14 +4939,24 @@ def run_sentinel_fast():
             # === SMART EXIT ANALYSIS ===
             if SMART_EXIT_AVAILABLE and smart_exit.SMART_EXIT_ENABLED:
                 try:
-                    # Ottieni entry_time dal tracking
-                    entry_time = tracking_data.get("entry_time")
+                    # Ottieni entry_time dal tracking (campo è created_at)
+                    entry_time = tracking_data.get("created_at") or tracking_data.get("entry_time")
+                    entry_timestamp = None
                     if entry_time:
-                        if isinstance(entry_time, datetime):
-                            entry_timestamp = entry_time.timestamp()
-                        else:
-                            entry_timestamp = float(entry_time)
-                    else:
+                        try:
+                            if isinstance(entry_time, datetime):
+                                entry_timestamp = entry_time.timestamp()
+                            elif isinstance(entry_time, str):
+                                # Parse ISO format string
+                                from datetime import datetime as dt_parse
+                                entry_dt = dt_parse.fromisoformat(entry_time.replace('Z', '+00:00').replace('+00:00', ''))
+                                entry_timestamp = entry_dt.timestamp()
+                            else:
+                                entry_timestamp = float(entry_time)
+                        except Exception:
+                            entry_timestamp = None
+
+                    if entry_timestamp is None:
                         entry_timestamp = time.time() - 300  # Default: 5 min fa
 
                     # Ottieni current SL level
@@ -5022,7 +5035,8 @@ def _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, 
         # Initialize MICRO_GAIN SL level
         if position_size > 0:
             initialize_micro_gain_sl_level(bot, symbol, direction, entry_price)
-            update_micro_gain_sl_order(bot, symbol, direction, entry_price, mark_price, position_size)
+            update_micro_gain_sl_order(bot, symbol, direction, entry_price, mark_price, position_size,
+                                       leverage=int(pos_leverage))
 
     elif trading_mode == "NORMAL" and NORMAL_TRAILING_ENABLED:
         if position_size > 0:

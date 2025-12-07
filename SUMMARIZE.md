@@ -104,6 +104,64 @@ sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, size, 
 
 ---
 
+## 2025-12-07: Fix P&L Discrepancy Bug
+
+### Problema
+I log mostravano P&L diversi per la stessa posizione:
+- MICRO_GAIN log: +4.60%
+- FAST log: +3.65%
+- SMART log: +3.68%
+
+### Causa
+La funzione `update_micro_gain_sl_order` usava `MICRO_GAIN_LEVERAGE` (costante da .env) invece della leva effettiva della posizione.
+
+Se `.env` ha `MICRO_GAIN_LEVERAGE=5` ma AI sceglie 4x:
+- MICRO_GAIN log: price_change × 5 = 4.60% (SBAGLIATO)
+- FAST/SMART: price_change × 4 = 3.68% (CORRETTO)
+
+### Fix
+Aggiunto parametro `leverage` a `update_micro_gain_sl_order` e passata leva reale:
+
+```python
+# PRIMA (bug):
+pnl_pct = price_change_pct * MICRO_GAIN_LEVERAGE  # Sempre da .env
+
+# DOPO (fix):
+actual_leverage = leverage if leverage is not None else MICRO_GAIN_LEVERAGE
+pnl_pct = price_change_pct * actual_leverage  # Usa leva reale
+```
+
+---
+
+## 2025-12-07: Fix entry_time Bug in Smart Exit
+
+### Problema
+Il tempo in posizione mostrava sempre "5m 0s" indipendentemente dalla durata reale.
+
+### Causa
+Il codice cercava `tracking_data.get("entry_time")` ma il campo nel DB è `created_at`.
+Quando non trovava `entry_time`, usava default `time.time() - 300` (5 minuti).
+
+### Fix
+Corretto per cercare prima `created_at`, poi `entry_time` come fallback:
+
+```python
+# PRIMA (bug):
+entry_time = tracking_data.get("entry_time")  # Campo non esiste!
+
+# DOPO (fix):
+entry_time = tracking_data.get("created_at") or tracking_data.get("entry_time")
+# Con parsing corretto per stringhe ISO format
+```
+
+### Come Verificare
+Nei log Smart Exit, il tempo in posizione ora riflette la durata reale:
+```
+⏱️ In posizione: 12m 45s  # Prima era sempre "5m 0s"
+```
+
+---
+
 ## Template per Future Modifiche
 
 ```markdown
