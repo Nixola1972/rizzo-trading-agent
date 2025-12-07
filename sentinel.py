@@ -3071,67 +3071,87 @@ def verify_sl_order_complete(bot, symbol: str, direction: str, entry_price: floa
             log(f"   ⚠️ SDK senza frontend_open_orders, uso open_orders (verifica tipo non disponibile)")
             open_orders = bot.info.open_orders(bot.account_address)
 
+        # IMPORTANTE: Cerca PRIMA ordini TRIGGER, poi LIMIT
+        # Questo evita di scambiare un ordine TP LIMIT per l'SL
+        trigger_orders = []
+        limit_orders = []
+
         for order in open_orders:
             if order.get("coin") == symbol and order.get("side") == expected_side:
-                result["exists"] = True
-                result["order"] = order
-
-                # 1. Verifica tipo (STOP trigger)
-                # frontend_open_orders ritorna triggerPx come stringa (es. "92270.0" o "0.0")
                 trigger_px = order.get("triggerPx")
-                # Un ordine è TRIGGER se triggerPx esiste E NON è "0.0" o vuoto
                 is_trigger = trigger_px is not None and trigger_px != "" and trigger_px != "0.0"
-                result["is_trigger"] = is_trigger
-                if not is_trigger:
-                    result["issues"].append("TIPO: ordine LIMIT invece di STOP TRIGGER")
-
-                # 2. Verifica prezzo trigger
-                if trigger_px:
-                    actual_price = float(trigger_px)
-                    result["actual_price"] = actual_price
-
-                    # Tolleranza sul prezzo
-                    price_diff_pct = abs(actual_price - expected_sl_price) / expected_sl_price * 100
-                    result["is_correct_price"] = price_diff_pct <= PRICE_TOLERANCE_PERCENT
-
-                    if not result["is_correct_price"]:
-                        result["issues"].append(
-                            f"PREZZO: trigger ${actual_price:.4f} vs atteso ${expected_sl_price:.4f} "
-                            f"(diff: {price_diff_pct:.2f}%)"
-                        )
+                if is_trigger:
+                    trigger_orders.append(order)
                 else:
-                    result["issues"].append("PREZZO: nessun trigger price impostato")
+                    limit_orders.append(order)
 
-                # 3. Verifica size
-                order_size = float(order.get("sz", 0))
-                result["actual_size"] = order_size
+        # Priorità: usa ordine TRIGGER se esiste, altrimenti LIMIT
+        if trigger_orders:
+            order = trigger_orders[0]  # Usa il primo TRIGGER trovato
+            is_trigger = True
+        elif limit_orders:
+            order = limit_orders[0]  # Fallback a LIMIT se non ci sono TRIGGER
+            is_trigger = False
+        else:
+            order = None
+            is_trigger = False
 
-                size_diff_pct = abs(order_size - size) / size * 100 if size > 0 else 100
-                result["is_correct_size"] = size_diff_pct <= SIZE_TOLERANCE_PERCENT
+        if order:
+            result["exists"] = True
+            result["order"] = order
 
-                if not result["is_correct_size"]:
+            trigger_px = order.get("triggerPx")
+            result["is_trigger"] = is_trigger
+            if not is_trigger:
+                result["issues"].append("TIPO: ordine LIMIT invece di STOP TRIGGER")
+
+            # 2. Verifica prezzo trigger
+            if trigger_px:
+                actual_price = float(trigger_px)
+                result["actual_price"] = actual_price
+
+                # Tolleranza sul prezzo
+                price_diff_pct = abs(actual_price - expected_sl_price) / expected_sl_price * 100
+                result["is_correct_price"] = price_diff_pct <= PRICE_TOLERANCE_PERCENT
+
+                if not result["is_correct_price"]:
                     result["issues"].append(
-                        f"SIZE: {order_size:.6f} vs attesa {size:.6f} (diff: {size_diff_pct:.2f}%)"
+                        f"PREZZO: trigger ${actual_price:.4f} vs atteso ${expected_sl_price:.4f} "
+                        f"(diff: {price_diff_pct:.2f}%)"
                     )
+            else:
+                result["issues"].append("PREZZO: nessun trigger price impostato")
 
-                # 4. Verifica side (già verificato nel filtro, ma double-check)
-                actual_side = order.get("side")
-                result["is_correct_side"] = actual_side == expected_side
+            # 3. Verifica size
+            order_size = float(order.get("sz", 0))
+            result["actual_size"] = order_size
 
-                if not result["is_correct_side"]:
-                    result["issues"].append(
-                        f"SIDE: {actual_side} vs atteso {expected_side}"
-                    )
+            size_diff_pct = abs(order_size - size) / size * 100 if size > 0 else 100
+            result["is_correct_size"] = size_diff_pct <= SIZE_TOLERANCE_PERCENT
 
-                # Tutto valido?
-                result["all_valid"] = (
-                    result["is_trigger"] and
-                    result["is_correct_price"] and
-                    result["is_correct_size"] and
-                    result["is_correct_side"]
+            if not result["is_correct_size"]:
+                result["issues"].append(
+                    f"SIZE: {order_size:.6f} vs attesa {size:.6f} (diff: {size_diff_pct:.2f}%)"
                 )
 
-                return result
+            # 4. Verifica side (già verificato nel filtro, ma double-check)
+            actual_side = order.get("side")
+            result["is_correct_side"] = actual_side == expected_side
+
+            if not result["is_correct_side"]:
+                result["issues"].append(
+                    f"SIDE: {actual_side} vs atteso {expected_side}"
+                )
+
+            # Tutto valido?
+            result["all_valid"] = (
+                result["is_trigger"] and
+                result["is_correct_price"] and
+                result["is_correct_size"] and
+                result["is_correct_side"]
+            )
+
+            return result
 
         # Nessun ordine trovato
         result["issues"].append(f"Nessun ordine SL trovato per {symbol}")
