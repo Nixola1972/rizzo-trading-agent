@@ -1788,8 +1788,8 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
                     except Exception as e:
                         log(f"   ⚠️ Trade Journal error: {e}")
 
-                # Piazza SL order su Hyperliquid
-                sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, position_size)
+                # Piazza SL order su Hyperliquid (passa actual_leverage per calcolo SL corretto)
+                sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, position_size, leverage=actual_leverage)
 
                 # VERIFICA IMMEDIATA: controlla che l'ordine SL sia stato piazzato correttamente
                 time.sleep(0.5)  # Piccola pausa per sincronizzazione
@@ -1858,7 +1858,7 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
         return {"success": False, "error": str(e)}
 
 
-def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float, size: float):
+def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: float, size: float, leverage: int = None):
     """
     Piazza un ordine STOP LOSS trigger su Hyperliquid per MICRO_GAIN.
 
@@ -1870,10 +1870,14 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
         direction: 'long' o 'short'
         entry_price: Prezzo di entrata
         size: Size della posizione
+        leverage: Leva effettiva della posizione (se None usa MICRO_GAIN_LEVERAGE)
     """
     try:
+        # Usa la leva passata o il default
+        actual_leverage = leverage if leverage is not None else MICRO_GAIN_LEVERAGE
+
         # Calcola prezzo SL trigger
-        price_change_pct = MICRO_GAIN_STOP_LOSS_PERCENT / MICRO_GAIN_LEVERAGE
+        price_change_pct = MICRO_GAIN_STOP_LOSS_PERCENT / actual_leverage
 
         if direction == "long":
             # LONG: SL sotto il prezzo di entrata
@@ -1885,7 +1889,7 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
         # Arrotonda al tick size
         sl_trigger = bot._round_to_tick(sl_trigger, symbol)
 
-        log(f"   🛡️ Piazzo SL STOP @ ${sl_trigger:.2f} (trigger, loss: -{MICRO_GAIN_STOP_LOSS_PERCENT}%)")
+        log(f"   🛡️ Piazzo SL STOP @ ${sl_trigger:.2f} (trigger, loss: -{MICRO_GAIN_STOP_LOSS_PERCENT}%, leva: {actual_leverage}x, price_move: {price_change_pct:.2f}%)")
 
         # Piazza ordine STOP (trigger) - direzione opposta per chiudere
         is_buy = direction == "short"  # Se short, compra per chiudere
@@ -2078,8 +2082,8 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
                     except Exception as e:
                         log(f"   ⚠️ Trade Journal error: {e}")
 
-                # Piazza SL order su Hyperliquid
-                sl_price = place_micro_pay_sl_order(bot, symbol, direction, entry_price, position_size)
+                # Piazza SL order su Hyperliquid (passa actual_leverage per calcolo SL corretto)
+                sl_price = place_micro_pay_sl_order(bot, symbol, direction, entry_price, position_size, leverage=actual_leverage)
 
                 # VERIFICA IMMEDIATA: controlla che l'ordine SL sia stato piazzato correttamente
                 time.sleep(0.5)  # Piccola pausa per sincronizzazione
@@ -2134,7 +2138,7 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
         return {"success": False, "error": str(e)}
 
 
-def place_micro_pay_sl_order(bot, symbol: str, direction: str, entry_price: float, size: float):
+def place_micro_pay_sl_order(bot, symbol: str, direction: str, entry_price: float, size: float, leverage: int = None):
     """
     Piazza un ordine STOP LOSS trigger su Hyperliquid per MICRO_PAY.
 
@@ -2144,10 +2148,14 @@ def place_micro_pay_sl_order(bot, symbol: str, direction: str, entry_price: floa
         direction: 'long' o 'short'
         entry_price: Prezzo di entrata
         size: Size della posizione
+        leverage: Leva effettiva della posizione (se None usa MICRO_PAY_LEVERAGE)
     """
     try:
+        # Usa la leva passata o il default
+        actual_leverage = leverage if leverage is not None else MICRO_PAY_LEVERAGE
+
         # Calcola prezzo SL trigger
-        price_change_pct = MICRO_PAY_STOP_LOSS_PERCENT / MICRO_PAY_LEVERAGE
+        price_change_pct = MICRO_PAY_STOP_LOSS_PERCENT / actual_leverage
 
         if direction == "long":
             sl_trigger = entry_price * (1 - price_change_pct / 100)
@@ -2156,7 +2164,7 @@ def place_micro_pay_sl_order(bot, symbol: str, direction: str, entry_price: floa
 
         sl_trigger = bot._round_to_tick(sl_trigger, symbol)
 
-        log(f"   🛡️ Piazzo MICRO_PAY SL STOP @ ${sl_trigger:.2f} (loss: -{MICRO_PAY_STOP_LOSS_PERCENT}%)")
+        log(f"   🛡️ Piazzo MICRO_PAY SL STOP @ ${sl_trigger:.2f} (loss: -{MICRO_PAY_STOP_LOSS_PERCENT}%, leva: {actual_leverage}x, price_move: {price_change_pct:.2f}%)")
 
         is_buy = direction == "short"
 
