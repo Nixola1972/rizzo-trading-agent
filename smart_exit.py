@@ -506,7 +506,17 @@ def _calculate_smart_action(m: PositionMetrics) -> Tuple[str, float, str]:
     # Quanto guadagneremmo di protezione accelerando?
     sl_improvement = m.next_step_sl - m.current_sl_pct
 
-    # === REGOLE DI DECISIONE ===
+    # === REGOLA CRITICA: MAI ABBASSARE UN PROFIT LOCK ===
+    # Se current_sl è positivo (profit lock), ACCELERATE solo se next_step_sl è MIGLIORE
+    # Esempio: current_sl = +0.27%, next_step_sl = -2% → sl_improvement = -2.27 → NO ACCELERATE!
+    if sl_improvement <= 0:
+        # Il prossimo step peggiorerebbe lo SL - non accelerare MAI
+        if m.current_sl_pct > 0:
+            return "HOLD", 90, f"Profit lock attivo ({m.current_sl_pct:+.1f}%), prossimo step peggiorerebbe SL"
+        # Anche se SL è negativo, non peggiorare
+        return "HOLD", 60, f"Prossimo step non migliora SL ({m.current_sl_pct:+.1f}% → {m.next_step_sl:+.1f}%)"
+
+    # === REGOLE DI DECISIONE (solo se sl_improvement > 0) ===
 
     # 1. Siamo in profitto E il trend è chiaramente contrario
     if net > MIN_PROFIT_FOR_ACCELERATE and not aligned and strength > 0.4:

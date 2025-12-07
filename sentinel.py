@@ -25,7 +25,7 @@ import sys
 import time
 import argparse
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -2334,7 +2334,11 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
                     # Extract trade data
                     direction = open_trade.get("direction", "long")
                     entry_price = float(open_trade.get("entry_price", 0))
-                    entry_time = open_trade.get("entry_time")
+                    # entry_time potrebbe essere in "entry_time" o "created_at"
+                    entry_time = open_trade.get("entry_time") or open_trade.get("created_at")
+                    if entry_time is None:
+                        # Fallback: usa now - 5 minuti se entry_time non disponibile
+                        entry_time = datetime.now() - timedelta(minutes=5)
                     leverage = int(open_trade.get("leverage", 1))
                     size = float(open_trade.get("size", 0))
                     margin = float(open_trade.get("margin", 0))
@@ -5024,11 +5028,16 @@ def run_sentinel_fast():
                         # Se should_accelerate è True, anticipa lo step
                         if smart_rec.get("should_accelerate") and smart_rec.get("next_step_sl") is not None:
                             next_sl = smart_rec.get("next_step_sl")
-                            log(f"   [SMART] ⚡ Accelerando SL da {current_sl:+.1f}% a {next_sl:+.1f}%")
-                            if trading_mode == "MICRO_GAIN":
-                                _current_sl_level[symbol] = next_sl
-                            elif trading_mode == "NORMAL":
-                                _current_sl_level[f"{symbol}_NORMAL"] = next_sl
+
+                            # SICUREZZA: MAI abbassare lo SL, specialmente profit lock!
+                            if next_sl < current_sl:
+                                log(f"   [SMART] ⛔ BLOCCATO: next_sl ({next_sl:+.1f}%) < current_sl ({current_sl:+.1f}%)")
+                            else:
+                                log(f"   [SMART] ⚡ Accelerando SL da {current_sl:+.1f}% a {next_sl:+.1f}%")
+                                if trading_mode == "MICRO_GAIN":
+                                    _current_sl_level[symbol] = next_sl
+                                elif trading_mode == "NORMAL":
+                                    _current_sl_level[f"{symbol}_NORMAL"] = next_sl
 
                 except Exception as e:
                     log(f"   [SMART] ⚠️ Errore: {e}")

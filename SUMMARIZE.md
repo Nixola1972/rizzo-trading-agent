@@ -235,6 +235,75 @@ else:
 
 ---
 
+## 2025-12-07: Fix Smart Exit ACCELERATE Bug (CRITICO)
+
+### Problema
+Smart Exit ACCELERATE rimuoveva i profit lock invece di proteggerli!
+
+**Caso HYPE:**
+- SL a +0.27% (profit lock garantito)
+- ACCELERATE lo abbassava a -2% (perdita possibile!)
+- Risultato: trade chiuso in perdita invece che in profitto
+
+### Causa
+La logica ACCELERATE non verificava se `next_step_sl > current_sl`:
+```python
+# BUG: "vicino al prossimo step" senza verificare se migliora
+if distance_to_next < 0.5 and not aligned:
+    return "ACCELERATE"  # Anche se next_step_sl = -2% e current = +0.27%!
+```
+
+### Fix (Doppia Protezione)
+
+**1. smart_exit.py - Regola critica:**
+```python
+if sl_improvement <= 0:
+    if m.current_sl_pct > 0:
+        return "HOLD", 90, "Profit lock attivo, prossimo step peggiorerebbe SL"
+    return "HOLD", 60, "Prossimo step non migliora SL"
+```
+
+**2. sentinel.py - Sicurezza aggiuntiva:**
+```python
+if next_sl < current_sl:
+    log(f"[SMART] ⛔ BLOCCATO: next_sl < current_sl")
+else:
+    _current_sl_level[symbol] = next_sl
+```
+
+### Come Verificare
+Nei log vedrai:
+```
+[SMART] ✅ HOLD (90%)
+   💡 Profit lock attivo (+0.27%), prossimo step peggiorerebbe SL
+```
+Invece di:
+```
+[SMART] ⚡ Accelerando SL da +0.3% a -2.0%  ← QUESTO ERA IL BUG
+```
+
+---
+
+## 2025-12-07: Fix Telegram DateTime Error
+
+### Problema
+```
+⚠️ Errore notifica Telegram: unsupported operand type(s) for -: 'datetime.datetime' and 'NoneType'
+```
+
+### Causa
+`entry_time` poteva essere `None` quando passato a `notify_trade_summary`.
+
+### Fix
+Aggiunto fallback per `entry_time`:
+```python
+entry_time = open_trade.get("entry_time") or open_trade.get("created_at")
+if entry_time is None:
+    entry_time = datetime.now() - timedelta(minutes=5)
+```
+
+---
+
 ## Template per Future Modifiche
 
 ```markdown
