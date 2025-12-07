@@ -1200,6 +1200,26 @@ def run_passive_sl_verification(bot, positions: list):
             if not tracking:
                 continue
 
+            # === PROTEZIONE RACE CONDITION: Skip per posizioni appena aperte ===
+            # Se la posizione è stata aperta da meno di 60 secondi, skip verifica passiva
+            # Questo evita che la verifica passiva interferisca con il piazzamento SL iniziale
+            created_at = tracking.get("created_at") or tracking.get("entry_time")
+            if created_at:
+                try:
+                    from datetime import datetime as dt_passive
+                    if isinstance(created_at, str):
+                        created_dt = dt_passive.fromisoformat(created_at.replace('Z', '+00:00').replace('+00:00', ''))
+                    else:
+                        created_dt = created_at
+                    if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
+                        created_dt = created_dt.replace(tzinfo=None)
+                    age_seconds = (dt_passive.now() - created_dt).total_seconds()
+                    if age_seconds < 60:
+                        log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica passiva (< 60s)")
+                        continue
+                except Exception as e:
+                    pass  # In caso di errore, procedi normalmente
+
             trading_mode = tracking.get("trading_mode", "NORMAL")
 
             # Determina SL atteso - USA current_sl_level se disponibile (trailing attivo)
