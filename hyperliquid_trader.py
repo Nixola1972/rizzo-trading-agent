@@ -338,88 +338,14 @@ class HyperLiquidTrader:
 
         print(f"  📋 Market open response status: {res.get('status')}")
 
-        # Se MICRO_GAIN o MICRO_PAY, piazza automaticamente TP order
-        if trading_mode in ("MICRO_GAIN", "MICRO_PAY"):
-            if res.get("status") != "ok":
-                print(f"  ⚠️ Market open non ok, skip TP. Response: {res}")
-            else:
-                try:
-                    # Attendi un attimo per assicurarsi che la posizione sia registrata
-                    import time
-                    time.sleep(1)
-
-                    # Ottieni il prezzo di entrata effettivo
-                    user_state = self.info.user_state(self.account_address)
-                    entry_price = None
-                    position_size = None
-
-                    print(f"  🔍 Cerco posizione {symbol} per TP order...")
-                    for p in user_state.get("assetPositions", []):
-                        if isinstance(p, dict) and "position" in p:
-                            pos = p["position"]
-                            if pos.get("coin") == symbol:
-                                entry_price = float(pos.get("entryPx", 0))
-                                position_size = abs(float(pos.get("szi", 0)))
-                                print(f"  📍 Trovato: entry={entry_price}, size={position_size}")
-                                break
-
-                    if entry_price and position_size:
-                        # Calcola prezzo target basato su P&L con leva
-                        # micro_gain_target è già in % P&L (con leva inclusa)
-                        # price_change = pnl_target / leverage
-                        price_change_pct = micro_gain_target / leverage
-
-                        if is_buy:  # LONG
-                            target_price = entry_price * (1 + price_change_pct / 100)
-                        else:  # SHORT
-                            target_price = entry_price * (1 - price_change_pct / 100)
-
-                        # Arrotonda il prezzo target al tick size corretto per l'asset
-                        # USA _round_to_tick_for_tp per arrotondare nella direzione corretta
-                        # e evitare che SHORT TP finisca SOPRA l'entry (bug DOGE 2024-12)
-                        target_price = self._round_to_tick_for_tp(target_price, symbol, is_buy)
-
-                        print(f"  🎯 {trading_mode}: Piazzo TP order @ ${target_price:.2f} (target P&L: +{micro_gain_target}%, tick={self._get_tick_size(symbol)})")
-
-                        # Piazza Take Profit limit order (non trigger)
-                        # Usa un limit order semplice che si attiva quando il prezzo raggiunge il target
-                        tp_order = self.exchange.order(
-                            symbol,
-                            not is_buy,  # Direzione opposta per chiudere
-                            position_size,
-                            target_price,  # Prezzo limite
-                            {"limit": {"tif": "Gtc"}},  # Good till cancelled
-                            reduce_only=True
-                        )
-
-                        print(f"  📋 TP order response: {tp_order}")
-
-                        if tp_order.get("status") == "ok":
-                            response_data = tp_order.get("response", {})
-                            if response_data.get("type") == "order":
-                                order_data = response_data.get("data", {})
-                                statuses = order_data.get("statuses", [])
-                                if statuses and statuses[0].get("resting"):
-                                    print(f"  ✅ TP limit order piazzato: OID={statuses[0]['resting']['oid']}")
-                                    res["tp_order"] = tp_order
-                                    res["tp_price"] = target_price
-                                else:
-                                    print(f"  ⚠️ TP order status inatteso: {statuses}")
-                                    res["tp_order_error"] = statuses
-                            else:
-                                print(f"  ⚠️ TP order response type inatteso: {response_data}")
-                                res["tp_order_error"] = response_data
-                        else:
-                            print(f"  ⚠️ Errore TP order: {tp_order}")
-                            res["tp_order_error"] = tp_order
-                    else:
-                        print(f"  ⚠️ Non riesco a trovare entry price/size per TP order: entry={entry_price}, size={position_size}")
-
-                except Exception as e:
-                    import traceback
-                    print(f"  ⚠️ Errore piazzamento TP order: {e}")
-                    print(f"  📋 Traceback: {traceback.format_exc()}")
-                    res["tp_order_error"] = str(e)
+        # DISABILITATO: Non piazzare TP LIMIT automatico per MICRO_GAIN/MICRO_PAY
+        # La sentinel gestisce il trailing stop, un ordine TP LIMIT aggiuntivo
+        # causa conflitti con la verifica SL (entrambi sono ordini SELL per LONG)
+        # e porta a chiusure premature inaspettate.
+        # Bug identificato: 2025-12-07 - ordine TP LIMIT confuso con SL
+        # Il codice originale piazzava un TP LIMIT order che veniva poi scambiato
+        # per l'SL durante la verifica, causando cancellazioni errate e chiusure
+        # premature della posizione.
 
         return res
 
