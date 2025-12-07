@@ -1933,7 +1933,7 @@ def place_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: flo
         return None
 
 
-def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price: float):
+def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price: float, leverage: int = None):
     """
     Inizializza _current_sl_level per MICRO_GAIN da ordine SL esistente su Hyperliquid.
 
@@ -1946,6 +1946,7 @@ def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price
         symbol: Simbolo
         direction: 'long' o 'short'
         entry_price: Prezzo di entrata
+        leverage: Leva usata per la posizione (se None, usa MICRO_GAIN_LEVERAGE default)
 
     Returns:
         bool: True se il livello è stato inizializzato/trovato
@@ -1954,6 +1955,9 @@ def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price
 
     # IMPORTANTE: Normalizza direction a lowercase per confronti corretti
     direction = direction.lower()
+
+    # Usa leva reale se passata, altrimenti default
+    actual_leverage = leverage if leverage is not None else MICRO_GAIN_LEVERAGE
 
     # Se già esiste, non fare nulla
     if symbol in _current_sl_level:
@@ -1984,7 +1988,7 @@ def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price
                         price_diff_pct = ((entry_price - trigger_price) / entry_price) * 100
 
                     # Moltiplica per leva per ottenere il livello SL in %
-                    calculated_sl_level = price_diff_pct * MICRO_GAIN_LEVERAGE
+                    calculated_sl_level = price_diff_pct * actual_leverage
 
                     _current_sl_level[symbol] = calculated_sl_level
                     log(f"   ✅ {symbol} MICRO_GAIN SL recuperato da HL (trigger=${trigger_px}), livello: {calculated_sl_level:+.2f}%")
@@ -2516,8 +2520,8 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
 
         # Se c'è un nuovo SL da impostare
         if new_sl_level is not None and new_sl_level > current_sl:
-            # Calcola prezzo SL
-            sl_price_change = new_sl_level / MICRO_GAIN_LEVERAGE
+            # Calcola prezzo SL (usa leva reale, non default)
+            sl_price_change = new_sl_level / actual_leverage
 
             if direction == "long":
                 new_sl_price = entry_price * (1 + sl_price_change / 100)
@@ -3332,8 +3336,8 @@ def verify_and_fix_sl_order(bot, symbol: str, direction: str, entry_price: float
                 sl_pct = -MICRO_GAIN_STOP_LOSS_PERCENT
                 log(f"   📊 Usando SL iniziale: {sl_pct:.2f}%")
 
-            # Calcola prezzo SL basato sulla percentuale
-            price_change_pct = abs(sl_pct) / MICRO_GAIN_LEVERAGE
+            # Calcola prezzo SL basato sulla percentuale (usa leva reale)
+            price_change_pct = abs(sl_pct) / leverage
             if direction == "long":
                 if sl_pct >= 0:
                     # Trailing attivo: SL sopra entry (in profitto)
@@ -4483,7 +4487,7 @@ def run_sentinel_check():
 
                 # === INITIALIZE MICRO_GAIN SL LEVEL (recupera da ordine esistente) ===
                 if position_size > 0:
-                    initialize_micro_gain_sl_level(bot, symbol, direction, entry_price)
+                    initialize_micro_gain_sl_level(bot, symbol, direction, entry_price, leverage=int(pos_leverage))
 
                 # === UPDATE MICRO_GAIN TRAILING SL (lock-in profit) ===
                 if position_size > 0:
@@ -5112,7 +5116,7 @@ def _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, 
     if trading_mode == "MICRO_GAIN" and tracking_data:
         # Initialize MICRO_GAIN SL level
         if position_size > 0:
-            initialize_micro_gain_sl_level(bot, symbol, direction, entry_price)
+            initialize_micro_gain_sl_level(bot, symbol, direction, entry_price, leverage=int(pos_leverage))
             update_micro_gain_sl_order(bot, symbol, direction, entry_price, mark_price, position_size,
                                        leverage=int(pos_leverage))
 
