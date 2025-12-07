@@ -1835,16 +1835,15 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
                 # Piazza SL order su Hyperliquid (passa actual_leverage per calcolo SL corretto)
                 sl_price = place_micro_gain_sl_order(bot, symbol, direction, entry_price, position_size, leverage=actual_leverage)
 
-                # VERIFICA IMMEDIATA: controlla che l'ordine SL sia stato piazzato correttamente
-                time.sleep(0.5)  # Piccola pausa per sincronizzazione
-                sl_verification = verify_and_fix_sl_order(
-                    bot, symbol, direction, entry_price, position_size,
-                    actual_leverage, "MICRO_GAIN", max_retries=2
-                )
-                if not sl_verification["verified"]:
-                    log(f"   🚨 CRITICO: Impossibile verificare SL per {symbol}!")
-                elif sl_verification["fixed"]:
-                    log(f"   🔧 SL corretto automaticamente per {symbol}")
+                # IMPORTANTE: Inizializza SL level PRIMA di qualsiasi verifica
+                # per evitare che verifiche successive usino valori stale
+                _current_sl_level[symbol] = -MICRO_GAIN_STOP_LOSS_PERCENT
+                log(f"   📊 SL level inizializzato a {-MICRO_GAIN_STOP_LOSS_PERCENT:+.2f}%")
+
+                # NOTA: Verifica immediata DISABILITATA per evitare race condition
+                # La verifica periodica (con protezione età > 60s) catturerà eventuali problemi
+                # La verifica immediata poteva "correggere" lo SL con valori sbagliati
+                # perché _current_sl_level poteva contenere valori stale da trade precedenti
 
                 # Trade Journal: registra SL placement
                 if TRADE_JOURNAL_ENABLED and trade_uuid and sl_price:
@@ -1852,9 +1851,6 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
                         tj.log_sl_placed(trade_uuid, sl_price, "STOP_TRIGGER", entry_price)
                     except Exception as e:
                         log(f"   ⚠️ Trade Journal SL log error: {e}")
-
-                # Inizializza SL level per trailing
-                _current_sl_level[symbol] = -MICRO_GAIN_STOP_LOSS_PERCENT
 
                 # Notifica Telegram
                 if SENTINEL_TELEGRAM_NOTIFY:
@@ -2170,16 +2166,13 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
                 # Piazza SL order su Hyperliquid (passa actual_leverage per calcolo SL corretto)
                 sl_price = place_micro_pay_sl_order(bot, symbol, direction, entry_price, position_size, leverage=actual_leverage)
 
-                # VERIFICA IMMEDIATA: controlla che l'ordine SL sia stato piazzato correttamente
-                time.sleep(0.5)  # Piccola pausa per sincronizzazione
-                sl_verification = verify_and_fix_sl_order(
-                    bot, symbol, direction, entry_price, position_size,
-                    actual_leverage, "MICRO_PAY", max_retries=2
-                )
-                if not sl_verification["verified"]:
-                    log(f"   🚨 CRITICO: Impossibile verificare SL per {symbol}!")
-                elif sl_verification["fixed"]:
-                    log(f"   🔧 SL corretto automaticamente per {symbol}")
+                # IMPORTANTE: Inizializza SL level PRIMA di qualsiasi verifica
+                # per evitare che verifiche successive usino valori stale
+                _current_sl_level[f"{symbol}_MICROPAY"] = -MICRO_PAY_STOP_LOSS_PERCENT
+                log(f"   📊 MICRO_PAY SL level inizializzato a {-MICRO_PAY_STOP_LOSS_PERCENT:+.2f}%")
+
+                # NOTA: Verifica immediata DISABILITATA per evitare race condition
+                # La verifica periodica (con protezione età > 60s) catturerà eventuali problemi
 
                 # Trade Journal: registra SL placement
                 if TRADE_JOURNAL_ENABLED and trade_uuid and sl_price:
@@ -2187,9 +2180,6 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
                         tj.log_sl_placed(trade_uuid, sl_price, "STOP_TRIGGER", entry_price)
                     except Exception as e:
                         log(f"   ⚠️ Trade Journal SL log error: {e}")
-
-                # Inizializza SL level (no trailing per MICRO_PAY)
-                _current_sl_level[f"{symbol}_MICROPAY"] = -MICRO_PAY_STOP_LOSS_PERCENT
 
                 # Notifica Telegram
                 if SENTINEL_TELEGRAM_NOTIFY:
