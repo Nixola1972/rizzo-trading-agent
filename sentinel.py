@@ -1709,7 +1709,10 @@ def get_daily_trade_count() -> int:
 
 def open_micro_gain_position(bot, symbol: str, direction: str, score: float, leverage: int = None):
     """
-    Apre una posizione MICRO_GAIN con TP e SL orders su Hyperliquid.
+    Apre una posizione MICRO_GAIN con SL order su Hyperliquid.
+
+    NOTA: Il TP LIMIT è stato disabilitato per evitare chiusure premature.
+    La sentinel gestisce il trailing stop.
 
     Args:
         bot: HyperLiquidTrader instance
@@ -1730,6 +1733,37 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
     log(f"🎯 MICRO_GAIN AUTO-OPEN: {symbol} {direction.upper()} (score={score:.1f}, leverage={actual_leverage}x)")
 
     try:
+        # === CLEANUP: Cancella tutti gli ordini esistenti per questo simbolo ===
+        # Evita che ordini LIMIT residui da trade precedenti chiudano la nuova posizione
+        try:
+            try:
+                existing_orders = bot.info.frontend_open_orders(bot.account_address)
+            except AttributeError:
+                existing_orders = bot.info.open_orders(bot.account_address)
+
+            cancelled_count = 0
+            for order in existing_orders:
+                if order.get("coin") == symbol:
+                    try:
+                        bot.exchange.cancel(symbol, order.get("oid"))
+                        cancelled_count += 1
+                        log(f"   🗑️ Cancellato ordine residuo OID={order.get('oid')}")
+                    except Exception as cancel_err:
+                        log(f"   ⚠️ Errore cancellazione ordine residuo: {cancel_err}")
+
+            if cancelled_count > 0:
+                log(f"   ✅ Cancellati {cancelled_count} ordini residui per {symbol}")
+                import time
+                time.sleep(0.3)  # Breve pausa per sincronizzazione
+        except Exception as cleanup_err:
+            log(f"   ⚠️ Errore cleanup ordini pre-apertura: {cleanup_err}")
+
+        # === RESET SL LEVEL: Evita che il FAST loop usi valori vecchi ===
+        # Deve essere fatto PRIMA di aprire la posizione
+        if symbol in _current_sl_level:
+            log(f"   🔄 Reset _current_sl_level[{symbol}] (era: {_current_sl_level[symbol]:+.2f}%)")
+            del _current_sl_level[symbol]
+
         # Prepara ordine
         order_json = {
             "operation": "open",
@@ -2034,6 +2068,37 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
     log(f"💵 MICRO_PAY AUTO-OPEN: {symbol} {direction.upper()} (score={score:.1f}, leverage={actual_leverage}x)")
 
     try:
+        # === CLEANUP: Cancella tutti gli ordini esistenti per questo simbolo ===
+        # Evita che ordini LIMIT residui da trade precedenti chiudano la nuova posizione
+        try:
+            try:
+                existing_orders = bot.info.frontend_open_orders(bot.account_address)
+            except AttributeError:
+                existing_orders = bot.info.open_orders(bot.account_address)
+
+            cancelled_count = 0
+            for order in existing_orders:
+                if order.get("coin") == symbol:
+                    try:
+                        bot.exchange.cancel(symbol, order.get("oid"))
+                        cancelled_count += 1
+                        log(f"   🗑️ Cancellato ordine residuo OID={order.get('oid')}")
+                    except Exception as cancel_err:
+                        log(f"   ⚠️ Errore cancellazione ordine residuo: {cancel_err}")
+
+            if cancelled_count > 0:
+                log(f"   ✅ Cancellati {cancelled_count} ordini residui per {symbol}")
+                import time
+                time.sleep(0.3)  # Breve pausa per sincronizzazione
+        except Exception as cleanup_err:
+            log(f"   ⚠️ Errore cleanup ordini pre-apertura: {cleanup_err}")
+
+        # === RESET SL LEVEL: Evita che il FAST loop usi valori vecchi ===
+        sl_key = f"{symbol}_MICROPAY"
+        if sl_key in _current_sl_level:
+            log(f"   🔄 Reset _current_sl_level[{sl_key}] (era: {_current_sl_level[sl_key]:+.2f}%)")
+            del _current_sl_level[sl_key]
+
         # Prepara ordine
         order_json = {
             "operation": "open",
