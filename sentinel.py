@@ -2264,7 +2264,7 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
                             else:
                                 close_reason = tj.CloseReason.SL_HIT
 
-                    log(f"   📍 Exit price: ${exit_price:.2f}, reason: {close_reason.value}")
+                    log(f"   📍 Exit price: ${exit_price:.2f}, reason: {close_reason}")
             except Exception as e:
                 log(f"   ⚠️ Errore lettura fills: {e}")
                 # Usa ultimo prezzo tracciato come fallback
@@ -2358,6 +2358,27 @@ def detect_externally_closed_positions(bot, existing_symbols: list):
 
             # Cleanup tracking
             db_utils.delete_position_tracking(symbol)
+
+            # SET COOLDOWN per evitare riapertura immediata
+            if MICRO_GAIN_AUTO_OPEN:
+                set_cooldown(symbol)
+                log(f"   ⏳ Cooldown impostato per {symbol}")
+
+            # Cancella ordini TP/SL rimasti su Hyperliquid
+            try:
+                try:
+                    open_orders = bot.info.frontend_open_orders(bot.account_address)
+                except AttributeError:
+                    open_orders = bot.info.open_orders(bot.account_address)
+                cancelled_count = 0
+                for order in open_orders:
+                    if order.get("coin") == symbol:
+                        bot.exchange.cancel(symbol, order.get("oid"))
+                        cancelled_count += 1
+                if cancelled_count > 0:
+                    log(f"   🗑️ Cancellati {cancelled_count} ordini residui per {symbol}")
+            except Exception as e:
+                log(f"   ⚠️ Errore cancellazione ordini residui: {e}")
 
             # Reset SL level
             sl_key_micro = symbol
