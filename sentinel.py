@@ -3089,6 +3089,20 @@ def verify_sl_order_complete(bot, symbol: str, direction: str, entry_price: floa
         if trigger_orders:
             order = trigger_orders[0]  # Usa il primo TRIGGER trovato
             is_trigger = True
+
+            # CRITICO: Se ci sono ordini LIMIT oltre al TRIGGER, sono spuri e vanno cancellati!
+            # Questi potrebbero essere residui che causano chiusure inaspettate
+            if limit_orders:
+                log(f"   ⚠️ {symbol}: Trovati {len(limit_orders)} ordini LIMIT spuri oltre al TRIGGER - CANCELLO!")
+                for spurious_order in limit_orders:
+                    try:
+                        spurious_oid = spurious_order.get("oid")
+                        spurious_price = spurious_order.get("limitPx", "?")
+                        bot.exchange.cancel(symbol, spurious_oid)
+                        log(f"   🗑️ Cancellato ordine LIMIT spurio: OID={spurious_oid}, price={spurious_price}")
+                        time.sleep(0.2)
+                    except Exception as cancel_err:
+                        log(f"   ⚠️ Errore cancellazione ordine spurio OID={spurious_order.get('oid')}: {cancel_err}")
         elif limit_orders:
             order = limit_orders[0]  # Fallback a LIMIT se non ci sono TRIGGER
             is_trigger = False
