@@ -162,6 +162,48 @@ Nei log Smart Exit, il tempo in posizione ora riflette la durata reale:
 
 ---
 
+## 2025-12-07: Fix Direction Case-Sensitivity Bug
+
+### Problema
+Potenziale bug critico: il confronto `direction == "long"` falliva se Hyperliquid ritornava "Long" (maiuscolo).
+Questo poteva causare calcoli SL errati (calcolati come SHORT invece di LONG).
+
+### Causa
+In diverse funzioni, `direction` veniva estratto senza `.lower()`:
+```python
+direction = pos.get("side", "")  # Poteva essere "Long" invece di "long"
+```
+
+### Fix
+Aggiunto `.lower()` in tutte le estrazioni di direction:
+- `_update_sl_for_position` (line 5032)
+- `_handle_position_close` (line 5050)
+- SLOW loop (line 4375)
+- FAST loop (line 4893)
+
+---
+
+## 2025-12-07: Fix Duplicate SL Orders Bug
+
+### Problema
+Due funzioni di verifica SL (`run_order_verification` e `run_passive_sl_verification`) potevano entrambe rilevare "SL mancante" e piazzare ordini duplicati nello stesso ciclo FAST.
+
+### Causa
+Entrambe le funzioni cercavano SL mancanti e provavano a correggerli. A causa della latenza API, la seconda funzione poteva non vedere l'SL appena piazzato dalla prima.
+
+### Fix
+`run_passive_sl_verification` ora salta se `run_order_verification` ha appena corretto degli SL:
+
+```python
+verification_result = run_order_verification(bot, positions)
+if verification_result.get("fixed", 0) == 0:
+    run_passive_sl_verification(bot, positions)
+else:
+    log("🔍 Verifica SL passiva... (skip - SL appena corretti)")
+```
+
+---
+
 ## Template per Future Modifiche
 
 ```markdown

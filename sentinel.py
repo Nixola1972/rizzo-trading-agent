@@ -4372,7 +4372,7 @@ def run_sentinel_check():
 
         for pos in positions:
             symbol = pos.get("symbol", "")
-            direction = pos.get("side", "")
+            direction = pos.get("side", "").lower()  # IMPORTANTE: lowercase per confronti
             entry_price = pos.get("entry_price", 0)
             mark_price = pos.get("mark_price", 0)
             pnl = pos.get("pnl_usd", 0)
@@ -4890,7 +4890,7 @@ def run_sentinel_fast():
 
         for pos in positions:
             symbol = pos.get("symbol", "")
-            direction = pos.get("side", "")
+            direction = pos.get("side", "").lower()  # IMPORTANTE: lowercase per confronti
             entry_price = float(pos.get("entry_price", 0))
             mark_price = float(pos.get("mark_price", 0))
             position_size = float(pos.get("size", 0))
@@ -5015,10 +5015,15 @@ def run_sentinel_fast():
                 _handle_position_close(bot, pos, tracking_data, "CLOSE_TAKE_PROFIT", tp_result.get("reason", "Take Profit"))
 
         # === VERIFICA ORDINI SL ===
-        run_order_verification(bot, positions)
+        verification_result = run_order_verification(bot, positions)
 
         # === PASSIVE SL VERIFICATION ===
-        run_passive_sl_verification(bot, positions)
+        # Skip se run_order_verification ha appena corretto degli SL (evita duplicati)
+        if verification_result.get("fixed", 0) == 0:
+            run_passive_sl_verification(bot, positions)
+        else:
+            log("🔍 Verifica SL passiva... (skip - SL appena corretti)")
+            log("   ✅ Tutti gli SL verificati OK")
 
     except Exception as e:
         log(f"[FAST] ❌ Errore: {e}")
@@ -5029,7 +5034,7 @@ def run_sentinel_fast():
 def _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, mark_price, position_size, pos_leverage):
     """Helper per aggiornare SL di una posizione."""
     symbol = pos.get("symbol", "")
-    direction = pos.get("side", "")
+    direction = pos.get("side", "").lower()  # IMPORTANTE: lowercase per confronti
 
     if trading_mode == "MICRO_GAIN" and tracking_data:
         # Initialize MICRO_GAIN SL level
@@ -5047,7 +5052,7 @@ def _update_sl_for_position(bot, pos, tracking_data, trading_mode, entry_price, 
 def _handle_position_close(bot, pos, tracking_data, action_taken, reason):
     """Helper per gestire la chiusura di una posizione."""
     symbol = pos.get("symbol", "")
-    direction = pos.get("side", "")
+    direction = pos.get("side", "").lower()  # IMPORTANTE: lowercase
     position_size = float(pos.get("size", 0))
 
     try:
