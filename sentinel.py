@@ -1214,8 +1214,8 @@ def run_passive_sl_verification(bot, positions: list):
                     if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
                         created_dt = created_dt.replace(tzinfo=None)
                     age_seconds = (dt_passive.now() - created_dt).total_seconds()
-                    if age_seconds < 60:
-                        log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica passiva (< 60s)")
+                    if age_seconds < 90:
+                        log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica passiva (< 90s)")
                         continue
                 except Exception as e:
                     pass  # In caso di errore, procedi normalmente
@@ -4090,8 +4090,8 @@ def run_order_verification(bot, positions: list) -> dict:
                 if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
                     created_dt = created_dt.replace(tzinfo=None)
                 age_seconds = (dt_check.now() - created_dt).total_seconds()
-                if age_seconds < 60:
-                    log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica SL (< 60s)")
+                if age_seconds < 90:
+                    log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica SL (< 90s)")
                     continue
             except Exception as e:
                 log(f"   ⚠️ {symbol}: Errore calcolo età posizione: {e}")
@@ -5097,8 +5097,8 @@ def run_sentinel_fast():
                     if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
                         created_dt = created_dt.replace(tzinfo=None)
                     age_seconds = (dt_fast.now() - created_dt).total_seconds()
-                    if age_seconds < 30:
-                        log(f"   [FAST] ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip SL update (< 30s)")
+                    if age_seconds < 90:
+                        log(f"   [FAST] ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip SL update (< 90s)")
                         position_age_ok = False
                 except Exception as e:
                     pass  # In caso di errore, procedi normalmente
