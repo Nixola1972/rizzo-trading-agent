@@ -447,6 +447,7 @@ def create_pending_entry(
 ) -> bool:
     """
     Create a pending entry that FAST loop will monitor.
+    Saves to DATABASE for sharing between SLOW and FAST containers.
 
     Args:
         symbol: Trading symbol
@@ -457,15 +458,15 @@ def create_pending_entry(
     Returns:
         True if pending entry created, False otherwise
     """
-    global _pending_entries
+    import db_utils
 
     if not pattern_data:
         return False
 
     # Get entry price (neckline for breakout)
     neckline = pattern_data.get('neckline')
-    if not neckline:
-        log(f"   ⚠️ Cannot create pending entry for {symbol}: no neckline")
+    if not neckline or neckline <= 0:
+        log(f"   ⚠️ Cannot create pending entry for {symbol}: invalid neckline ({neckline})")
         return False
 
     # Get invalidation price (below first low for Double Bottom, above first high for Double Top)
@@ -476,48 +477,55 @@ def create_pending_entry(
         first_high = pattern_data.get('first_high', {})
         invalidation_price = first_high.get('price', 0) * 1.01  # 1% above first high
 
+    if invalidation_price <= 0:
+        log(f"   ⚠️ Cannot create pending entry for {symbol}: invalid invalidation price")
+        return False
+
     # Get suggested SL from pattern
-    suggested_sl = pattern_data.get('suggested_sl')
+    suggested_sl = pattern_data.get('suggested_sl') or 0
     confidence = pattern_data.get('confidence', 0.5)
+    pattern_name = pattern_data.get('pattern', 'UNKNOWN')
 
     # Calculate expiry
     expires_at = datetime.now() + timedelta(minutes=PATTERN_ENTRY_EXPIRY_MINUTES)
 
-    _pending_entries[symbol] = {
-        'direction': direction,
-        'entry_price': neckline,
-        'invalidation_price': invalidation_price,
-        'stop_loss': suggested_sl,
-        'confidence': confidence,
-        'pattern': pattern_data.get('pattern', 'UNKNOWN'),
-        'trading_mode': trading_mode,
-        'created_at': datetime.now(),
-        'expires_at': expires_at,
-        'volume_at_creation': None  # Will be updated on first check
-    }
+    # Save to database (shared between containers)
+    success = db_utils.save_pending_entry(
+        symbol=symbol,
+        direction=direction,
+        entry_price=neckline,
+        invalidation_price=invalidation_price,
+        stop_loss=suggested_sl,
+        expires_at=expires_at.isoformat(),
+        trading_mode=trading_mode,
+        pattern=pattern_name,
+        confidence=confidence
+    )
 
-    log(f"   ⏳ PENDING ENTRY created for {symbol} {direction}")
-    log(f"      Entry: ${neckline:,.2f} (neckline breakout)")
-    log(f"      Invalidation: ${invalidation_price:,.2f}")
-    log(f"      Stop Loss: ${suggested_sl:,.2f}" if suggested_sl else "      Stop Loss: default")
-    log(f"      Expires: {expires_at.strftime('%H:%M:%S')}")
+    if success:
+        log(f"   ⏳ PENDING ENTRY created for {symbol} {direction}")
+        log(f"      Entry: ${neckline:,.4f} (neckline breakout)")
+        log(f"      Invalidation: ${invalidation_price:,.4f}")
+        log(f"      Stop Loss: ${suggested_sl:,.4f}" if suggested_sl else "      Stop Loss: default")
+        log(f"      Expires: {expires_at.strftime('%H:%M:%S')}")
+    else:
+        log(f"   ⚠️ Failed to save pending entry for {symbol} to database")
 
-    return True
+    return success
 
 
 def remove_pending_entry(symbol: str, reason: str):
-    """Remove a pending entry and log the reason."""
-    global _pending_entries
+    """Remove a pending entry from database and log the reason."""
+    import db_utils
 
-    if symbol in _pending_entries:
-        del _pending_entries[symbol]
+    if db_utils.delete_pending_entry(symbol):
         log(f"   🗑️ {symbol}: Pending entry removed - {reason}")
 
 
 def check_pending_entries(exchange, info) -> list:
     """
     Check pending entries and trigger if conditions met.
-    Called from FAST loop.
+    Called from FAST loop. Reads from DATABASE (shared with SLOW).
 
     Args:
         exchange: HyperLiquid exchange instance
@@ -526,17 +534,25 @@ def check_pending_entries(exchange, info) -> list:
     Returns:
         List of triggered entries (symbol, direction, sl)
     """
-    global _pending_entries
+    import db_utils
+    from datetime import datetime as dt
 
     triggered = []
-    now = datetime.now()
+    now = dt.now()
 
     symbols_to_remove = []
 
-    for symbol, entry in list(_pending_entries.items()):
+    # Get all pending entries from database
+    pending_entries = db_utils.get_all_pending_entries()
+
+    for entry in pending_entries:
+        symbol = entry['symbol']
         try:
             # 1. Check expiration
-            if now > entry['expires_at']:
+            expires_at = entry['expires_at']
+            if isinstance(expires_at, str):
+                expires_at = dt.fromisoformat(expires_at.replace('Z', '+00:00').replace('+00:00', ''))
+            if now > expires_at:
                 symbols_to_remove.append((symbol, "⏰ EXPIRED"))
                 continue
 
@@ -547,13 +563,14 @@ def check_pending_entries(exchange, info) -> list:
                 continue
 
             # 3. Check invalidation (pattern broken)
-            if entry['direction'] == "LONG":
+            direction = entry['direction'].upper()
+            if direction == "LONG":
                 if current_price < entry['invalidation_price']:
-                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:,.0f} < invalidation ${entry['invalidation_price']:,.0f})"))
+                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:,.4f} < invalidation ${entry['invalidation_price']:,.4f})"))
                     continue
             else:  # SHORT
                 if current_price > entry['invalidation_price']:
-                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:,.0f} > invalidation ${entry['invalidation_price']:,.0f})"))
+                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:,.4f} > invalidation ${entry['invalidation_price']:,.4f})"))
                     continue
 
             # 4. Check if already in position
@@ -566,7 +583,7 @@ def check_pending_entries(exchange, info) -> list:
             # 5. Check entry condition (breakout)
             entry_triggered = False
 
-            if entry['direction'] == "LONG":
+            if direction == "LONG":
                 if current_price > entry['entry_price']:
                     entry_triggered = True
             else:  # SHORT
@@ -579,10 +596,10 @@ def check_pending_entries(exchange, info) -> list:
                     # For now, skip volume check - can be added later
                     pass
 
-                log(f"   ✅ BREAKOUT for {symbol}! Price ${current_price:,.2f} crossed ${entry['entry_price']:,.2f}")
+                log(f"   ✅ BREAKOUT for {symbol}! Price ${current_price:,.4f} crossed ${entry['entry_price']:,.4f}")
                 triggered.append({
                     'symbol': symbol,
-                    'direction': entry['direction'],
+                    'direction': direction,
                     'stop_loss': entry['stop_loss'],
                     'trading_mode': entry['trading_mode'],
                     'confidence': entry['confidence'],
@@ -593,7 +610,7 @@ def check_pending_entries(exchange, info) -> list:
         except Exception as e:
             log(f"   ⚠️ Error checking pending entry {symbol}: {e}")
 
-    # Remove processed entries
+    # Remove processed entries from database
     for symbol, reason in symbols_to_remove:
         remove_pending_entry(symbol, reason)
 
@@ -5553,8 +5570,8 @@ def run_sentinel_fast():
 
         log(f"[FAST] Controllo {len(positions)} posizioni...")
         if PATTERN_DETECTION_ENABLED and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
-            global _pending_entries
-            pending_count = len(_pending_entries) if _pending_entries else 0
+            pending_entries_db = db_utils.get_all_pending_entries()
+            pending_count = len(pending_entries_db)
             log(f"[FAST] 🔷 Pending Entries: {pending_count} | Contra Action: {PATTERN_CONTRA_ACTION}")
 
         # === DETECT EXTERNALLY CLOSED POSITIONS ===

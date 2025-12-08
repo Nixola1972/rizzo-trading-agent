@@ -293,6 +293,26 @@ CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_created_at
     ON ai_prompt_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_symbol
     ON ai_prompt_logs(symbol);
+
+-- Pending entries for pattern-based entry system (shared between SLOW and FAST)
+CREATE TABLE IF NOT EXISTS pending_entries (
+    id                  BIGSERIAL PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol              TEXT NOT NULL UNIQUE,
+    direction           TEXT NOT NULL,
+    entry_price         NUMERIC(30, 10) NOT NULL,
+    invalidation_price  NUMERIC(30, 10) NOT NULL,
+    stop_loss           NUMERIC(30, 10) NOT NULL,
+    expires_at          TIMESTAMPTZ NOT NULL,
+    trading_mode        TEXT NOT NULL DEFAULT 'MICRO_GAIN',
+    pattern             TEXT NOT NULL DEFAULT 'DOUBLE_BOTTOM',
+    confidence          NUMERIC(5, 2) DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_entries_symbol
+    ON pending_entries(symbol);
+CREATE INDEX IF NOT EXISTS idx_pending_entries_expires
+    ON pending_entries(expires_at);
 """
 
 
@@ -1400,6 +1420,160 @@ def get_all_position_trackings() -> List[Dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+# ==================== PENDING ENTRIES (Pattern Detection) ====================
+
+def save_pending_entry(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    invalidation_price: float,
+    stop_loss: float,
+    expires_at: str,
+    trading_mode: str = "MICRO_GAIN",
+    pattern: str = "DOUBLE_BOTTOM",
+    confidence: float = 0.0
+) -> bool:
+    """
+    Salva un pending entry nel database.
+    Usato per condividere pending entries tra SLOW e FAST containers.
+    """
+    import json
+    from datetime import datetime
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Usa UPSERT per aggiornare se esiste già
+                cur.execute(
+                    """
+                    INSERT INTO pending_entries (symbol, direction, entry_price, invalidation_price, stop_loss, expires_at, trading_mode, pattern, confidence, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (symbol) DO UPDATE SET
+                        direction = EXCLUDED.direction,
+                        entry_price = EXCLUDED.entry_price,
+                        invalidation_price = EXCLUDED.invalidation_price,
+                        stop_loss = EXCLUDED.stop_loss,
+                        expires_at = EXCLUDED.expires_at,
+                        trading_mode = EXCLUDED.trading_mode,
+                        pattern = EXCLUDED.pattern,
+                        confidence = EXCLUDED.confidence,
+                        created_at = NOW()
+                    RETURNING id;
+                    """,
+                    (symbol, direction, entry_price, invalidation_price, stop_loss, expires_at, trading_mode, pattern, confidence),
+                )
+                result = cur.fetchone()
+            conn.commit()
+        return result is not None
+    except Exception as e:
+        print(f"⚠️ Error saving pending entry: {e}")
+        return False
+
+
+def get_pending_entry(symbol: str) -> Optional[Dict[str, Any]]:
+    """Recupera un pending entry per simbolo."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT symbol, direction, entry_price, invalidation_price, stop_loss, expires_at, trading_mode, pattern, confidence, created_at
+                    FROM pending_entries
+                    WHERE symbol = %s;
+                    """,
+                    (symbol,),
+                )
+                row = cur.fetchone()
+
+        if row:
+            return {
+                "symbol": row[0],
+                "direction": row[1],
+                "entry_price": float(row[2]),
+                "invalidation_price": float(row[3]),
+                "stop_loss": float(row[4]),
+                "expires_at": row[5],
+                "trading_mode": row[6],
+                "pattern": row[7],
+                "confidence": float(row[8]) if row[8] else 0.0,
+                "created_at": row[9],
+            }
+        return None
+    except Exception as e:
+        print(f"⚠️ Error getting pending entry: {e}")
+        return None
+
+
+def get_all_pending_entries() -> List[Dict[str, Any]]:
+    """Recupera tutti i pending entries attivi."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT symbol, direction, entry_price, invalidation_price, stop_loss, expires_at, trading_mode, pattern, confidence, created_at
+                    FROM pending_entries;
+                    """
+                )
+                rows = cur.fetchall()
+
+        return [
+            {
+                "symbol": row[0],
+                "direction": row[1],
+                "entry_price": float(row[2]),
+                "invalidation_price": float(row[3]),
+                "stop_loss": float(row[4]),
+                "expires_at": row[5],
+                "trading_mode": row[6],
+                "pattern": row[7],
+                "confidence": float(row[8]) if row[8] else 0.0,
+                "created_at": row[9],
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        print(f"⚠️ Error getting all pending entries: {e}")
+        return []
+
+
+def delete_pending_entry(symbol: str) -> bool:
+    """Elimina un pending entry."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM pending_entries WHERE symbol = %s RETURNING id;",
+                    (symbol,),
+                )
+                deleted = cur.fetchone()
+            conn.commit()
+        return deleted is not None
+    except Exception as e:
+        print(f"⚠️ Error deleting pending entry: {e}")
+        return False
+
+
+def cleanup_expired_pending_entries() -> int:
+    """Rimuove pending entries scaduti. Ritorna il numero di entries rimossi."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM pending_entries
+                    WHERE expires_at < NOW()
+                    RETURNING symbol;
+                    """
+                )
+                deleted = cur.fetchall()
+            conn.commit()
+        return len(deleted)
+    except Exception as e:
+        print(f"⚠️ Error cleaning up pending entries: {e}")
+        return 0
 
 
 # ==================== SENTINEL LOGS ====================
