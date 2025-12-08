@@ -504,9 +504,9 @@ def create_pending_entry(
 
     if success:
         log(f"   ⏳ PENDING ENTRY created for {symbol} {direction}")
-        log(f"      Entry: ${neckline:,.4f} (neckline breakout)")
-        log(f"      Invalidation: ${invalidation_price:,.4f}")
-        log(f"      Stop Loss: ${suggested_sl:,.4f}" if suggested_sl else "      Stop Loss: default")
+        log(f"      Entry: ${neckline:.6f} (neckline breakout)")
+        log(f"      Invalidation: ${invalidation_price:.6f}")
+        log(f"      Stop Loss: ${suggested_sl:.6f}" if suggested_sl else "      Stop Loss: default")
         log(f"      Expires: {expires_at.strftime('%H:%M:%S')}")
     else:
         log(f"   ⚠️ Failed to save pending entry for {symbol} to database")
@@ -566,11 +566,11 @@ def check_pending_entries(exchange, info) -> list:
             direction = entry['direction'].upper()
             if direction == "LONG":
                 if current_price < entry['invalidation_price']:
-                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:,.4f} < invalidation ${entry['invalidation_price']:,.4f})"))
+                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:.6f} < invalidation ${entry['invalidation_price']:.6f})"))
                     continue
             else:  # SHORT
                 if current_price > entry['invalidation_price']:
-                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:,.4f} > invalidation ${entry['invalidation_price']:,.4f})"))
+                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:.6f} > invalidation ${entry['invalidation_price']:.6f})"))
                     continue
 
             # 4. Check if already in position
@@ -596,7 +596,7 @@ def check_pending_entries(exchange, info) -> list:
                     # For now, skip volume check - can be added later
                     pass
 
-                log(f"   ✅ BREAKOUT for {symbol}! Price ${current_price:,.4f} crossed ${entry['entry_price']:,.4f}")
+                log(f"   ✅ BREAKOUT for {symbol}! Price ${current_price:.6f} crossed ${entry['entry_price']:.6f}")
                 triggered.append({
                     'symbol': symbol,
                     'direction': direction,
