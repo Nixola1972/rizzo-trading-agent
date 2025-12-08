@@ -38,25 +38,28 @@ class HyperLiquidTrader:
         self.meta = self.info.meta()
 
     def _get_tick_size(self, symbol: str) -> float:
-        """Ottiene il tick size per un simbolo da meta."""
+        """Ottiene il tick size per un simbolo da meta usando pxDecimals dall'API."""
         try:
             for asset in self.meta.get("universe", []):
                 if asset.get("name") == symbol:
-                    # szDecimals indica i decimali per la size
-                    # Per il prezzo, usiamo un approccio basato sul prezzo corrente
-                    sz_decimals = asset.get("szDecimals", 8)
-                    # Tick size tipici per Hyperliquid
+                    # pxDecimals indica i decimali per il prezzo (tick size = 10^-pxDecimals)
+                    # szDecimals indica i decimali per la size (non usato qui)
+                    px_decimals = asset.get("pxDecimals")
+                    if px_decimals is not None:
+                        tick_size = 10 ** (-int(px_decimals))
+                        return tick_size
+                    # Fallback se pxDecimals non disponibile
                     if symbol == "BTC":
-                        return 1.0  # BTC tick size è $1
+                        return 1.0
                     elif symbol == "ETH":
-                        return 0.1  # ETH tick size è $0.10
+                        return 0.1
                     elif symbol == "SOL":
-                        return 0.01  # SOL tick size è $0.01
+                        return 0.01
                     else:
-                        return 0.01  # Default
-            return 0.01
+                        return 0.0001  # Default più fine per altcoin
+            return 0.0001
         except Exception:
-            return 0.01
+            return 0.0001
 
     def _round_to_tick(self, price: float, symbol: str) -> float:
         """Arrotonda il prezzo al tick size più vicino."""
