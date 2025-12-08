@@ -4624,15 +4624,41 @@ def run_sentinel_check():
             else:
                 pos_leverage = float(leverage_raw)
 
+            # === PROTEZIONE RACE CONDITION SLOW LOOP ===
+            # Skip SL update per posizioni appena aperte (stesso check del FAST loop)
+            slow_position_age_ok = True
+            created_at_slow = tracking_data.get("created_at") or tracking_data.get("entry_time")
+            if created_at_slow:
+                try:
+                    from datetime import datetime as dt_slow
+                    if isinstance(created_at_slow, str):
+                        created_dt_slow = dt_slow.fromisoformat(created_at_slow.replace('Z', '+00:00').replace('+00:00', ''))
+                    else:
+                        created_dt_slow = created_at_slow
+                    if hasattr(created_dt_slow, 'tzinfo') and created_dt_slow.tzinfo is not None:
+                        created_dt_slow = created_dt_slow.replace(tzinfo=None)
+                    age_seconds_slow = (dt_slow.now() - created_dt_slow).total_seconds()
+                    if age_seconds_slow < POSITION_AGE_PROTECTION_SECONDS:
+                        log(f"   [SLOW] ⏳ {symbol}: Posizione aperta da {age_seconds_slow:.0f}s, skip SL update (< {POSITION_AGE_PROTECTION_SECONDS}s)")
+                        slow_position_age_ok = False
+                except Exception as e:
+                    log(f"   [SLOW] ⚠️ {symbol}: Errore calcolo età: {e} - SKIP SL update per sicurezza")
+                    slow_position_age_ok = False
+            else:
+                log(f"   [SLOW] ⏳ {symbol}: created_at mancante, skip SL update per sicurezza")
+                slow_position_age_ok = False
+
             if trading_mode == "MICRO_GAIN" and tracking_data:
                 micro_gain_result = check_micro_gain_reversal(pos, tracking_data)
 
                 # === INITIALIZE MICRO_GAIN SL LEVEL (recupera da ordine esistente) ===
-                if position_size > 0:
+                # Solo se posizione abbastanza vecchia
+                if position_size > 0 and slow_position_age_ok:
                     initialize_micro_gain_sl_level(bot, symbol, direction, entry_price, leverage=int(pos_leverage))
 
                 # === UPDATE MICRO_GAIN TRAILING SL (lock-in profit) ===
-                if position_size > 0:
+                # Solo se posizione abbastanza vecchia
+                if position_size > 0 and slow_position_age_ok:
                     update_micro_gain_sl_order(
                         bot, symbol, direction, entry_price, mark_price, position_size,
                         leverage=int(pos_leverage)
@@ -4640,7 +4666,8 @@ def run_sentinel_check():
 
             elif trading_mode == "NORMAL" and NORMAL_TRAILING_ENABLED:
                 # === UPDATE NORMAL TRAILING SL (same mechanism, different params) ===
-                if position_size > 0:
+                # Solo se posizione abbastanza vecchia
+                if position_size > 0 and slow_position_age_ok:
                     # Prima piazza SL iniziale se non esiste
                     place_normal_initial_sl(
                         bot, symbol, direction, entry_price, position_size, pos_leverage
