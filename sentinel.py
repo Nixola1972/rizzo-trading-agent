@@ -2044,6 +2044,15 @@ def calculate_quick_score(symbol: str, verbose: bool = True, double_bottom: dict
             log(f"      📊 {symbol} [{version_tag}] Score: bull={score_result.get('score_bullish'):.1f} bear={score_result.get('score_bearish'):.1f}{adx_note}")
             if signal_details:
                 log(f"      📊 {symbol} Signals: {' | '.join(signal_details)}")
+
+            # Highlight pattern detection separately for visibility
+            if score_result.get('double_bottom'):
+                db = score_result['double_bottom']
+                log(f"      🔷 {symbol} DOUBLE BOTTOM: conf={db.get('confidence', 0)*100:.0f}% | neckline=${db.get('neckline', 0):,.0f}")
+            if score_result.get('double_top'):
+                dt = score_result['double_top']
+                log(f"      🔻 {symbol} DOUBLE TOP: conf={dt.get('confidence', 0)*100:.0f}% | neckline=${dt.get('neckline', 0):,.0f}")
+
             log(f"      📊 {symbol} Net Score (raw): {net_score:+.1f} → {score_result.get('direction')}")
 
         # Applica smoothing per ridurre volatilità
@@ -5859,6 +5868,8 @@ def run_sentinel_slow():
         existing_symbols = [p.get("symbol") for p in positions]
 
         log(f"[SLOW] Posizioni aperte: {len(positions)}/{MICRO_GAIN_MAX_POSITIONS}")
+        if PATTERN_DETECTION_ENABLED:
+            log(f"[SLOW] 🔷 Pattern Detection: ON ({PATTERN_DETECTION_TIMEFRAME}, {PATTERN_ENTRY_SYSTEM})")
 
         # === CHECK MICRO_GAIN AUTO-OPEN ===
         if len(positions) < MICRO_GAIN_MAX_POSITIONS:
@@ -5956,6 +5967,16 @@ def main():
     print("🛡️  SENTINEL - Trailing Stop Monitor")
     print(f"   Mode: {args.mode.upper()}")
     print("=" * 50)
+
+    # Log configuration status
+    if args.mode in ["slow", "both"]:
+        print(f"   📊 Pattern Detection: {'ENABLED' if PATTERN_DETECTION_ENABLED else 'DISABLED'}")
+        if PATTERN_DETECTION_ENABLED:
+            print(f"      Timeframe: {PATTERN_DETECTION_TIMEFRAME}")
+            print(f"      Entry System: {PATTERN_ENTRY_SYSTEM}")
+            print(f"      Contra Action: {PATTERN_CONTRA_ACTION}")
+            print(f"      Min Confidence: {PATTERN_MIN_CONFIDENCE*100:.0f}%")
+        print("=" * 50)
 
     if args.loop:
         if args.mode == "fast":
