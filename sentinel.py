@@ -2065,10 +2065,14 @@ def calculate_quick_score(symbol: str, verbose: bool = True, double_bottom: dict
             # Highlight pattern detection separately for visibility
             if score_result.get('double_bottom'):
                 db = score_result['double_bottom']
-                log(f"      🔷 {symbol} DOUBLE BOTTOM: conf={db.get('confidence', 0)*100:.0f}% | neckline=${db.get('neckline', 0):,.0f}")
+                neckline = db.get('neckline', 0)
+                neckline_fmt = f"${neckline:,.0f}" if neckline > 10 else f"${neckline:.4f}"
+                log(f"      🔷 {symbol} DOUBLE BOTTOM: conf={db.get('confidence', 0)*100:.0f}% | neckline={neckline_fmt}")
             if score_result.get('double_top'):
                 dt = score_result['double_top']
-                log(f"      🔻 {symbol} DOUBLE TOP: conf={dt.get('confidence', 0)*100:.0f}% | neckline=${dt.get('neckline', 0):,.0f}")
+                neckline = dt.get('neckline', 0)
+                neckline_fmt = f"${neckline:,.0f}" if neckline > 10 else f"${neckline:.4f}"
+                log(f"      🔻 {symbol} DOUBLE TOP: conf={dt.get('confidence', 0)*100:.0f}% | neckline={neckline_fmt}")
 
             log(f"      📊 {symbol} Net Score (raw): {net_score:+.1f} → {score_result.get('direction')}")
 
