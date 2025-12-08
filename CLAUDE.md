@@ -303,4 +303,120 @@ To modify trading behavior:
 
 ---
 
+## Docker Container Architecture
+
+### Container Configuration (December 2025)
+
+Il sistema usa **3 container separati** per evitare conflitti:
+
+| Container | Processo | Funzione |
+|-----------|----------|----------|
+| `rizzo-trading` | `main.py --loop` | AI trading decisions (ogni 60 min) |
+| `rizzo_sentinel_fast` | `sentinel.py --mode fast` | Price monitoring (ogni 3s) |
+| `rizzo_sentinel_slow` | `sentinel.py --mode slow` | Score calculation (ogni 30s) |
+| `rizzo_dashboard` | `streamlit` | Web dashboard (SOLO UI) |
+
+### Comandi di Avvio
+
+```bash
+# MAIN (trading AI)
+docker run -d \
+  --name rizzo-trading \
+  --env-file .env \
+  -v /root/trading-bots/data:/app/data \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  rizzo-trading
+
+# SENTINEL FAST
+docker run -d \
+  --name rizzo_sentinel_fast \
+  --env-file .env \
+  -e PYTHONUNBUFFERED=1 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  rizzo-sentinel:latest \
+  sentinel.py --mode fast --loop
+
+# SENTINEL SLOW
+docker run -d \
+  --name rizzo_sentinel_slow \
+  --env-file .env \
+  -e PYTHONUNBUFFERED=1 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  rizzo-sentinel:latest \
+  sentinel.py --mode slow --loop
+
+# DASHBOARD (solo UI, NO trading!)
+docker run -d \
+  --name rizzo_dashboard \
+  --env-file .env \
+  -p 8501:8501 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint "" \
+  rizzo-dashboard:latest \
+  streamlit run /app/dashboard.py --server.port 8501 --server.address 0.0.0.0
+```
+
+### Verifica Processi Attivi
+
+```bash
+# Comando rapido per verificare che ci siano ESATTAMENTE 3 processi
+echo "=== CONTAINER ===" && docker ps --format "{{.Names}}" | grep rizzo && \
+echo "=== PROCESSI ===" && ps aux | grep -E "main.py|sentinel.py" | grep -v grep | awk '{print $11, $12, $13}'
+```
+
+**Output corretto** (3 processi):
+```
+=== CONTAINER ===
+rizzo_sentinel_slow
+rizzo_sentinel_fast
+rizzo-trading
+rizzo_dashboard
+=== PROCESSI ===
+python3 main.py --loop
+python sentinel.py --mode fast
+python sentinel.py --mode slow
+```
+
+### ⚠️ IMPORTANTE: Entrypoint Separati
+
+- **rizzo-trading**: `entrypoint.sh` avvia SOLO `main.py --loop`
+- **rizzo_dashboard**: avvia SOLO `streamlit` (NO main.py, NO sentinel.py)
+- **rizzo_sentinel_***: avviati direttamente con `--entrypoint python`
+
+---
+
+## Bug Fix History (December 2025)
+
+### Fix 1: Direction Case-Sensitivity
+**Problema**: `direction == "long"` falliva quando Hyperliquid ritornava `"Long"` (uppercase)
+**Soluzione**: Aggiunto `direction = direction.lower()` in tutte le funzioni SL
+
+### Fix 2: Smart Exit ACCELERATE
+**Problema**: ACCELERATE abbassava il profit lock invece di alzarlo
+**Soluzione**: Check `sl_improvement > 0` prima di accelerare
+
+### Fix 3: SL TRIGGER vs LIMIT Confusion
+**Problema**: Ordine TP LIMIT confuso con SL TRIGGER durante la verifica
+**Soluzione**: Separare ordini in `trigger_orders[]` e `limit_orders[]`, prioritizzare TRIGGER
+
+### Fix 4: Automatic TP LIMIT Removal
+**Problema**: `hyperliquid_trader.py` piazzava TP LIMIT automatico per MICRO_GAIN, causando conflitti
+**Soluzione**: Rimosso il codice che piazza TP LIMIT (sentinel gestisce trailing stop)
+
+### Fix 5: Spurious LIMIT Orders Cleanup
+**Problema**: Ordini LIMIT residui causavano chiusure premature
+**Soluzione**: Quando trova TRIGGER valido, cancella automaticamente ordini LIMIT spuri
+
+### Fix 6: Duplicate Processes
+**Problema**: Container dashboard avviava main.py e sentinel.py oltre ai container dedicati
+**Soluzione**: Entrypoint separati per ogni container
+
+---
+
 *Last updated: December 2025*
