@@ -606,6 +606,410 @@ class CryptoTechnicalAnalysisHL:
         }
         return result
 
+    # ==============================
+    #   PATTERN DETECTION (Double Bottom / Double Top)
+    # ==============================
+
+    def _find_local_extrema(self, series: pd.Series, order: int = 5) -> Tuple[List[int], List[int]]:
+        """
+        Find local minima and maxima in a series.
+
+        Args:
+            series: Price series (typically 'low' for minima, 'high' for maxima)
+            order: How many points on each side to compare (higher = less sensitive)
+
+        Returns:
+            Tuple of (minima_indices, maxima_indices)
+        """
+        from scipy.signal import argrelextrema
+        import numpy as np
+
+        arr = series.values
+
+        # Find local minima
+        minima = argrelextrema(arr, np.less_equal, order=order)[0]
+
+        # Find local maxima
+        maxima = argrelextrema(arr, np.greater_equal, order=order)[0]
+
+        return list(minima), list(maxima)
+
+    def detect_double_bottom(
+        self,
+        df: pd.DataFrame,
+        price_tolerance_pct: float = 2.0,
+        min_distance_candles: int = 10,
+        rsi_divergence_min: float = 5.0,
+        lookback: int = 100
+    ) -> Dict:
+        """
+        Detect Double Bottom (W) pattern with RSI divergence.
+
+        A Double Bottom is a bullish reversal pattern characterized by:
+        1. Two similar lows (within tolerance)
+        2. RSI making a HIGHER low at the second bottom (bullish divergence)
+        3. Price between the lows (the "valley") forms a peak (neckline)
+
+        Args:
+            df: DataFrame with 'low', 'close', 'high' and RSI calculated
+            price_tolerance_pct: Max % difference between the two lows
+            min_distance_candles: Minimum candles between first and second low
+            rsi_divergence_min: Minimum RSI increase for divergence
+            lookback: How many candles to analyze
+
+        Returns:
+            Dict with detection results
+        """
+        result = {
+            "detected": False,
+            "confidence": 0.0,
+            "pattern": "DOUBLE_BOTTOM",
+            "first_low": None,
+            "second_low": None,
+            "neckline": None,
+            "rsi_divergence": False,
+            "suggested_sl": None,
+            "atr_14": None,
+            "message": ""
+        }
+
+        try:
+            # Need RSI - calculate if not present
+            if 'rsi_14' not in df.columns:
+                df = df.copy()
+                df['rsi_14'] = self.calculate_rsi(df['close'], 14)
+
+            # Use only the lookback period
+            df_analysis = df.tail(lookback).copy()
+            df_analysis = df_analysis.reset_index(drop=True)
+
+            if len(df_analysis) < min_distance_candles * 2:
+                result["message"] = "Not enough data for pattern detection"
+                return result
+
+            # Find local minima using scipy
+            try:
+                minima_idx, _ = self._find_local_extrema(df_analysis['low'], order=3)
+            except ImportError:
+                # Fallback: simple minima detection without scipy
+                minima_idx = []
+                for i in range(2, len(df_analysis) - 2):
+                    if (df_analysis['low'].iloc[i] <= df_analysis['low'].iloc[i-1] and
+                        df_analysis['low'].iloc[i] <= df_analysis['low'].iloc[i-2] and
+                        df_analysis['low'].iloc[i] <= df_analysis['low'].iloc[i+1] and
+                        df_analysis['low'].iloc[i] <= df_analysis['low'].iloc[i+2]):
+                        minima_idx.append(i)
+
+            if len(minima_idx) < 2:
+                result["message"] = "Not enough local minima found"
+                return result
+
+            # Look for valid double bottom pattern (check most recent pairs first)
+            best_pattern = None
+            best_confidence = 0.0
+
+            for i in range(len(minima_idx) - 1, 0, -1):
+                second_low_idx = minima_idx[i]
+
+                for j in range(i - 1, -1, -1):
+                    first_low_idx = minima_idx[j]
+
+                    # Check minimum distance
+                    distance = second_low_idx - first_low_idx
+                    if distance < min_distance_candles:
+                        continue
+
+                    first_low_price = df_analysis['low'].iloc[first_low_idx]
+                    second_low_price = df_analysis['low'].iloc[second_low_idx]
+
+                    # Check price tolerance
+                    price_diff_pct = abs(second_low_price - first_low_price) / first_low_price * 100
+                    if price_diff_pct > price_tolerance_pct:
+                        continue
+
+                    # Get RSI values at the lows
+                    first_low_rsi = df_analysis['rsi_14'].iloc[first_low_idx]
+                    second_low_rsi = df_analysis['rsi_14'].iloc[second_low_idx]
+
+                    # Check for RSI bullish divergence (RSI higher at second low)
+                    rsi_divergence = second_low_rsi - first_low_rsi
+                    has_divergence = rsi_divergence >= rsi_divergence_min
+
+                    # Find neckline (highest point between the two lows)
+                    between_slice = df_analysis['high'].iloc[first_low_idx:second_low_idx+1]
+                    neckline_price = between_slice.max()
+                    neckline_idx = between_slice.idxmax()
+
+                    # Calculate confidence based on multiple factors
+                    confidence = 0.0
+
+                    # Factor 1: Price similarity (closer = better)
+                    price_similarity = 1.0 - (price_diff_pct / price_tolerance_pct)
+                    confidence += price_similarity * 0.25
+
+                    # Factor 2: RSI divergence strength
+                    if has_divergence:
+                        divergence_strength = min(rsi_divergence / 15.0, 1.0)
+                        confidence += divergence_strength * 0.35
+
+                    # Factor 3: Pattern recency (more recent = better)
+                    recency = second_low_idx / len(df_analysis)
+                    confidence += recency * 0.20
+
+                    # Factor 4: Neckline height (higher relative to lows = better defined pattern)
+                    avg_low = (first_low_price + second_low_price) / 2
+                    neckline_height_pct = (neckline_price - avg_low) / avg_low * 100
+                    if neckline_height_pct > 1.0:
+                        confidence += min(neckline_height_pct / 5.0, 1.0) * 0.20
+
+                    # Bonus: Second low slightly higher (classic W pattern)
+                    if second_low_price > first_low_price:
+                        confidence += 0.05
+
+                    confidence = min(confidence, 1.0)
+
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+
+                        # Calculate ATR for stop loss
+                        atr_14 = self.calculate_atr(
+                            df_analysis['high'],
+                            df_analysis['low'],
+                            df_analysis['close'],
+                            14
+                        ).iloc[-1]
+
+                        # Suggested SL: below first low by 1.5 * ATR
+                        suggested_sl = min(first_low_price, second_low_price) - (1.5 * atr_14)
+
+                        best_pattern = {
+                            "first_low": {
+                                "price": first_low_price,
+                                "rsi": first_low_rsi,
+                                "candle_index": first_low_idx,
+                                "timestamp": df_analysis['timestamp'].iloc[first_low_idx] if 'timestamp' in df_analysis.columns else None
+                            },
+                            "second_low": {
+                                "price": second_low_price,
+                                "rsi": second_low_rsi,
+                                "candle_index": second_low_idx,
+                                "timestamp": df_analysis['timestamp'].iloc[second_low_idx] if 'timestamp' in df_analysis.columns else None
+                            },
+                            "neckline": neckline_price,
+                            "neckline_index": neckline_idx,
+                            "rsi_divergence": has_divergence,
+                            "rsi_divergence_value": rsi_divergence,
+                            "suggested_sl": suggested_sl,
+                            "atr_14": atr_14,
+                            "price_diff_pct": price_diff_pct
+                        }
+
+            if best_pattern and best_confidence >= 0.5:
+                result["detected"] = True
+                result["confidence"] = round(best_confidence, 2)
+                result["first_low"] = best_pattern["first_low"]
+                result["second_low"] = best_pattern["second_low"]
+                result["neckline"] = best_pattern["neckline"]
+                result["rsi_divergence"] = best_pattern["rsi_divergence"]
+                result["suggested_sl"] = best_pattern["suggested_sl"]
+                result["atr_14"] = best_pattern["atr_14"]
+                result["message"] = f"Double Bottom detected with {best_confidence*100:.0f}% confidence"
+            else:
+                result["message"] = "No valid Double Bottom pattern found"
+
+        except Exception as e:
+            result["message"] = f"Error detecting pattern: {str(e)}"
+
+        return result
+
+    def detect_double_top(
+        self,
+        df: pd.DataFrame,
+        price_tolerance_pct: float = 2.0,
+        min_distance_candles: int = 10,
+        rsi_divergence_min: float = 5.0,
+        lookback: int = 100
+    ) -> Dict:
+        """
+        Detect Double Top (M) pattern with RSI divergence.
+
+        A Double Top is a bearish reversal pattern characterized by:
+        1. Two similar highs (within tolerance)
+        2. RSI making a LOWER high at the second top (bearish divergence)
+        3. Price between the highs (the "peak") forms a trough (neckline)
+
+        Args:
+            df: DataFrame with 'high', 'close', 'low' and RSI calculated
+            price_tolerance_pct: Max % difference between the two highs
+            min_distance_candles: Minimum candles between first and second high
+            rsi_divergence_min: Minimum RSI decrease for divergence
+            lookback: How many candles to analyze
+
+        Returns:
+            Dict with detection results
+        """
+        result = {
+            "detected": False,
+            "confidence": 0.0,
+            "pattern": "DOUBLE_TOP",
+            "first_high": None,
+            "second_high": None,
+            "neckline": None,
+            "rsi_divergence": False,
+            "suggested_sl": None,
+            "atr_14": None,
+            "message": ""
+        }
+
+        try:
+            # Need RSI - calculate if not present
+            if 'rsi_14' not in df.columns:
+                df = df.copy()
+                df['rsi_14'] = self.calculate_rsi(df['close'], 14)
+
+            # Use only the lookback period
+            df_analysis = df.tail(lookback).copy()
+            df_analysis = df_analysis.reset_index(drop=True)
+
+            if len(df_analysis) < min_distance_candles * 2:
+                result["message"] = "Not enough data for pattern detection"
+                return result
+
+            # Find local maxima
+            try:
+                _, maxima_idx = self._find_local_extrema(df_analysis['high'], order=3)
+            except ImportError:
+                # Fallback: simple maxima detection without scipy
+                maxima_idx = []
+                for i in range(2, len(df_analysis) - 2):
+                    if (df_analysis['high'].iloc[i] >= df_analysis['high'].iloc[i-1] and
+                        df_analysis['high'].iloc[i] >= df_analysis['high'].iloc[i-2] and
+                        df_analysis['high'].iloc[i] >= df_analysis['high'].iloc[i+1] and
+                        df_analysis['high'].iloc[i] >= df_analysis['high'].iloc[i+2]):
+                        maxima_idx.append(i)
+
+            if len(maxima_idx) < 2:
+                result["message"] = "Not enough local maxima found"
+                return result
+
+            # Look for valid double top pattern (check most recent pairs first)
+            best_pattern = None
+            best_confidence = 0.0
+
+            for i in range(len(maxima_idx) - 1, 0, -1):
+                second_high_idx = maxima_idx[i]
+
+                for j in range(i - 1, -1, -1):
+                    first_high_idx = maxima_idx[j]
+
+                    # Check minimum distance
+                    distance = second_high_idx - first_high_idx
+                    if distance < min_distance_candles:
+                        continue
+
+                    first_high_price = df_analysis['high'].iloc[first_high_idx]
+                    second_high_price = df_analysis['high'].iloc[second_high_idx]
+
+                    # Check price tolerance
+                    price_diff_pct = abs(second_high_price - first_high_price) / first_high_price * 100
+                    if price_diff_pct > price_tolerance_pct:
+                        continue
+
+                    # Get RSI values at the highs
+                    first_high_rsi = df_analysis['rsi_14'].iloc[first_high_idx]
+                    second_high_rsi = df_analysis['rsi_14'].iloc[second_high_idx]
+
+                    # Check for RSI bearish divergence (RSI lower at second high)
+                    rsi_divergence = first_high_rsi - second_high_rsi
+                    has_divergence = rsi_divergence >= rsi_divergence_min
+
+                    # Find neckline (lowest point between the two highs)
+                    between_slice = df_analysis['low'].iloc[first_high_idx:second_high_idx+1]
+                    neckline_price = between_slice.min()
+                    neckline_idx = between_slice.idxmin()
+
+                    # Calculate confidence based on multiple factors
+                    confidence = 0.0
+
+                    # Factor 1: Price similarity (closer = better)
+                    price_similarity = 1.0 - (price_diff_pct / price_tolerance_pct)
+                    confidence += price_similarity * 0.25
+
+                    # Factor 2: RSI divergence strength
+                    if has_divergence:
+                        divergence_strength = min(rsi_divergence / 15.0, 1.0)
+                        confidence += divergence_strength * 0.35
+
+                    # Factor 3: Pattern recency (more recent = better)
+                    recency = second_high_idx / len(df_analysis)
+                    confidence += recency * 0.20
+
+                    # Factor 4: Neckline depth (lower relative to highs = better defined pattern)
+                    avg_high = (first_high_price + second_high_price) / 2
+                    neckline_depth_pct = (avg_high - neckline_price) / avg_high * 100
+                    if neckline_depth_pct > 1.0:
+                        confidence += min(neckline_depth_pct / 5.0, 1.0) * 0.20
+
+                    # Bonus: Second high slightly lower (classic M pattern)
+                    if second_high_price < first_high_price:
+                        confidence += 0.05
+
+                    confidence = min(confidence, 1.0)
+
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+
+                        # Calculate ATR for stop loss
+                        atr_14 = self.calculate_atr(
+                            df_analysis['high'],
+                            df_analysis['low'],
+                            df_analysis['close'],
+                            14
+                        ).iloc[-1]
+
+                        # Suggested SL: above first high by 1.5 * ATR
+                        suggested_sl = max(first_high_price, second_high_price) + (1.5 * atr_14)
+
+                        best_pattern = {
+                            "first_high": {
+                                "price": first_high_price,
+                                "rsi": first_high_rsi,
+                                "candle_index": first_high_idx,
+                                "timestamp": df_analysis['timestamp'].iloc[first_high_idx] if 'timestamp' in df_analysis.columns else None
+                            },
+                            "second_high": {
+                                "price": second_high_price,
+                                "rsi": second_high_rsi,
+                                "candle_index": second_high_idx,
+                                "timestamp": df_analysis['timestamp'].iloc[second_high_idx] if 'timestamp' in df_analysis.columns else None
+                            },
+                            "neckline": neckline_price,
+                            "neckline_index": neckline_idx,
+                            "rsi_divergence": has_divergence,
+                            "rsi_divergence_value": rsi_divergence,
+                            "suggested_sl": suggested_sl,
+                            "atr_14": atr_14,
+                            "price_diff_pct": price_diff_pct
+                        }
+
+            if best_pattern and best_confidence >= 0.5:
+                result["detected"] = True
+                result["confidence"] = round(best_confidence, 2)
+                result["first_high"] = best_pattern["first_high"]
+                result["second_high"] = best_pattern["second_high"]
+                result["neckline"] = best_pattern["neckline"]
+                result["rsi_divergence"] = best_pattern["rsi_divergence"]
+                result["suggested_sl"] = best_pattern["suggested_sl"]
+                result["atr_14"] = best_pattern["atr_14"]
+                result["message"] = f"Double Top detected with {best_confidence*100:.0f}% confidence"
+            else:
+                result["message"] = "No valid Double Top pattern found"
+
+        except Exception as e:
+            result["message"] = f"Error detecting pattern: {str(e)}"
+
+        return result
+
     def format_output(self, data: Dict) -> str:
         output = f"\n<{data['ticker']}_data>\n"
         output += f"Timestamp: {data['timestamp']} (UTC) (Hyperliquid, 15m)\n"

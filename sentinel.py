@@ -199,11 +199,45 @@ AUTO_TP_ENABLED = os.getenv('AUTO_TP_ENABLED', 'false').lower() == 'true'
 AUTO_TP_PERCENT = float(os.getenv('AUTO_TP_PERCENT', '0.4'))  # Target profit % P&L
 AUTO_TP_DELAY_MINUTES = int(os.getenv('AUTO_TP_DELAY_MINUTES', '15'))  # Piazza TP dopo X minuti
 
+# ===== PATTERN DETECTION CONFIG (Double Bottom / Double Top) =====
+# Detects reversal patterns for better entry timing and exit protection
+PATTERN_DETECTION_ENABLED = os.getenv('PATTERN_DETECTION_ENABLED', 'true').lower() == 'true'
+PATTERN_DETECTION_TIMEFRAME = os.getenv('PATTERN_DETECTION_TIMEFRAME', '1h')  # 15m, 1h, 4h
+PATTERN_LOOKBACK_CANDLES = int(os.getenv('PATTERN_LOOKBACK_CANDLES', '100'))
+PATTERN_CACHE_SECONDS = int(os.getenv('PATTERN_CACHE_SECONDS', '300'))  # 5 min cache
+
+# Pattern parameters
+PATTERN_PRICE_TOLERANCE_PCT = float(os.getenv('PATTERN_PRICE_TOLERANCE_PCT', '2.0'))
+PATTERN_MIN_DISTANCE_CANDLES = int(os.getenv('PATTERN_MIN_DISTANCE_CANDLES', '10'))
+PATTERN_RSI_DIVERGENCE_MIN = float(os.getenv('PATTERN_RSI_DIVERGENCE_MIN', '5'))
+PATTERN_MIN_CONFIDENCE = float(os.getenv('PATTERN_MIN_CONFIDENCE', '0.60'))
+
+# Entry system: IMMEDIATE (enter now) or FAST_LOOP (wait for breakout)
+PATTERN_ENTRY_SYSTEM = os.getenv('PATTERN_ENTRY_SYSTEM', 'FAST_LOOP').upper()
+PATTERN_ENTRY_EXPIRY_MINUTES = int(os.getenv('PATTERN_ENTRY_EXPIRY_MINUTES', '120'))
+PATTERN_ENTRY_CONFIRM_VOLUME = os.getenv('PATTERN_ENTRY_CONFIRM_VOLUME', 'true').lower() == 'true'
+PATTERN_ENTRY_VOLUME_MULTIPLIER = float(os.getenv('PATTERN_ENTRY_VOLUME_MULTIPLIER', '1.5'))
+
+# Exit system: action on contrary pattern
+# Options: CLOSE, ACCELERATE, REDUCE_50, ALERT_ONLY
+PATTERN_CONTRA_ACTION = os.getenv('PATTERN_CONTRA_ACTION', 'ACCELERATE').upper()
+PATTERN_CONTRA_MIN_CONFIDENCE = float(os.getenv('PATTERN_CONTRA_MIN_CONFIDENCE', '0.70'))
+
+# Stop Loss from pattern
+PATTERN_SL_USE_ATR = os.getenv('PATTERN_SL_USE_ATR', 'true').lower() == 'true'
+PATTERN_SL_ATR_MULTIPLIER = float(os.getenv('PATTERN_SL_ATR_MULTIPLIER', '1.5'))
+
 # Tracking interno per cooldown leverage scaling (symbol -> cicli rimanenti)
 _leverage_scaling_cooldown = {}
 
 # Tracking interno per AUTO_TP (symbol -> order_id se già piazzato)
 _auto_tp_orders = {}
+
+# Pattern cache (symbol -> {'last_fetch': datetime, 'double_bottom': {}, 'double_top': {}})
+_pattern_cache = {}
+
+# Pending entries for FAST_LOOP system (symbol -> entry_data)
+_pending_entries = {}
 
 def parse_trailing_steps(steps_str: str, default_steps: list = None) -> list:
     """Parse trailing steps from string format 'pnl:sl,pnl:sl,...' to list of tuples."""
@@ -327,6 +361,313 @@ def get_btc_trend() -> str:
         log(f"   ⚠️ Error getting BTC trend: {e}")
 
     return 'neutral'
+
+
+# ===== PATTERN DETECTION FUNCTIONS =====
+
+def get_patterns_for_symbol(symbol: str) -> tuple:
+    """
+    Get Double Bottom and Double Top patterns for a symbol.
+    Uses cache to minimize API calls (patterns change slowly on 1h timeframe).
+
+    Returns:
+        Tuple of (double_bottom_result, double_top_result)
+    """
+    global _pattern_cache
+
+    if not PATTERN_DETECTION_ENABLED:
+        return None, None
+
+    now = datetime.now()
+
+    # Check cache
+    if symbol in _pattern_cache:
+        cache = _pattern_cache[symbol]
+        cache_age = (now - cache['last_fetch']).total_seconds()
+        if cache_age < PATTERN_CACHE_SECONDS:
+            return cache.get('double_bottom'), cache.get('double_top')
+
+    try:
+        from indicators import CryptoTechnicalAnalysisHL
+
+        analyzer = CryptoTechnicalAnalysisHL(testnet=TESTNET)
+
+        # Fetch candles for pattern detection timeframe
+        df = analyzer.fetch_ohlcv(symbol, PATTERN_DETECTION_TIMEFRAME, limit=PATTERN_LOOKBACK_CANDLES + 20)
+
+        if len(df) < 30:
+            log(f"   ⚠️ Not enough candles for pattern detection on {symbol}")
+            return None, None
+
+        # Detect patterns
+        double_bottom = analyzer.detect_double_bottom(
+            df,
+            price_tolerance_pct=PATTERN_PRICE_TOLERANCE_PCT,
+            min_distance_candles=PATTERN_MIN_DISTANCE_CANDLES,
+            rsi_divergence_min=PATTERN_RSI_DIVERGENCE_MIN,
+            lookback=PATTERN_LOOKBACK_CANDLES
+        )
+
+        double_top = analyzer.detect_double_top(
+            df,
+            price_tolerance_pct=PATTERN_PRICE_TOLERANCE_PCT,
+            min_distance_candles=PATTERN_MIN_DISTANCE_CANDLES,
+            rsi_divergence_min=PATTERN_RSI_DIVERGENCE_MIN,
+            lookback=PATTERN_LOOKBACK_CANDLES
+        )
+
+        # Update cache
+        _pattern_cache[symbol] = {
+            'last_fetch': now,
+            'double_bottom': double_bottom,
+            'double_top': double_top
+        }
+
+        # Log if pattern detected
+        if double_bottom and double_bottom.get('detected'):
+            conf = double_bottom.get('confidence', 0) * 100
+            log(f"   🔷 {symbol}: DOUBLE BOTTOM detected (confidence: {conf:.0f}%)")
+
+        if double_top and double_top.get('detected'):
+            conf = double_top.get('confidence', 0) * 100
+            log(f"   🔶 {symbol}: DOUBLE TOP detected (confidence: {conf:.0f}%)")
+
+        return double_bottom, double_top
+
+    except Exception as e:
+        log(f"   ⚠️ Error detecting patterns for {symbol}: {e}")
+        return None, None
+
+
+def create_pending_entry(
+    symbol: str,
+    direction: str,
+    pattern_data: dict,
+    trading_mode: str = "MICRO_GAIN"
+) -> bool:
+    """
+    Create a pending entry that FAST loop will monitor.
+
+    Args:
+        symbol: Trading symbol
+        direction: LONG or SHORT
+        pattern_data: Pattern detection result with neckline, suggested_sl, etc.
+        trading_mode: MICRO_GAIN or MICRO_PAY
+
+    Returns:
+        True if pending entry created, False otherwise
+    """
+    global _pending_entries
+
+    if not pattern_data:
+        return False
+
+    # Get entry price (neckline for breakout)
+    neckline = pattern_data.get('neckline')
+    if not neckline:
+        log(f"   ⚠️ Cannot create pending entry for {symbol}: no neckline")
+        return False
+
+    # Get invalidation price (below first low for Double Bottom, above first high for Double Top)
+    if direction == "LONG":
+        first_low = pattern_data.get('first_low', {})
+        invalidation_price = first_low.get('price', 0) * 0.99  # 1% below first low
+    else:
+        first_high = pattern_data.get('first_high', {})
+        invalidation_price = first_high.get('price', 0) * 1.01  # 1% above first high
+
+    # Get suggested SL from pattern
+    suggested_sl = pattern_data.get('suggested_sl')
+    confidence = pattern_data.get('confidence', 0.5)
+
+    # Calculate expiry
+    expires_at = datetime.now() + timedelta(minutes=PATTERN_ENTRY_EXPIRY_MINUTES)
+
+    _pending_entries[symbol] = {
+        'direction': direction,
+        'entry_price': neckline,
+        'invalidation_price': invalidation_price,
+        'stop_loss': suggested_sl,
+        'confidence': confidence,
+        'pattern': pattern_data.get('pattern', 'UNKNOWN'),
+        'trading_mode': trading_mode,
+        'created_at': datetime.now(),
+        'expires_at': expires_at,
+        'volume_at_creation': None  # Will be updated on first check
+    }
+
+    log(f"   ⏳ PENDING ENTRY created for {symbol} {direction}")
+    log(f"      Entry: ${neckline:,.2f} (neckline breakout)")
+    log(f"      Invalidation: ${invalidation_price:,.2f}")
+    log(f"      Stop Loss: ${suggested_sl:,.2f}" if suggested_sl else "      Stop Loss: default")
+    log(f"      Expires: {expires_at.strftime('%H:%M:%S')}")
+
+    return True
+
+
+def remove_pending_entry(symbol: str, reason: str):
+    """Remove a pending entry and log the reason."""
+    global _pending_entries
+
+    if symbol in _pending_entries:
+        del _pending_entries[symbol]
+        log(f"   🗑️ {symbol}: Pending entry removed - {reason}")
+
+
+def check_pending_entries(exchange, info) -> list:
+    """
+    Check pending entries and trigger if conditions met.
+    Called from FAST loop.
+
+    Args:
+        exchange: HyperLiquid exchange instance
+        info: HyperLiquid info instance
+
+    Returns:
+        List of triggered entries (symbol, direction, sl)
+    """
+    global _pending_entries
+
+    triggered = []
+    now = datetime.now()
+
+    symbols_to_remove = []
+
+    for symbol, entry in list(_pending_entries.items()):
+        try:
+            # 1. Check expiration
+            if now > entry['expires_at']:
+                symbols_to_remove.append((symbol, "⏰ EXPIRED"))
+                continue
+
+            # 2. Get current price
+            try:
+                current_price = float(info.all_mids()[symbol])
+            except Exception:
+                continue
+
+            # 3. Check invalidation (pattern broken)
+            if entry['direction'] == "LONG":
+                if current_price < entry['invalidation_price']:
+                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:,.0f} < invalidation ${entry['invalidation_price']:,.0f})"))
+                    continue
+            else:  # SHORT
+                if current_price > entry['invalidation_price']:
+                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:,.0f} > invalidation ${entry['invalidation_price']:,.0f})"))
+                    continue
+
+            # 4. Check if already in position
+            from hl_utils import get_position
+            position = get_position(info, symbol)
+            if position and abs(position.get('size', 0)) > 0:
+                symbols_to_remove.append((symbol, "📍 Already in position"))
+                continue
+
+            # 5. Check entry condition (breakout)
+            entry_triggered = False
+
+            if entry['direction'] == "LONG":
+                if current_price > entry['entry_price']:
+                    entry_triggered = True
+            else:  # SHORT
+                if current_price < entry['entry_price']:
+                    entry_triggered = True
+
+            if entry_triggered:
+                # Optional: Check volume confirmation
+                if PATTERN_ENTRY_CONFIRM_VOLUME:
+                    # For now, skip volume check - can be added later
+                    pass
+
+                log(f"   ✅ BREAKOUT for {symbol}! Price ${current_price:,.2f} crossed ${entry['entry_price']:,.2f}")
+                triggered.append({
+                    'symbol': symbol,
+                    'direction': entry['direction'],
+                    'stop_loss': entry['stop_loss'],
+                    'trading_mode': entry['trading_mode'],
+                    'confidence': entry['confidence'],
+                    'pattern': entry['pattern']
+                })
+                symbols_to_remove.append((symbol, "✅ TRIGGERED"))
+
+        except Exception as e:
+            log(f"   ⚠️ Error checking pending entry {symbol}: {e}")
+
+    # Remove processed entries
+    for symbol, reason in symbols_to_remove:
+        remove_pending_entry(symbol, reason)
+
+    return triggered
+
+
+def handle_contrary_pattern(
+    symbol: str,
+    position_direction: str,
+    pattern_type: str,
+    pattern_confidence: float,
+    exchange,
+    info
+) -> bool:
+    """
+    Handle detection of a contrary pattern (e.g., Double Bottom while SHORT).
+
+    Args:
+        symbol: Trading symbol
+        position_direction: Current position direction (LONG or SHORT)
+        pattern_type: DOUBLE_BOTTOM or DOUBLE_TOP
+        pattern_confidence: Pattern confidence (0-1)
+        exchange: HyperLiquid exchange instance
+        info: HyperLiquid info instance
+
+    Returns:
+        True if action was taken, False otherwise
+    """
+    # Check if pattern is contrary to position
+    is_contrary = False
+    if position_direction == "LONG" and pattern_type == "DOUBLE_TOP":
+        is_contrary = True
+    elif position_direction == "SHORT" and pattern_type == "DOUBLE_BOTTOM":
+        is_contrary = True
+
+    if not is_contrary:
+        return False
+
+    # Check minimum confidence
+    if pattern_confidence < PATTERN_CONTRA_MIN_CONFIDENCE:
+        log(f"   ⚠️ {symbol}: Contrary pattern detected but confidence too low ({pattern_confidence*100:.0f}% < {PATTERN_CONTRA_MIN_CONFIDENCE*100:.0f}%)")
+        return False
+
+    log(f"   ⚠️ {symbol}: CONTRARY PATTERN! {pattern_type} detected while {position_direction} (conf: {pattern_confidence*100:.0f}%)")
+
+    # Take action based on configuration
+    if PATTERN_CONTRA_ACTION == "ALERT_ONLY":
+        log(f"   📢 {symbol}: Alert only mode - no action taken")
+        return False
+
+    elif PATTERN_CONTRA_ACTION == "ACCELERATE":
+        # Trigger ACCELERATE to tighten stop loss
+        log(f"   🔄 {symbol}: Triggering ACCELERATE to protect position")
+        # ACCELERATE is handled by smart_exit, we just need to signal it
+        # Return True to indicate action was signaled
+        return True
+
+    elif PATTERN_CONTRA_ACTION == "CLOSE":
+        log(f"   🚪 {symbol}: Closing position due to contrary pattern")
+        try:
+            from hl_utils import close_position
+            close_position(exchange, info, symbol)
+            return True
+        except Exception as e:
+            log(f"   ❌ {symbol}: Error closing position: {e}")
+            return False
+
+    elif PATTERN_CONTRA_ACTION == "REDUCE_50":
+        log(f"   ➗ {symbol}: Reducing position by 50%")
+        # This would require implementing partial close
+        # For now, just log
+        return False
+
+    return False
 
 
 # Tracking SL corrente per ogni simbolo (in-memory)
@@ -637,6 +978,53 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
             whale_sentiment = "unavailable"
             whale_symbol = {}
 
+        # === 1.5 PATTERN DETECTION (cached) ===
+        double_bottom, double_top = get_patterns_for_symbol(symbol)
+        pattern_info = ""
+        pattern_data_for_entry = None  # Will be used for pending entry creation
+
+        if double_bottom and double_bottom.get('detected'):
+            conf = double_bottom.get('confidence', 0) * 100
+            first_low = double_bottom.get('first_low', {})
+            second_low = double_bottom.get('second_low', {})
+            neckline = double_bottom.get('neckline', 0)
+            rsi_div = double_bottom.get('rsi_divergence', False)
+            suggested_sl = double_bottom.get('suggested_sl', 0)
+
+            pattern_info = f"""
+### PATTERN DETECTED: DOUBLE BOTTOM (W) 🔷
+- **Confidence**: {conf:.0f}%
+- **First Low**: ${first_low.get('price', 0):,.2f} (RSI: {first_low.get('rsi', 0):.1f})
+- **Second Low**: ${second_low.get('price', 0):,.2f} (RSI: {second_low.get('rsi', 0):.1f})
+- **RSI Divergence**: {'BULLISH ✓ (RSI higher at second low)' if rsi_div else 'No divergence'}
+- **Neckline (breakout level)**: ${neckline:,.2f}
+- **Suggested Stop Loss**: ${suggested_sl:,.2f} (ATR-based)
+- **Interpretation**: Double Bottom is a BULLISH reversal pattern. {"✓ CONFIRMS proposed LONG" if direction.lower() == "long" else "⚠ CONTRADICTS proposed SHORT"}
+"""
+            if direction.lower() == "long":
+                pattern_data_for_entry = double_bottom
+
+        elif double_top and double_top.get('detected'):
+            conf = double_top.get('confidence', 0) * 100
+            first_high = double_top.get('first_high', {})
+            second_high = double_top.get('second_high', {})
+            neckline = double_top.get('neckline', 0)
+            rsi_div = double_top.get('rsi_divergence', False)
+            suggested_sl = double_top.get('suggested_sl', 0)
+
+            pattern_info = f"""
+### PATTERN DETECTED: DOUBLE TOP (M) 🔶
+- **Confidence**: {conf:.0f}%
+- **First High**: ${first_high.get('price', 0):,.2f} (RSI: {first_high.get('rsi', 0):.1f})
+- **Second High**: ${second_high.get('price', 0):,.2f} (RSI: {second_high.get('rsi', 0):.1f})
+- **RSI Divergence**: {'BEARISH ✓ (RSI lower at second high)' if rsi_div else 'No divergence'}
+- **Neckline (breakdown level)**: ${neckline:,.2f}
+- **Suggested Stop Loss**: ${suggested_sl:,.2f} (ATR-based)
+- **Interpretation**: Double Top is a BEARISH reversal pattern. {"✓ CONFIRMS proposed SHORT" if direction.lower() == "short" else "⚠ CONTRADICTS proposed LONG"}
+"""
+            if direction.lower() == "short":
+                pattern_data_for_entry = double_top
+
         # === 2. EXTRACT INDICATOR VALUES FOR PROMPT ===
         # Data is nested under 'current' key
         current_data = indicators_data.get('current', {})
@@ -762,7 +1150,7 @@ You are validating a proposed trade. Analyze the REAL DATA and decide if this tr
 
 ### SENTIMENT:
 - Fear & Greed: {sentiment_data.get('value', 'N/A')} ({sentiment_data.get('sentiment', 'N/A')})
-
+{pattern_info}
 {style_instructions}
 
 ### YOUR DECISION:
@@ -1489,18 +1877,21 @@ def check_score_confirmation(symbol: str, threshold: float) -> dict:
     return result
 
 
-def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
+def calculate_quick_score(symbol: str, verbose: bool = True, double_bottom: dict = None, double_top: dict = None) -> float:
     """
     Calcola lo score usando signal_scorer.py (V1 o V2) + sentiment cache.
 
     V1: Logica binaria on/off
     V2: Logica graduale con indicatori aggiuntivi (Bollinger, OBV, MACD Histogram, EMA Alignment)
+        + Pattern Detection (Double Bottom / Double Top)
 
     Seleziona V1 o V2 tramite USE_SMART_SCORE_V2 in .env
 
     Args:
         symbol: Simbolo da analizzare
         verbose: Se True, logga tutti i dettagli del calcolo
+        double_bottom: Pattern detection result (optional)
+        double_top: Pattern detection result (optional)
 
     Returns:
         float: Score positivo = bullish, negativo = bearish
@@ -1617,7 +2008,10 @@ def calculate_quick_score(symbol: str, verbose: bool = True) -> float:
                 obv_trend=obv_data.get('trend'),
                 macd_histogram_trend=macd_analysis.get('histogram_trend'),
                 ema_alignment=ema_alignment,
-                adx=adx
+                adx=adx,
+                # Pattern detection
+                double_bottom=double_bottom,
+                double_top=double_top
             )
         else:
             # V1: Logica originale
@@ -4236,13 +4630,23 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
             log(f"   ⚠️ Max posizioni raggiunte ({MICRO_GAIN_MAX_POSITIONS})")
             break
 
-        # Calcola score
-        score = calculate_quick_score(symbol)
+        # Get pattern data (cached)
+        double_bottom, double_top = get_patterns_for_symbol(symbol)
+
+        # Calcola score (now includes pattern contribution)
+        score = calculate_quick_score(symbol, double_bottom=double_bottom, double_top=double_top)
         abs_score = abs(score)
 
         log(f"   📊 {symbol} quick_score: {score:.1f}")
 
         direction = "long" if score > 0 else "short"
+
+        # Determine which pattern is active for this direction
+        active_pattern = None
+        if direction == "long" and double_bottom and double_bottom.get('detected'):
+            active_pattern = double_bottom
+        elif direction == "short" and double_top and double_top.get('detected'):
+            active_pattern = double_top
 
         # Determina quale modalità usare basata sullo score
         # Priority: MICRO_GAIN > MICRO_PAY (score più alto = più sicuro)
@@ -4276,6 +4680,15 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                     direction = ai_direction
                 # AI-suggested leverage
                 ai_leverage = validation.get("leverage")
+
+            # Check if we should use pending entry system (FAST_LOOP)
+            if active_pattern and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
+                # Create pending entry instead of opening immediately
+                if create_pending_entry(symbol, direction.upper(), active_pattern, "MICRO_GAIN"):
+                    log(f"   ⏳ {symbol}: Using FAST_LOOP pending entry system (waiting for breakout)")
+                    continue  # Don't open now, FAST loop will handle it
+                else:
+                    log(f"   ⚠️ {symbol}: Failed to create pending entry, opening immediately")
 
             result = open_micro_gain_position(bot, symbol, direction, score, leverage=ai_leverage)
 
@@ -4311,6 +4724,15 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                     direction = ai_direction
                 # AI-suggested leverage
                 ai_leverage = validation.get("leverage")
+
+            # Check if we should use pending entry system (FAST_LOOP)
+            if active_pattern and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
+                # Create pending entry instead of opening immediately
+                if create_pending_entry(symbol, direction.upper(), active_pattern, "MICRO_PAY"):
+                    log(f"   ⏳ {symbol}: Using FAST_LOOP pending entry system (waiting for breakout)")
+                    continue  # Don't open now, FAST loop will handle it
+                else:
+                    log(f"   ⚠️ {symbol}: Failed to create pending entry, opening immediately")
 
             result = open_micro_pay_position(bot, symbol, direction, score, leverage=ai_leverage)
 
@@ -5123,6 +5545,34 @@ def run_sentinel_fast():
         # === DETECT EXTERNALLY CLOSED POSITIONS ===
         detect_externally_closed_positions(bot, existing_symbols)
 
+        # === CHECK PENDING ENTRIES (Pattern-based entry system) ===
+        if PATTERN_DETECTION_ENABLED and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
+            global _pending_entries
+            if _pending_entries:
+                log(f"[FAST] 👀 Checking {len(_pending_entries)} pending entries...")
+                triggered = check_pending_entries(bot.exchange, bot.info)
+
+                for entry_data in triggered:
+                    symbol = entry_data['symbol']
+                    direction = entry_data['direction'].lower()
+                    trading_mode = entry_data['trading_mode']
+                    pattern_sl = entry_data.get('stop_loss')
+
+                    log(f"   🚀 {symbol}: BREAKOUT TRIGGERED! Opening {trading_mode} {direction.upper()}")
+
+                    # Open position based on trading mode
+                    if trading_mode == "MICRO_GAIN":
+                        result = open_micro_gain_position(bot, symbol, direction, 20, leverage=None)  # Score 20 as placeholder
+                    elif trading_mode == "MICRO_PAY":
+                        result = open_micro_pay_position(bot, symbol, direction, 10, leverage=None)
+
+                    if result and result.get("success"):
+                        log(f"   ✅ {symbol}: Position opened successfully from pattern breakout")
+                        existing_symbols.append(symbol)
+                        # Update positions list
+                        account_status = bot.get_account_status()
+                        positions = account_status.get("open_positions", [])
+
         if not positions:
             # Nessuna posizione, niente da fare per FAST
             return
@@ -5437,6 +5887,33 @@ def run_sentinel_slow():
                 micro_gain_result = check_micro_gain_reversal(pos, tracking_data)
                 if micro_gain_result.get("triggered"):
                     log(f"[SLOW] ⚠️ {symbol}: Reversal detected (score={micro_gain_result.get('quick_score', 0):.1f})")
+
+            # === CHECK CONTRARY PATTERN (Pattern-based exit protection) ===
+            if PATTERN_DETECTION_ENABLED and PATTERN_CONTRA_ACTION != "ALERT_ONLY":
+                position_direction = pos.get("side", "").upper()
+                double_bottom, double_top = get_patterns_for_symbol(symbol)
+
+                # Check Double Bottom against SHORT position
+                if position_direction == "SHORT" and double_bottom and double_bottom.get('detected'):
+                    conf = double_bottom.get('confidence', 0)
+                    if handle_contrary_pattern(symbol, position_direction, "DOUBLE_BOTTOM", conf, bot.exchange, bot.info):
+                        if PATTERN_CONTRA_ACTION == "ACCELERATE" and SMART_EXIT_AVAILABLE:
+                            # Force ACCELERATE through smart_exit
+                            log(f"[SLOW] 🔄 {symbol}: Forcing ACCELERATE due to contrary pattern")
+                            # Set flag for smart_exit to use
+                            tracking_data['force_accelerate'] = True
+                            db_utils.update_position_tracking(symbol, tracking_data)
+
+                # Check Double Top against LONG position
+                elif position_direction == "LONG" and double_top and double_top.get('detected'):
+                    conf = double_top.get('confidence', 0)
+                    if handle_contrary_pattern(symbol, position_direction, "DOUBLE_TOP", conf, bot.exchange, bot.info):
+                        if PATTERN_CONTRA_ACTION == "ACCELERATE" and SMART_EXIT_AVAILABLE:
+                            # Force ACCELERATE through smart_exit
+                            log(f"[SLOW] 🔄 {symbol}: Forcing ACCELERATE due to contrary pattern")
+                            # Set flag for smart_exit to use
+                            tracking_data['force_accelerate'] = True
+                            db_utils.update_position_tracking(symbol, tracking_data)
 
         # === CHECK AI WAKE FOR NORMAL RANGE ===
         log("[SLOW] 🤖 Check wake AI per range NORMAL...")

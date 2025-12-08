@@ -462,6 +462,10 @@ ADX_STRONG_THRESHOLD = get_weight('ADX_STRONG_THRESHOLD', 25.0)  # Above = stron
 # Bollinger thresholds
 BB_SQUEEZE_THRESHOLD = get_weight('BB_SQUEEZE_THRESHOLD', 2.0)  # Bandwidth < 2% = squeeze
 
+# Pattern weights (Double Bottom / Double Top)
+WEIGHT_DOUBLE_BOTTOM = get_weight('WEIGHT_DOUBLE_BOTTOM', 12.0)  # Bullish reversal pattern
+WEIGHT_DOUBLE_TOP = get_weight('WEIGHT_DOUBLE_TOP', 12.0)  # Bearish reversal pattern
+
 
 def calculate_smart_score_v2(
     price: float,
@@ -481,6 +485,9 @@ def calculate_smart_score_v2(
     macd_histogram_trend: str = None,  # 'EXPANDING', 'CONTRACTING', 'FLAT'
     ema_alignment: str = None,  # 'GOLDEN_CROSS', 'DEATH_CROSS', 'NEUTRAL'
     adx: float = None,  # Trend strength (0-100)
+    # Pattern detection
+    double_bottom: dict = None,  # {'detected', 'confidence', 'neckline', 'suggested_sl', ...}
+    double_top: dict = None,  # {'detected', 'confidence', 'neckline', 'suggested_sl', ...}
 ) -> dict:
     """
     Smart Score V2 - Logica graduale invece di on/off.
@@ -1021,7 +1028,91 @@ def calculate_smart_score_v2(
             })
 
     # ============================================
-    # 10. ADX FILTER (Ranging Market Penalty)
+    # 10. DOUBLE BOTTOM PATTERN (Bullish Reversal)
+    # ============================================
+    if double_bottom and double_bottom.get('detected'):
+        pattern_confidence = double_bottom.get('confidence', 0.5)
+        contribution = WEIGHT_DOUBLE_BOTTOM * pattern_confidence
+        score_bullish += contribution
+
+        # Build detailed reason
+        first_low = double_bottom.get('first_low', {})
+        second_low = double_bottom.get('second_low', {})
+        neckline = double_bottom.get('neckline', 0)
+        rsi_div = double_bottom.get('rsi_divergence', False)
+
+        reason_parts = [f"W pattern detected (conf: {pattern_confidence*100:.0f}%)"]
+        if first_low and second_low:
+            reason_parts.append(f"Lows: ${first_low.get('price', 0):,.0f} / ${second_low.get('price', 0):,.0f}")
+        if rsi_div:
+            reason_parts.append("RSI divergence: BULLISH")
+        if neckline:
+            reason_parts.append(f"Neckline: ${neckline:,.0f}")
+
+        signals.append({
+            'indicator': 'Double Bottom',
+            'value': f'Confidence={pattern_confidence*100:.0f}%',
+            'direction': 'BULLISH',
+            'weight': WEIGHT_DOUBLE_BOTTOM,
+            'intensity': round(pattern_confidence, 2),
+            'contribution': round(contribution, 2),
+            'reason': ' | '.join(reason_parts)
+        })
+    elif double_bottom:
+        signals.append({
+            'indicator': 'Double Bottom',
+            'value': 'Not detected',
+            'direction': 'NEUTRAL',
+            'weight': 0,
+            'intensity': 0,
+            'contribution': 0,
+            'reason': double_bottom.get('message', 'No pattern found')
+        })
+
+    # ============================================
+    # 11. DOUBLE TOP PATTERN (Bearish Reversal)
+    # ============================================
+    if double_top and double_top.get('detected'):
+        pattern_confidence = double_top.get('confidence', 0.5)
+        contribution = WEIGHT_DOUBLE_TOP * pattern_confidence
+        score_bearish += contribution
+
+        # Build detailed reason
+        first_high = double_top.get('first_high', {})
+        second_high = double_top.get('second_high', {})
+        neckline = double_top.get('neckline', 0)
+        rsi_div = double_top.get('rsi_divergence', False)
+
+        reason_parts = [f"M pattern detected (conf: {pattern_confidence*100:.0f}%)"]
+        if first_high and second_high:
+            reason_parts.append(f"Highs: ${first_high.get('price', 0):,.0f} / ${second_high.get('price', 0):,.0f}")
+        if rsi_div:
+            reason_parts.append("RSI divergence: BEARISH")
+        if neckline:
+            reason_parts.append(f"Neckline: ${neckline:,.0f}")
+
+        signals.append({
+            'indicator': 'Double Top',
+            'value': f'Confidence={pattern_confidence*100:.0f}%',
+            'direction': 'BEARISH',
+            'weight': WEIGHT_DOUBLE_TOP,
+            'intensity': round(pattern_confidence, 2),
+            'contribution': round(contribution, 2),
+            'reason': ' | '.join(reason_parts)
+        })
+    elif double_top:
+        signals.append({
+            'indicator': 'Double Top',
+            'value': 'Not detected',
+            'direction': 'NEUTRAL',
+            'weight': 0,
+            'intensity': 0,
+            'contribution': 0,
+            'reason': double_top.get('message', 'No pattern found')
+        })
+
+    # ============================================
+    # 12. ADX FILTER (Ranging Market Penalty)
     # ============================================
     adx_multiplier = 1.0
     if adx is not None:
@@ -1093,6 +1184,9 @@ def calculate_smart_score_v2(
             'strong': SCORE_THRESHOLD_STRONG,
             'hold': SCORE_THRESHOLD_HOLD
         },
+        # Pattern data for pending entry system
+        'double_bottom': double_bottom if double_bottom and double_bottom.get('detected') else None,
+        'double_top': double_top if double_top and double_top.get('detected') else None,
         'timestamp': datetime.utcnow().isoformat(),
         'version': 'v2'
     }
