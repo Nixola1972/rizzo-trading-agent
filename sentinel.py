@@ -1218,7 +1218,13 @@ def run_passive_sl_verification(bot, positions: list):
                         log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica passiva (< 90s)")
                         continue
                 except Exception as e:
-                    pass  # In caso di errore, procedi normalmente
+                    # CRITICO: Se c'è errore nel parsing data, skip per sicurezza (non modificare SL!)
+                    log(f"   ⚠️ {symbol}: Errore calcolo età (passivo): {e} - SKIP per sicurezza")
+                    continue
+            else:
+                # Se manca created_at, la posizione potrebbe essere in fase di apertura - SKIP
+                log(f"   ⏳ {symbol}: created_at mancante, skip verifica passiva per sicurezza")
+                continue
 
             trading_mode = tracking.get("trading_mode", "NORMAL")
 
@@ -4128,7 +4134,13 @@ def run_order_verification(bot, positions: list) -> dict:
                     log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica SL (< 90s)")
                     continue
             except Exception as e:
-                log(f"   ⚠️ {symbol}: Errore calcolo età posizione: {e}")
+                # CRITICO: Se c'è errore nel parsing data, skip per sicurezza (non modificare SL!)
+                log(f"   ⚠️ {symbol}: Errore calcolo età posizione: {e} - SKIP per sicurezza")
+                continue
+        else:
+            # Se manca created_at, la posizione potrebbe essere in fase di apertura - SKIP
+            log(f"   ⏳ {symbol}: created_at mancante, skip verifica SL per sicurezza")
+            continue
 
         # Recupera current_sl_level dalla memoria (aggiornato dal trailing)
         # La chiave dipende dal trading_mode:
@@ -5117,7 +5129,7 @@ def run_sentinel_fast():
             trading_mode = tracking_data.get("trading_mode", "NORMAL")
 
             # === PROTEZIONE RACE CONDITION: Skip SL update per posizioni appena aperte ===
-            # Se la posizione è stata aperta da meno di 30 secondi, NON aggiornare SL
+            # Se la posizione è stata aperta da meno di 90 secondi, NON aggiornare SL
             # Questo evita che initialize_micro_gain_sl_level usi valori stale
             position_age_ok = True
             created_at = tracking_data.get("created_at") or tracking_data.get("entry_time")
@@ -5135,7 +5147,13 @@ def run_sentinel_fast():
                         log(f"   [FAST] ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip SL update (< 90s)")
                         position_age_ok = False
                 except Exception as e:
-                    pass  # In caso di errore, procedi normalmente
+                    # CRITICO: Se c'è errore nel parsing data, skip per sicurezza (non modificare SL!)
+                    log(f"   [FAST] ⚠️ {symbol}: Errore calcolo età: {e} - SKIP SL update per sicurezza")
+                    position_age_ok = False
+            else:
+                # Se manca created_at, la posizione potrebbe essere in fase di apertura - SKIP
+                log(f"   [FAST] ⏳ {symbol}: created_at mancante, skip SL update per sicurezza")
+                position_age_ok = False
 
             # === CHECK TAKE PROFIT ===
             tp_result = check_take_profit(pos)
