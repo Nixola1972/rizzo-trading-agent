@@ -5551,6 +5551,11 @@ def run_sentinel_fast():
         positions = account_status.get("open_positions", [])
         existing_symbols = [p.get("symbol") for p in positions]
 
+        log(f"[FAST] Controllo {len(positions)} posizioni...")
+        if PATTERN_DETECTION_ENABLED and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
+            pending_count = len(_pending_entries) if _pending_entries else 0
+            log(f"[FAST] 🔷 Pending Entries: {pending_count} | Contra Action: {PATTERN_CONTRA_ACTION}")
+
         # === DETECT EXTERNALLY CLOSED POSITIONS ===
         detect_externally_closed_positions(bot, existing_symbols)
 
@@ -5585,8 +5590,6 @@ def run_sentinel_fast():
         if not positions:
             # Nessuna posizione, niente da fare per FAST
             return
-
-        log(f"[FAST] Controllo {len(positions)} posizioni...")
 
         for pos in positions:
             symbol = pos.get("symbol", "")
