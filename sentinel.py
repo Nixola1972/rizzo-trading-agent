@@ -5553,6 +5553,7 @@ def run_sentinel_fast():
 
         log(f"[FAST] Controllo {len(positions)} posizioni...")
         if PATTERN_DETECTION_ENABLED and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
+            global _pending_entries
             pending_count = len(_pending_entries) if _pending_entries else 0
             log(f"[FAST] 🔷 Pending Entries: {pending_count} | Contra Action: {PATTERN_CONTRA_ACTION}")
 
@@ -5561,7 +5562,6 @@ def run_sentinel_fast():
 
         # === CHECK PENDING ENTRIES (Pattern-based entry system) ===
         if PATTERN_DETECTION_ENABLED and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
-            global _pending_entries
             if _pending_entries:
                 log(f"[FAST] 👀 Checking {len(_pending_entries)} pending entries...")
                 triggered = check_pending_entries(bot.exchange, bot.info)
