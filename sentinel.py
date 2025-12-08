@@ -3174,7 +3174,33 @@ def verify_sl_order_complete(bot, symbol: str, direction: str, entry_price: floa
 
         # Priorità: usa ordine TRIGGER se esiste, altrimenti LIMIT
         if trigger_orders:
-            order = trigger_orders[0]  # Usa il primo TRIGGER trovato
+            # Se ci sono multipli trigger orders, seleziona quello con prezzo più vicino all'atteso
+            # e cancella gli altri (potrebbero essere ordini duplicati o vecchi)
+            if len(trigger_orders) > 1:
+                log(f"   ⚠️ {symbol}: Trovati {len(trigger_orders)} ordini TRIGGER - seleziono il più vicino all'atteso")
+                # Ordina per distanza dal prezzo atteso
+                def get_price_diff(o):
+                    try:
+                        trigger_px = float(o.get("triggerPx", 0))
+                        return abs(trigger_px - expected_sl_price)
+                    except:
+                        return float('inf')
+
+                trigger_orders_sorted = sorted(trigger_orders, key=get_price_diff)
+                order = trigger_orders_sorted[0]  # Usa quello più vicino
+
+                # Cancella gli altri trigger orders (duplicati/vecchi)
+                for dup_order in trigger_orders_sorted[1:]:
+                    try:
+                        dup_oid = dup_order.get("oid")
+                        dup_price = dup_order.get("triggerPx", "?")
+                        bot.exchange.cancel(symbol, dup_oid)
+                        log(f"   🗑️ Cancellato ordine TRIGGER duplicato: OID={dup_oid}, trigger={dup_price}")
+                        time.sleep(0.2)
+                    except Exception as cancel_err:
+                        log(f"   ⚠️ Errore cancellazione duplicato: {cancel_err}")
+            else:
+                order = trigger_orders[0]
             is_trigger = True
 
             # CRITICO: Se ci sono ordini LIMIT oltre al TRIGGER, sono spuri e vanno cancellati!
