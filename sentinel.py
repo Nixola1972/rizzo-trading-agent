@@ -119,6 +119,7 @@ MICRO_GAIN_STOP_LOSS_PERCENT = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '
 MICRO_GAIN_TRAILING_GAP = float(os.getenv('MICRO_GAIN_TRAILING_GAP', '0.5'))  # SL segue P&L con questo gap
 MICRO_GAIN_TRAILING_ACTIVATION = float(os.getenv('MICRO_GAIN_TRAILING_ACTIVATION', '0.5'))  # Trailing parte quando P&L >= questo
 MICRO_GAIN_COOLDOWN_SECONDS = int(os.getenv('MICRO_GAIN_COOLDOWN_SECONDS', '300'))  # Attesa dopo chiusura
+POSITION_AGE_PROTECTION_SECONDS = int(os.getenv('POSITION_AGE_PROTECTION_SECONDS', '15'))  # Protezione SL per posizioni nuove
 MICRO_GAIN_MAX_POSITIONS = int(os.getenv('MICRO_GAIN_MAX_POSITIONS', '3'))  # Max posizioni contemporanee
 SCORE_THRESHOLD_HOLD = float(os.getenv('SCORE_THRESHOLD_HOLD', '10'))
 SCORE_THRESHOLD_OPEN = float(os.getenv('SCORE_THRESHOLD_OPEN', '20'))
@@ -1214,8 +1215,8 @@ def run_passive_sl_verification(bot, positions: list):
                     if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
                         created_dt = created_dt.replace(tzinfo=None)
                     age_seconds = (dt_passive.now() - created_dt).total_seconds()
-                    if age_seconds < 90:
-                        log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica passiva (< 90s)")
+                    if age_seconds < POSITION_AGE_PROTECTION_SECONDS:
+                        log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica passiva (< {POSITION_AGE_PROTECTION_SECONDS}s)")
                         continue
                 except Exception as e:
                     # CRITICO: Se c'è errore nel parsing data, skip per sicurezza (non modificare SL!)
@@ -4130,8 +4131,8 @@ def run_order_verification(bot, positions: list) -> dict:
                 if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
                     created_dt = created_dt.replace(tzinfo=None)
                 age_seconds = (dt_check.now() - created_dt).total_seconds()
-                if age_seconds < 90:
-                    log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica SL (< 90s)")
+                if age_seconds < POSITION_AGE_PROTECTION_SECONDS:
+                    log(f"   ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip verifica SL (< {POSITION_AGE_PROTECTION_SECONDS}s)")
                     continue
             except Exception as e:
                 # CRITICO: Se c'è errore nel parsing data, skip per sicurezza (non modificare SL!)
@@ -5143,8 +5144,8 @@ def run_sentinel_fast():
                     if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
                         created_dt = created_dt.replace(tzinfo=None)
                     age_seconds = (dt_fast.now() - created_dt).total_seconds()
-                    if age_seconds < 90:
-                        log(f"   [FAST] ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip SL update (< 90s)")
+                    if age_seconds < POSITION_AGE_PROTECTION_SECONDS:
+                        log(f"   [FAST] ⏳ {symbol}: Posizione aperta da {age_seconds:.0f}s, skip SL update (< {POSITION_AGE_PROTECTION_SECONDS}s)")
                         position_age_ok = False
                 except Exception as e:
                     # CRITICO: Se c'è errore nel parsing data, skip per sicurezza (non modificare SL!)
