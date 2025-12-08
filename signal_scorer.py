@@ -463,8 +463,9 @@ ADX_STRONG_THRESHOLD = get_weight('ADX_STRONG_THRESHOLD', 25.0)  # Above = stron
 BB_SQUEEZE_THRESHOLD = get_weight('BB_SQUEEZE_THRESHOLD', 2.0)  # Bandwidth < 2% = squeeze
 
 # Pattern weights (Double Bottom / Double Top)
-WEIGHT_DOUBLE_BOTTOM = get_weight('WEIGHT_DOUBLE_BOTTOM', 12.0)  # Bullish reversal pattern
-WEIGHT_DOUBLE_TOP = get_weight('WEIGHT_DOUBLE_TOP', 12.0)  # Bearish reversal pattern
+# Reduced from 12 to 10 with winner-takes-all logic
+WEIGHT_DOUBLE_BOTTOM = get_weight('WEIGHT_DOUBLE_BOTTOM', 10.0)  # Bullish reversal pattern
+WEIGHT_DOUBLE_TOP = get_weight('WEIGHT_DOUBLE_TOP', 10.0)  # Bearish reversal pattern
 
 
 def calculate_smart_score_v2(
@@ -1028,10 +1029,40 @@ def calculate_smart_score_v2(
             })
 
     # ============================================
-    # 10. DOUBLE BOTTOM PATTERN (Bullish Reversal)
+    # 10-11. DOUBLE BOTTOM / DOUBLE TOP PATTERNS
     # ============================================
-    if double_bottom and double_bottom.get('detected'):
-        pattern_confidence = double_bottom.get('confidence', 0.5)
+    # Winner-takes-all logic: only the dominant pattern contributes
+    # Requires minimum confidence difference to avoid noise
+
+    bottom_detected = double_bottom and double_bottom.get('detected')
+    top_detected = double_top and double_top.get('detected')
+    bottom_conf = double_bottom.get('confidence', 0) if bottom_detected else 0
+    top_conf = double_top.get('confidence', 0) if top_detected else 0
+
+    # Minimum confidence difference required (15%)
+    MIN_PATTERN_CONF_DIFF = 0.15
+    conf_diff = abs(bottom_conf - top_conf)
+
+    # Determine winner
+    use_bottom = False
+    use_top = False
+
+    if bottom_detected and top_detected:
+        # Both detected - winner takes all (if difference > 15%)
+        if conf_diff >= MIN_PATTERN_CONF_DIFF:
+            if bottom_conf > top_conf:
+                use_bottom = True
+            else:
+                use_top = True
+        # else: both ignored (too close, market is ranging)
+    elif bottom_detected:
+        use_bottom = True
+    elif top_detected:
+        use_top = True
+
+    # Apply Double Bottom (if winner)
+    if use_bottom:
+        pattern_confidence = bottom_conf
         contribution = WEIGHT_DOUBLE_BOTTOM * pattern_confidence
         score_bullish += contribution
 
@@ -1043,11 +1074,11 @@ def calculate_smart_score_v2(
 
         reason_parts = [f"W pattern detected (conf: {pattern_confidence*100:.0f}%)"]
         if first_low and second_low:
-            reason_parts.append(f"Lows: ${first_low.get('price', 0):,.0f} / ${second_low.get('price', 0):,.0f}")
+            low_price = first_low.get('price', 0)
+            reason_parts.append(f"Lows: ${low_price:,.0f}" if low_price > 10 else f"Lows: ${low_price:.4f}")
         if rsi_div:
             reason_parts.append("RSI divergence: BULLISH")
-        if neckline:
-            reason_parts.append(f"Neckline: ${neckline:,.0f}")
+        reason_parts.append("WINNER (vs Double Top)")
 
         signals.append({
             'indicator': 'Double Bottom',
@@ -1058,22 +1089,21 @@ def calculate_smart_score_v2(
             'contribution': round(contribution, 2),
             'reason': ' | '.join(reason_parts)
         })
-    elif double_bottom:
+    elif bottom_detected:
+        # Detected but not used (loser or too close)
         signals.append({
             'indicator': 'Double Bottom',
-            'value': 'Not detected',
+            'value': f'Confidence={bottom_conf*100:.0f}%',
             'direction': 'NEUTRAL',
             'weight': 0,
             'intensity': 0,
             'contribution': 0,
-            'reason': double_bottom.get('message', 'No pattern found')
+            'reason': f'Ignored: {"too close to Double Top" if top_detected else "not detected"}'
         })
 
-    # ============================================
-    # 11. DOUBLE TOP PATTERN (Bearish Reversal)
-    # ============================================
-    if double_top and double_top.get('detected'):
-        pattern_confidence = double_top.get('confidence', 0.5)
+    # Apply Double Top (if winner)
+    if use_top:
+        pattern_confidence = top_conf
         contribution = WEIGHT_DOUBLE_TOP * pattern_confidence
         score_bearish += contribution
 
@@ -1085,11 +1115,11 @@ def calculate_smart_score_v2(
 
         reason_parts = [f"M pattern detected (conf: {pattern_confidence*100:.0f}%)"]
         if first_high and second_high:
-            reason_parts.append(f"Highs: ${first_high.get('price', 0):,.0f} / ${second_high.get('price', 0):,.0f}")
+            high_price = first_high.get('price', 0)
+            reason_parts.append(f"Highs: ${high_price:,.0f}" if high_price > 10 else f"Highs: ${high_price:.4f}")
         if rsi_div:
             reason_parts.append("RSI divergence: BEARISH")
-        if neckline:
-            reason_parts.append(f"Neckline: ${neckline:,.0f}")
+        reason_parts.append("WINNER (vs Double Bottom)")
 
         signals.append({
             'indicator': 'Double Top',
@@ -1100,15 +1130,16 @@ def calculate_smart_score_v2(
             'contribution': round(contribution, 2),
             'reason': ' | '.join(reason_parts)
         })
-    elif double_top:
+    elif top_detected:
+        # Detected but not used (loser or too close)
         signals.append({
             'indicator': 'Double Top',
-            'value': 'Not detected',
+            'value': f'Confidence={top_conf*100:.0f}%',
             'direction': 'NEUTRAL',
             'weight': 0,
             'intensity': 0,
             'contribution': 0,
-            'reason': double_top.get('message', 'No pattern found')
+            'reason': f'Ignored: {"too close to Double Bottom" if bottom_detected else "not detected"}'
         })
 
     # ============================================
