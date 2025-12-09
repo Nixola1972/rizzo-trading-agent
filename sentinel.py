@@ -5718,6 +5718,52 @@ def run_sentinel_fast():
             trailing_status = "ACTIVE" if result.get("trailing_active") else "inactive"
             log(f"   [FAST] {symbol}: {direction.upper()} P&L={pnl_pct:+.2f}% trailing={trailing_status}")
 
+            # === CHECK FORCE_ACCELERATE (from contrary pattern detection in SLOW) ===
+            if tracking_data.get('force_accelerate'):
+                log(f"   [FAST] ⚡ {symbol}: FORCE_ACCELERATE rilevato (contrary pattern)")
+                # Get current SL and calculate next step
+                if trading_mode == "MICRO_GAIN":
+                    current_sl = _current_sl_level.get(symbol, -MICRO_GAIN_STOP_LOSS_PERCENT)
+                    # Parse trailing steps to find next level
+                    steps = MICRO_GAIN_TRAILING_STEPS_STR.split(",") if MICRO_GAIN_TRAILING_STEPS_STR else []
+                    next_sl = current_sl
+                    for step in steps:
+                        parts = step.strip().split(":")
+                        if len(parts) == 2:
+                            try:
+                                step_sl = float(parts[1])
+                                if step_sl > current_sl:
+                                    next_sl = step_sl
+                                    break
+                            except ValueError:
+                                continue
+                    if next_sl > current_sl:
+                        log(f"   [FAST] ⚡ {symbol}: Forzando SL da {current_sl:+.1f}% a {next_sl:+.1f}% (contrary pattern)")
+                        _current_sl_level[symbol] = next_sl
+                    else:
+                        log(f"   [FAST] ⚡ {symbol}: SL già al massimo ({current_sl:+.1f}%), no accelerate possibile")
+                elif trading_mode == "NORMAL":
+                    current_sl = _current_sl_level.get(f"{symbol}_NORMAL", -NORMAL_STOP_LOSS_PERCENT)
+                    steps = NORMAL_TRAILING_STEPS_STR.split(",") if NORMAL_TRAILING_STEPS_STR else []
+                    next_sl = current_sl
+                    for step in steps:
+                        parts = step.strip().split(":")
+                        if len(parts) == 2:
+                            try:
+                                step_sl = float(parts[1])
+                                if step_sl > current_sl:
+                                    next_sl = step_sl
+                                    break
+                            except ValueError:
+                                continue
+                    if next_sl > current_sl:
+                        log(f"   [FAST] ⚡ {symbol}: Forzando SL da {current_sl:+.1f}% a {next_sl:+.1f}% (contrary pattern)")
+                        _current_sl_level[f"{symbol}_NORMAL"] = next_sl
+
+                # Reset force_accelerate flag nel DB
+                db_utils.update_position_tracking(symbol, {'force_accelerate': False})
+                log(f"   [FAST] ✅ {symbol}: force_accelerate reset")
+
             # === SMART EXIT ANALYSIS ===
             if SMART_EXIT_AVAILABLE and smart_exit.SMART_EXIT_ENABLED:
                 try:
