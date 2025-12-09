@@ -522,7 +522,7 @@ def remove_pending_entry(symbol: str, reason: str):
         log(f"   🗑️ {symbol}: Pending entry removed - {reason}")
 
 
-def check_pending_entries(exchange, info) -> list:
+def check_pending_entries(exchange, info, existing_symbols: list = None) -> list:
     """
     Check pending entries and trigger if conditions met.
     Called from FAST loop. Reads from DATABASE (shared with SLOW).
@@ -530,6 +530,7 @@ def check_pending_entries(exchange, info) -> list:
     Args:
         exchange: HyperLiquid exchange instance
         info: HyperLiquid info instance
+        existing_symbols: List of symbols with open positions
 
     Returns:
         List of triggered entries (symbol, direction, sl)
@@ -599,9 +600,7 @@ def check_pending_entries(exchange, info) -> list:
             log(f"      ⏱️ Scade tra: {minutes_remaining:.0f} minuti")
 
             # 4. Check if already in position
-            from hl_utils import get_position
-            position = get_position(info, symbol)
-            if position and abs(position.get('size', 0)) > 0:
+            if existing_symbols and symbol in existing_symbols:
                 symbols_to_remove.append((symbol, "📍 Already in position"))
                 continue
 
@@ -5649,7 +5648,7 @@ def run_sentinel_fast():
         if PATTERN_DETECTION_ENABLED and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
             if pending_count > 0:  # FIX: usa pending_count dal DB, non _pending_entries in memoria
                 log(f"[FAST] 👀 Checking {pending_count} pending entries from database...")
-                triggered = check_pending_entries(bot.exchange, bot.info)
+                triggered = check_pending_entries(bot.exchange, bot.info, existing_symbols)
 
                 for entry_data in triggered:
                     symbol = entry_data['symbol']
