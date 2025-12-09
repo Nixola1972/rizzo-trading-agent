@@ -224,7 +224,8 @@ CREATE TABLE IF NOT EXISTS position_tracking (
     trailing_active     BOOLEAN DEFAULT FALSE,
     last_checked_price  NUMERIC(30, 10),
     opening_score       NUMERIC(10, 2),
-    trading_mode        TEXT DEFAULT 'NORMAL'
+    trading_mode        TEXT DEFAULT 'NORMAL',
+    force_accelerate    BOOLEAN DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_position_tracking_symbol
@@ -240,6 +241,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                    WHERE table_name='position_tracking' AND column_name='trading_mode') THEN
         ALTER TABLE position_tracking ADD COLUMN trading_mode TEXT DEFAULT 'NORMAL';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='position_tracking' AND column_name='force_accelerate') THEN
+        ALTER TABLE position_tracking ADD COLUMN force_accelerate BOOLEAN DEFAULT FALSE;
     END IF;
 END $$;
 
@@ -1252,7 +1257,7 @@ def get_position_tracking(symbol: str) -> Optional[Dict[str, Any]]:
             cur.execute(
                 """
                 SELECT symbol, direction, entry_price, peak_price, trailing_active,
-                       last_checked_price, updated_at, opening_score, trading_mode, created_at
+                       last_checked_price, updated_at, opening_score, trading_mode, created_at, force_accelerate
                 FROM position_tracking
                 WHERE symbol = %s;
                 """,
@@ -1272,6 +1277,7 @@ def get_position_tracking(symbol: str) -> Optional[Dict[str, Any]]:
                 "opening_score": float(row[7]) if row[7] else None,
                 "trading_mode": row[8] or "NORMAL",
                 "created_at": row[9],
+                "force_accelerate": row[10] or False,
             }
 
 
@@ -1337,7 +1343,8 @@ def upsert_position_tracking(
                     final_opening_score = opening_score if opening_score is not None else existing_opening_score
                     final_trading_mode = existing_trading_mode or trading_mode
 
-                # Update con tutti i campi
+                # Update con tutti i campi (reset force_accelerate se nuova posizione)
+                reset_accelerate = is_new_position
                 cur.execute(
                     """
                     UPDATE position_tracking
@@ -1348,20 +1355,21 @@ def upsert_position_tracking(
                         direction = %s,
                         entry_price = %s,
                         opening_score = %s,
-                        trading_mode = %s
+                        trading_mode = %s,
+                        force_accelerate = CASE WHEN %s THEN FALSE ELSE force_accelerate END
                     WHERE symbol = %s
-                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode;
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode, force_accelerate;
                     """,
                     (new_peak, trailing_active, current_price, direction, entry_price,
-                     final_opening_score, final_trading_mode, symbol),
+                     final_opening_score, final_trading_mode, reset_accelerate, symbol),
                 )
             else:
-                # Insert nuovo con opening_score e trading_mode
+                # Insert nuovo con opening_score e trading_mode (force_accelerate=FALSE)
                 cur.execute(
                     """
-                    INSERT INTO position_tracking (symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, opening_score, trading_mode)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode;
+                    INSERT INTO position_tracking (symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, opening_score, trading_mode, force_accelerate)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode, force_accelerate;
                     """,
                     (symbol, direction, entry_price, current_price, trailing_active, current_price, opening_score, trading_mode),
                 )
@@ -1377,6 +1385,7 @@ def upsert_position_tracking(
         "trailing_active": row[4],
         "opening_score": float(row[5]) if row[5] else None,
         "trading_mode": row[6] or "NORMAL",
+        "force_accelerate": row[7] or False,
     }
 
 
@@ -1395,6 +1404,52 @@ def delete_position_tracking(symbol: str) -> bool:
     return deleted is not None
 
 
+def update_position_tracking(symbol: str, tracking_data: Dict[str, Any]) -> bool:
+    """
+    Aggiorna campi specifici del tracking di una posizione.
+    Usato principalmente per impostare force_accelerate quando viene rilevato un pattern contrario.
+
+    Args:
+        symbol: Simbolo della posizione
+        tracking_data: Dict con i campi da aggiornare (es. {'force_accelerate': True})
+
+    Returns:
+        True se l'aggiornamento è riuscito, False altrimenti
+    """
+    # Campi aggiornabili
+    allowed_fields = ['force_accelerate', 'trailing_active', 'peak_price', 'last_checked_price']
+
+    # Filtra solo i campi permessi
+    updates = {k: v for k, v in tracking_data.items() if k in allowed_fields}
+
+    if not updates:
+        return False
+
+    # Costruisci la query dinamicamente
+    set_clauses = []
+    values = []
+    for field, value in updates.items():
+        set_clauses.append(f"{field} = %s")
+        values.append(value)
+
+    values.append(symbol)  # Per la WHERE clause
+
+    query = f"""
+        UPDATE position_tracking
+        SET {', '.join(set_clauses)}, updated_at = NOW()
+        WHERE symbol = %s
+        RETURNING id;
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, values)
+            updated = cur.fetchone()
+        conn.commit()
+
+    return updated is not None
+
+
 def get_all_position_trackings() -> List[Dict[str, Any]]:
     """Restituisce tutti i tracking attivi."""
 
@@ -1402,7 +1457,7 @@ def get_all_position_trackings() -> List[Dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, updated_at
+                SELECT symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, updated_at, force_accelerate
                 FROM position_tracking;
                 """
             )
@@ -1417,6 +1472,7 @@ def get_all_position_trackings() -> List[Dict[str, Any]]:
             "trailing_active": row[4],
             "last_checked_price": float(row[5]) if row[5] else None,
             "updated_at": row[6],
+            "force_accelerate": row[7] or False,
         }
         for row in rows
     ]
