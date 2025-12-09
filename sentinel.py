@@ -702,8 +702,17 @@ def handle_contrary_pattern(
     elif PATTERN_CONTRA_ACTION == "CLOSE":
         log(f"   🚪 {symbol}: Closing position due to contrary pattern")
         try:
-            from hl_utils import close_position
-            close_position(exchange, info, symbol)
+            # Close using market order
+            position_size = 0
+            for pos in info.user_state(exchange.wallet.address).get("assetPositions", []):
+                if pos.get("position", {}).get("coin") == symbol:
+                    position_size = abs(float(pos.get("position", {}).get("szi", 0)))
+                    break
+            if position_size > 0:
+                # Determine side (opposite of position direction)
+                close_side = "B" if position_direction == "SHORT" else "A"
+                exchange.market_close(symbol)
+                log(f"   ✅ {symbol}: Position closed")
             return True
         except Exception as e:
             log(f"   ❌ {symbol}: Error closing position: {e}")
