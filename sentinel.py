@@ -553,6 +553,10 @@ def check_pending_entries(exchange, info) -> list:
             if isinstance(expires_at, str):
                 expires_at = dt.fromisoformat(expires_at.replace('Z', '+00:00').replace('+00:00', ''))
 
+            # Remove timezone info for comparison (make naive)
+            if hasattr(expires_at, 'tzinfo') and expires_at.tzinfo is not None:
+                expires_at = expires_at.replace(tzinfo=None)
+
             time_remaining = expires_at - now
             minutes_remaining = time_remaining.total_seconds() / 60
 
