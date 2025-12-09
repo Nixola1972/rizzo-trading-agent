@@ -552,6 +552,10 @@ def check_pending_entries(exchange, info) -> list:
             expires_at = entry['expires_at']
             if isinstance(expires_at, str):
                 expires_at = dt.fromisoformat(expires_at.replace('Z', '+00:00').replace('+00:00', ''))
+
+            time_remaining = expires_at - now
+            minutes_remaining = time_remaining.total_seconds() / 60
+
             if now > expires_at:
                 symbols_to_remove.append((symbol, "⏰ EXPIRED"))
                 continue
@@ -559,19 +563,36 @@ def check_pending_entries(exchange, info) -> list:
             # 2. Get current price
             try:
                 current_price = float(info.all_mids()[symbol])
-            except Exception:
+            except Exception as e:
+                log(f"   ⚠️ {symbol}: Impossibile ottenere prezzo corrente: {e}")
                 continue
 
             # 3. Check invalidation (pattern broken)
             direction = entry['direction'].upper()
+            entry_price = entry['entry_price']
+            invalidation_price = entry['invalidation_price']
+
             if direction == "LONG":
-                if current_price < entry['invalidation_price']:
-                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:.6f} < invalidation ${entry['invalidation_price']:.6f})"))
+                if current_price < invalidation_price:
+                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:.2f} < invalidation ${invalidation_price:.2f})"))
                     continue
+                # Calculate distance to entry
+                distance_pct = ((entry_price - current_price) / current_price) * 100
+                distance_sign = "↑" if distance_pct > 0 else "↓"
             else:  # SHORT
-                if current_price > entry['invalidation_price']:
-                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:.6f} > invalidation ${entry['invalidation_price']:.6f})"))
+                if current_price > invalidation_price:
+                    symbols_to_remove.append((symbol, f"❌ Pattern broken (price ${current_price:.2f} > invalidation ${invalidation_price:.2f})"))
                     continue
+                # Calculate distance to entry
+                distance_pct = ((current_price - entry_price) / current_price) * 100
+                distance_sign = "↓" if distance_pct > 0 else "↑"
+
+            # Log pending entry status
+            log(f"   ⏳ {symbol} {direction} PENDING:")
+            log(f"      💰 Prezzo attuale: ${current_price:.4f}")
+            log(f"      🎯 Neckline (entry): ${entry_price:.4f} ({distance_sign}{abs(distance_pct):.2f}% di distanza)")
+            log(f"      🛑 Invalidation: ${invalidation_price:.4f}")
+            log(f"      ⏱️ Scade tra: {minutes_remaining:.0f} minuti")
 
             # 4. Check if already in position
             from hl_utils import get_position
@@ -584,11 +605,13 @@ def check_pending_entries(exchange, info) -> list:
             entry_triggered = False
 
             if direction == "LONG":
-                if current_price > entry['entry_price']:
+                if current_price > entry_price:
                     entry_triggered = True
+                    log(f"      ✅ BREAKOUT! Prezzo ${current_price:.4f} > Neckline ${entry_price:.4f}")
             else:  # SHORT
-                if current_price < entry['entry_price']:
+                if current_price < entry_price:
                     entry_triggered = True
+                    log(f"      ✅ BREAKOUT! Prezzo ${current_price:.4f} < Neckline ${entry_price:.4f}")
 
             if entry_triggered:
                 # Optional: Check volume confirmation
@@ -596,7 +619,7 @@ def check_pending_entries(exchange, info) -> list:
                     # For now, skip volume check - can be added later
                     pass
 
-                log(f"   ✅ BREAKOUT for {symbol}! Price ${current_price:.6f} crossed ${entry['entry_price']:.6f}")
+                log(f"   ✅ BREAKOUT for {symbol}! Price ${current_price:.6f} crossed ${entry_price:.6f}")
                 triggered.append({
                     'symbol': symbol,
                     'direction': direction,
@@ -606,6 +629,11 @@ def check_pending_entries(exchange, info) -> list:
                     'pattern': entry['pattern']
                 })
                 symbols_to_remove.append((symbol, "✅ TRIGGERED"))
+            else:
+                if direction == "LONG":
+                    log(f"      ⏸️ In attesa: prezzo deve salire sopra ${entry_price:.4f}")
+                else:
+                    log(f"      ⏸️ In attesa: prezzo deve scendere sotto ${entry_price:.4f}")
 
         except Exception as e:
             log(f"   ⚠️ Error checking pending entry {symbol}: {e}")
@@ -5615,8 +5643,8 @@ def run_sentinel_fast():
 
         # === CHECK PENDING ENTRIES (Pattern-based entry system) ===
         if PATTERN_DETECTION_ENABLED and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
-            if _pending_entries:
-                log(f"[FAST] 👀 Checking {len(_pending_entries)} pending entries...")
+            if pending_count > 0:  # FIX: usa pending_count dal DB, non _pending_entries in memoria
+                log(f"[FAST] 👀 Checking {pending_count} pending entries from database...")
                 triggered = check_pending_entries(bot.exchange, bot.info)
 
                 for entry_data in triggered:
