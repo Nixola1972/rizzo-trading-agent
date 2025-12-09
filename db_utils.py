@@ -225,7 +225,8 @@ CREATE TABLE IF NOT EXISTS position_tracking (
     last_checked_price  NUMERIC(30, 10),
     opening_score       NUMERIC(10, 2),
     trading_mode        TEXT DEFAULT 'NORMAL',
-    force_accelerate    BOOLEAN DEFAULT FALSE
+    force_accelerate    BOOLEAN DEFAULT FALSE,
+    leverage            NUMERIC(10, 2)
 );
 
 CREATE INDEX IF NOT EXISTS idx_position_tracking_symbol
@@ -245,6 +246,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                    WHERE table_name='position_tracking' AND column_name='force_accelerate') THEN
         ALTER TABLE position_tracking ADD COLUMN force_accelerate BOOLEAN DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='position_tracking' AND column_name='leverage') THEN
+        ALTER TABLE position_tracking ADD COLUMN leverage NUMERIC(10, 2);
     END IF;
 END $$;
 
@@ -1257,7 +1262,7 @@ def get_position_tracking(symbol: str) -> Optional[Dict[str, Any]]:
             cur.execute(
                 """
                 SELECT symbol, direction, entry_price, peak_price, trailing_active,
-                       last_checked_price, updated_at, opening_score, trading_mode, created_at, force_accelerate
+                       last_checked_price, updated_at, opening_score, trading_mode, created_at, force_accelerate, leverage
                 FROM position_tracking
                 WHERE symbol = %s;
                 """,
@@ -1278,6 +1283,7 @@ def get_position_tracking(symbol: str) -> Optional[Dict[str, Any]]:
                 "trading_mode": row[8] or "NORMAL",
                 "created_at": row[9],
                 "force_accelerate": row[10] or False,
+                "leverage": float(row[11]) if row[11] else None,
             }
 
 
@@ -1289,6 +1295,7 @@ def upsert_position_tracking(
     trailing_active: bool = False,
     opening_score: float = None,
     trading_mode: str = "NORMAL",
+    leverage: float = None,
 ) -> Dict[str, Any]:
     """
     Crea o aggiorna il tracking di una posizione.
@@ -1302,6 +1309,7 @@ def upsert_position_tracking(
         trailing_active: Se il trailing stop è attivo
         opening_score: Score al momento dell'apertura (per determinare trading_mode)
         trading_mode: 'MICRO_GAIN' o 'NORMAL'
+        leverage: Leva usata per la posizione (IMPORTANTE per calcoli SL)
 
     Returns: dict con i dati aggiornati del tracking
     """
@@ -1309,12 +1317,13 @@ def upsert_position_tracking(
     entry_price = float(entry_price) if entry_price is not None else 0.0
     current_price = float(current_price) if current_price is not None else 0.0
     opening_score = float(opening_score) if opening_score is not None else None
+    leverage = float(leverage) if leverage is not None else None
 
     with get_connection() as conn:
         with conn.cursor() as cur:
             # Controlla se esiste già
             cur.execute(
-                "SELECT peak_price, direction, opening_score, trading_mode, entry_price FROM position_tracking WHERE symbol = %s",
+                "SELECT peak_price, direction, opening_score, trading_mode, entry_price, leverage FROM position_tracking WHERE symbol = %s",
                 (symbol,),
             )
             existing = cur.fetchone()
@@ -1325,6 +1334,7 @@ def upsert_position_tracking(
                 existing_opening_score = existing[2]
                 existing_trading_mode = existing[3]
                 existing_entry_price = float(existing[4]) if existing[4] else 0
+                existing_leverage = float(existing[5]) if existing[5] else None
 
                 # Se entry_price è significativamente diverso, è una NUOVA posizione
                 is_new_position = abs(entry_price - existing_entry_price) > 1.0
@@ -1334,14 +1344,17 @@ def upsert_position_tracking(
                     new_peak = current_price
                     final_opening_score = opening_score
                     final_trading_mode = trading_mode
+                    final_leverage = leverage  # Use new leverage for new position
                 else:
-                    # Stessa posizione: aggiorna peak, mantieni trading_mode originale
+                    # Stessa posizione: aggiorna peak, mantieni trading_mode e leverage originali
                     if direction.lower() == 'long':
                         new_peak = max(old_peak, current_price)
                     else:
                         new_peak = min(old_peak, current_price)
                     final_opening_score = opening_score if opening_score is not None else existing_opening_score
                     final_trading_mode = existing_trading_mode or trading_mode
+                    # IMPORTANTE: mantieni la leva originale per calcoli SL consistenti
+                    final_leverage = existing_leverage if existing_leverage else leverage
 
                 # Update con tutti i campi (reset force_accelerate se nuova posizione)
                 reset_accelerate = is_new_position
@@ -1356,22 +1369,24 @@ def upsert_position_tracking(
                         entry_price = %s,
                         opening_score = %s,
                         trading_mode = %s,
-                        force_accelerate = CASE WHEN %s THEN FALSE ELSE force_accelerate END
+                        force_accelerate = CASE WHEN %s THEN FALSE ELSE force_accelerate END,
+                        leverage = CASE WHEN %s THEN %s ELSE COALESCE(leverage, %s) END
                     WHERE symbol = %s
-                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode, force_accelerate;
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode, force_accelerate, leverage;
                     """,
                     (new_peak, trailing_active, current_price, direction, entry_price,
-                     final_opening_score, final_trading_mode, reset_accelerate, symbol),
+                     final_opening_score, final_trading_mode, reset_accelerate,
+                     is_new_position, final_leverage, final_leverage, symbol),
                 )
             else:
-                # Insert nuovo con opening_score e trading_mode (force_accelerate=FALSE)
+                # Insert nuovo con opening_score, trading_mode, leverage (force_accelerate=FALSE)
                 cur.execute(
                     """
-                    INSERT INTO position_tracking (symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, opening_score, trading_mode, force_accelerate)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE)
-                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode, force_accelerate;
+                    INSERT INTO position_tracking (symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, opening_score, trading_mode, force_accelerate, leverage)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s)
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode, force_accelerate, leverage;
                     """,
-                    (symbol, direction, entry_price, current_price, trailing_active, current_price, opening_score, trading_mode),
+                    (symbol, direction, entry_price, current_price, trailing_active, current_price, opening_score, trading_mode, leverage),
                 )
 
             row = cur.fetchone()
@@ -1386,6 +1401,7 @@ def upsert_position_tracking(
         "opening_score": float(row[5]) if row[5] else None,
         "trading_mode": row[6] or "NORMAL",
         "force_accelerate": row[7] or False,
+        "leverage": float(row[8]) if row[8] else None,
     }
 
 

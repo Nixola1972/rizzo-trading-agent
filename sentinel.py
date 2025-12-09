@@ -2327,7 +2327,7 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
                     break
 
             if entry_price > 0:
-                # Crea tracking
+                # Crea tracking (IMPORTANTE: salva la leva per calcoli SL consistenti)
                 db_utils.upsert_position_tracking(
                     symbol=symbol,
                     direction=direction,
@@ -2335,7 +2335,8 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
                     current_price=entry_price,
                     trailing_active=False,
                     opening_score=score,
-                    trading_mode="MICRO_GAIN"
+                    trading_mode="MICRO_GAIN",
+                    leverage=actual_leverage  # CRITICO: salva la leva decisa dall'AI
                 )
 
                 # Trade Journal: registra apertura trade
@@ -2660,7 +2661,7 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
                     break
 
             if entry_price > 0:
-                # Crea tracking
+                # Crea tracking (IMPORTANTE: salva la leva per calcoli SL consistenti)
                 db_utils.upsert_position_tracking(
                     symbol=symbol,
                     direction=direction,
@@ -2668,7 +2669,8 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
                     current_price=entry_price,
                     trailing_active=False,
                     opening_score=score,
-                    trading_mode="MICRO_PAY"
+                    trading_mode="MICRO_PAY",
+                    leverage=actual_leverage  # CRITICO: salva la leva decisa dall'AI
                 )
 
                 # Trade Journal: registra apertura trade
@@ -5139,14 +5141,23 @@ def run_sentinel_check():
             micro_gain_result = {"triggered": False, "reason": "", "quick_score": 0.0}
             position_size = float(pos.get("size", 0))
 
-            # Parse leverage
-            leverage_raw = pos.get("leverage", 1)
-            if isinstance(leverage_raw, str):
-                import re
-                match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
-                pos_leverage = float(match.group(1)) if match else 1.0
+            # === LEVERAGE: usa la leva SALVATA nel DB (decisa dall'AI all'apertura) ===
+            # CRITICO: evita mismatch tra leva usata per aprire e leva usata per SL
+            stored_leverage = tracking_data.get("leverage")
+
+            if stored_leverage:
+                # Usa la leva salvata nel DB (fonte autorevole)
+                pos_leverage = stored_leverage
             else:
-                pos_leverage = float(leverage_raw)
+                # Fallback: parse leverage da HyperLiquid (per posizioni vecchie senza leva salvata)
+                leverage_raw = pos.get("leverage", 1)
+                if isinstance(leverage_raw, str):
+                    import re
+                    match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+                    pos_leverage = float(match.group(1)) if match else MICRO_GAIN_LEVERAGE
+                else:
+                    pos_leverage = float(leverage_raw) if leverage_raw else MICRO_GAIN_LEVERAGE
+                log(f"   [SLOW] ⚠️ {symbol}: Leva non salvata in DB, usando fallback: {pos_leverage}x")
 
             # === PROTEZIONE RACE CONDITION SLOW LOOP ===
             # Skip SL update per posizioni appena aperte (stesso check del FAST loop)
@@ -5691,19 +5702,7 @@ def run_sentinel_fast():
             mark_price = float(pos.get("mark_price", 0))
             position_size = float(pos.get("size", 0))
 
-            # Parse leverage
-            leverage_raw = pos.get("leverage", 1)
-            if isinstance(leverage_raw, str):
-                import re
-                match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
-                pos_leverage = float(match.group(1)) if match else 1.0
-            else:
-                pos_leverage = float(leverage_raw)
-
-            # DEBUG: Log leverage info (rimuovere dopo debug)
-            log(f"   🔧 {symbol}: leverage_raw={leverage_raw} (type={type(leverage_raw).__name__}) → pos_leverage={pos_leverage}")
-
-            # Ottieni tracking dal DB
+            # Ottieni tracking dal DB PRIMA di usare leverage
             tracking_data = db_utils.get_position_tracking(symbol)
 
             # IMPORTANTE: se non esiste tracking, la posizione è ancora in fase di apertura
@@ -5713,6 +5712,25 @@ def run_sentinel_fast():
                 continue
 
             trading_mode = tracking_data.get("trading_mode", "NORMAL")
+
+            # === LEVERAGE: usa la leva SALVATA nel DB (decisa dall'AI all'apertura) ===
+            # CRITICO: evita mismatch tra leva usata per aprire e leva usata per SL
+            stored_leverage = tracking_data.get("leverage")
+
+            if stored_leverage:
+                # Usa la leva salvata nel DB (fonte autorevole)
+                pos_leverage = stored_leverage
+                log(f"   🔧 {symbol}: Usando leva da DB: {pos_leverage}x")
+            else:
+                # Fallback: parse leverage da HyperLiquid (per posizioni vecchie senza leva salvata)
+                leverage_raw = pos.get("leverage", 1)
+                if isinstance(leverage_raw, str):
+                    import re
+                    match = re.search(r'(\d+(?:\.\d+)?)', leverage_raw)
+                    pos_leverage = float(match.group(1)) if match else MICRO_GAIN_LEVERAGE
+                else:
+                    pos_leverage = float(leverage_raw) if leverage_raw else MICRO_GAIN_LEVERAGE
+                log(f"   ⚠️ {symbol}: Leva non salvata in DB, usando fallback da HL: {pos_leverage}x")
 
             # === PROTEZIONE RACE CONDITION: Skip SL update per posizioni appena aperte ===
             # Se la posizione è stata aperta da meno di 90 secondi, NON aggiornare SL
