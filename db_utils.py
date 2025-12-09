@@ -1498,6 +1498,12 @@ def save_pending_entry(
     import json
     from datetime import datetime
 
+    # Converti numpy types a Python native types
+    entry_price = float(entry_price) if entry_price is not None else 0.0
+    invalidation_price = float(invalidation_price) if invalidation_price is not None else 0.0
+    stop_loss = float(stop_loss) if stop_loss is not None else 0.0
+    confidence = float(confidence) if confidence is not None else 0.0
+
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
