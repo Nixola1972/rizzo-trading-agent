@@ -5737,9 +5737,13 @@ def run_sentinel_fast():
                                     break
                             except ValueError:
                                 continue
+                    # SICUREZZA: next_sl deve essere SOTTO il P&L corrente, altrimenti SL trigger immediato!
                     if next_sl > current_sl:
-                        log(f"   [FAST] ⚡ {symbol}: Forzando SL da {current_sl:+.1f}% a {next_sl:+.1f}% (contrary pattern)")
-                        _current_sl_level[symbol] = next_sl
+                        if next_sl < pnl_pct:
+                            log(f"   [FAST] ⚡ {symbol}: Forzando SL da {current_sl:+.1f}% a {next_sl:+.1f}% (contrary pattern)")
+                            _current_sl_level[symbol] = next_sl
+                        else:
+                            log(f"   [FAST] ⚠️ {symbol}: ACCELERATE bloccato! next_sl ({next_sl:+.1f}%) >= P&L ({pnl_pct:+.2f}%)")
                     else:
                         log(f"   [FAST] ⚡ {symbol}: SL già al massimo ({current_sl:+.1f}%), no accelerate possibile")
                 elif trading_mode == "NORMAL":
@@ -5756,9 +5760,13 @@ def run_sentinel_fast():
                                     break
                             except ValueError:
                                 continue
+                    # SICUREZZA: next_sl deve essere SOTTO il P&L corrente
                     if next_sl > current_sl:
-                        log(f"   [FAST] ⚡ {symbol}: Forzando SL da {current_sl:+.1f}% a {next_sl:+.1f}% (contrary pattern)")
-                        _current_sl_level[f"{symbol}_NORMAL"] = next_sl
+                        if next_sl < pnl_pct:
+                            log(f"   [FAST] ⚡ {symbol}: Forzando SL da {current_sl:+.1f}% a {next_sl:+.1f}% (contrary pattern)")
+                            _current_sl_level[f"{symbol}_NORMAL"] = next_sl
+                        else:
+                            log(f"   [FAST] ⚠️ {symbol}: ACCELERATE bloccato! next_sl ({next_sl:+.1f}%) >= P&L ({pnl_pct:+.2f}%)")
 
                 # Reset force_accelerate flag nel DB
                 db_utils.update_position_tracking(symbol, {'force_accelerate': False})
