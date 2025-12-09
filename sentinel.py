@@ -2508,7 +2508,9 @@ def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price
                     calculated_sl_level = price_diff_pct * actual_leverage
 
                     _current_sl_level[symbol] = calculated_sl_level
-                    log(f"   ✅ {symbol} MICRO_GAIN SL recuperato da HL (trigger=${trigger_px}), livello: {calculated_sl_level:+.2f}%")
+                    log(f"   ✅ {symbol} MICRO_GAIN SL recuperato da HL:")
+                    log(f"      trigger=${trigger_px}, entry=${entry_price:.2f}, leva={actual_leverage}x")
+                    log(f"      price_diff={price_diff_pct:.4f}%, sl_level={calculated_sl_level:+.2f}%")
                     return True
 
         # Nessun ordine SL trovato - inizializza al default
@@ -5657,6 +5659,9 @@ def run_sentinel_fast():
                 pos_leverage = float(match.group(1)) if match else 1.0
             else:
                 pos_leverage = float(leverage_raw)
+
+            # DEBUG: Log leverage info (rimuovere dopo debug)
+            log(f"   🔧 {symbol}: leverage_raw={leverage_raw} (type={type(leverage_raw).__name__}) → pos_leverage={pos_leverage}")
 
             # Ottieni tracking dal DB
             tracking_data = db_utils.get_position_tracking(symbol)
