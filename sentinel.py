@@ -2315,16 +2315,29 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
         )
 
         if order_success:
-            # Ottieni entry price dalla posizione
-            account_status = bot.get_account_status()
+            # === IMPORTANTE: Delay per permettere a HyperLiquid di processare il fill ===
+            # Senza delay, l'API può restituire entry_price sbagliato/stale
+            import time
+            time.sleep(1.0)  # 1 secondo di attesa per il fill
+
+            # Ottieni entry price dalla posizione (con retry per sicurezza)
             entry_price = 0
             position_size = 0
 
-            for pos in account_status.get("open_positions", []):
-                if pos.get("symbol") == symbol:
-                    entry_price = float(pos.get("entry_price", 0))
-                    position_size = float(pos.get("size", 0))
+            for retry in range(3):
+                account_status = bot.get_account_status()
+                for pos in account_status.get("open_positions", []):
+                    if pos.get("symbol") == symbol:
+                        entry_price = float(pos.get("entry_price", 0))
+                        position_size = float(pos.get("size", 0))
+                        break
+
+                if entry_price > 0:
+                    log(f"   📊 [MICRO_GAIN] Entry price da HL: ${entry_price:.4f} (dopo {retry+1} tentativi)")
                     break
+
+                log(f"   ⏳ [MICRO_GAIN] Entry price non disponibile, retry {retry+1}/3...")
+                time.sleep(0.5)
 
             if entry_price > 0:
                 # Crea tracking (IMPORTANTE: salva la leva per calcoli SL consistenti)
@@ -2649,16 +2662,29 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
         )
 
         if order_success:
-            # Ottieni entry price dalla posizione
-            account_status = bot.get_account_status()
+            # === IMPORTANTE: Delay per permettere a HyperLiquid di processare il fill ===
+            # Senza delay, l'API può restituire entry_price sbagliato/stale
+            import time
+            time.sleep(1.0)  # 1 secondo di attesa per il fill
+
+            # Ottieni entry price dalla posizione (con retry per sicurezza)
             entry_price = 0
             position_size = 0
 
-            for pos in account_status.get("open_positions", []):
-                if pos.get("symbol") == symbol:
-                    entry_price = float(pos.get("entry_price", 0))
-                    position_size = float(pos.get("size", 0))
+            for retry in range(3):
+                account_status = bot.get_account_status()
+                for pos in account_status.get("open_positions", []):
+                    if pos.get("symbol") == symbol:
+                        entry_price = float(pos.get("entry_price", 0))
+                        position_size = float(pos.get("size", 0))
+                        break
+
+                if entry_price > 0:
+                    log(f"   📊 [MICRO_PAY] Entry price da HL: ${entry_price:.4f} (dopo {retry+1} tentativi)")
                     break
+
+                log(f"   ⏳ [MICRO_PAY] Entry price non disponibile, retry {retry+1}/3...")
+                time.sleep(0.5)
 
             if entry_price > 0:
                 # Crea tracking (IMPORTANTE: salva la leva per calcoli SL consistenti)
@@ -5132,6 +5158,19 @@ def run_sentinel_check():
 
             trading_mode = tracking_data.get("trading_mode", "NORMAL")
 
+            # === DEBUG: confronta entry_price da HL API vs DB tracking ===
+            tracked_entry_price = tracking_data.get("entry_price")
+            if tracked_entry_price and abs(entry_price - tracked_entry_price) > 0.01:
+                price_diff = entry_price - tracked_entry_price
+                price_diff_pct = (price_diff / tracked_entry_price) * 100
+                log(f"   ⚠️ [SLOW] {symbol}: ENTRY PRICE MISMATCH!")
+                log(f"      HL API entry:  ${entry_price:.4f}")
+                log(f"      DB tracking:   ${tracked_entry_price:.4f}")
+                log(f"      Differenza:    ${price_diff:+.4f} ({price_diff_pct:+.2f}%)")
+                # USA L'ENTRY PRICE DAL TRACKING (quello salvato all'apertura è più affidabile)
+                entry_price = tracked_entry_price
+                log(f"      → Usando entry_price da tracking: ${entry_price:.4f}")
+
             # === CHECK TAKE PROFIT (prima del trailing stop) ===
             tp_result = check_take_profit(pos)
             tp_triggered = tp_result.get("triggered", False)
@@ -5712,6 +5751,19 @@ def run_sentinel_fast():
                 continue
 
             trading_mode = tracking_data.get("trading_mode", "NORMAL")
+
+            # === DEBUG: confronta entry_price da HL API vs DB tracking ===
+            tracked_entry_price = tracking_data.get("entry_price")
+            if tracked_entry_price and abs(entry_price - tracked_entry_price) > 0.01:
+                price_diff = entry_price - tracked_entry_price
+                price_diff_pct = (price_diff / tracked_entry_price) * 100
+                log(f"   ⚠️ [FAST] {symbol}: ENTRY PRICE MISMATCH!")
+                log(f"      HL API entry:  ${entry_price:.4f}")
+                log(f"      DB tracking:   ${tracked_entry_price:.4f}")
+                log(f"      Differenza:    ${price_diff:+.4f} ({price_diff_pct:+.2f}%)")
+                # USA L'ENTRY PRICE DAL TRACKING (quello salvato all'apertura è più affidabile)
+                entry_price = tracked_entry_price
+                log(f"      → Usando entry_price da tracking: ${entry_price:.4f}")
 
             # === LEVERAGE: usa la leva SALVATA nel DB (decisa dall'AI all'apertura) ===
             # CRITICO: evita mismatch tra leva usata per aprire e leva usata per SL
