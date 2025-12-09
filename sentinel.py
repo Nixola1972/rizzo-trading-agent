@@ -995,13 +995,43 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
             whale_sentiment = "unavailable"
             whale_symbol = {}
 
-        # === 1.5 PATTERN DETECTION (cached) ===
+        # === 1.5 PATTERN DETECTION (cached) with WINNER-TAKES-ALL ===
         double_bottom, double_top = get_patterns_for_symbol(symbol)
         pattern_info = ""
         pattern_data_for_entry = None  # Will be used for pending entry creation
 
-        if double_bottom and double_bottom.get('detected'):
-            conf = double_bottom.get('confidence', 0) * 100
+        # Get detection flags and confidence
+        bottom_detected = double_bottom and double_bottom.get('detected', False)
+        top_detected = double_top and double_top.get('detected', False)
+        bottom_conf = double_bottom.get('confidence', 0) if bottom_detected else 0
+        top_conf = double_top.get('confidence', 0) if top_detected else 0
+
+        # Winner-takes-all logic: only include pattern if it's the clear winner
+        MIN_PATTERN_CONF_DIFF = 0.15  # 15% minimum difference
+        use_bottom = False
+        use_top = False
+
+        if bottom_detected and top_detected:
+            # Both detected: only use winner if confidence diff >= 15%
+            conf_diff = abs(bottom_conf - top_conf)
+            if conf_diff >= MIN_PATTERN_CONF_DIFF:
+                if bottom_conf > top_conf:
+                    use_bottom = True
+                    log(f"      📊 Pattern: Double Bottom WINS ({bottom_conf*100:.0f}% vs {top_conf*100:.0f}%)")
+                else:
+                    use_top = True
+                    log(f"      📊 Pattern: Double Top WINS ({top_conf*100:.0f}% vs {bottom_conf*100:.0f}%)")
+            else:
+                # Too close - don't include any pattern in AI prompt
+                log(f"      📊 Patterns too close ({bottom_conf*100:.0f}% vs {top_conf*100:.0f}%), ignoring both in AI prompt")
+        elif bottom_detected:
+            use_bottom = True
+        elif top_detected:
+            use_top = True
+
+        # Build pattern info only for the winner
+        if use_bottom:
+            conf = bottom_conf * 100
             first_low = double_bottom.get('first_low', {})
             second_low = double_bottom.get('second_low', {})
             neckline = double_bottom.get('neckline', 0)
@@ -1021,8 +1051,8 @@ def validate_double_check_ai(symbol: str, direction: str, score: float, trading_
             if direction.lower() == "long":
                 pattern_data_for_entry = double_bottom
 
-        elif double_top and double_top.get('detected'):
-            conf = double_top.get('confidence', 0) * 100
+        elif use_top:
+            conf = top_conf * 100
             first_high = double_top.get('first_high', {})
             second_high = double_top.get('second_high', {})
             neckline = double_top.get('neckline', 0)
