@@ -3377,15 +3377,45 @@ with tab11:
                     tp_total = tp_hit['total_net_pnl'].iloc[0] or 0
                     sl_count = sl_hit['count'].iloc[0]
                     tp_count = tp_hit['count'].iloc[0]
+                    sl_avg = sl_hit['avg_net_pnl'].iloc[0] or 0
+                    tp_avg = tp_hit['avg_net_pnl'].iloc[0] or 0
 
-                    if sl_total < 0 and abs(sl_total) > tp_total:
-                        st.error(f"""
-                        ⚠️ **PROBLEMA IDENTIFICATO**: SL_HIT sta cancellando i guadagni!
-                        - TP_HIT genera: +${tp_total:,.2f} ({tp_count} trade)
-                        - SL_HIT perde: ${sl_total:,.2f} ({sl_count} trade)
-                        - **Differenza**: ${tp_total + sl_total:,.2f}
+                    # Calcola R/R ratio effettivo
+                    rr_ratio = abs(tp_avg / sl_avg) if sl_avg != 0 else 0
+                    sl_rate = (sl_count / (sl_count + tp_count)) * 100 if (sl_count + tp_count) > 0 else 0
 
-                        💡 **Suggerimento**: Considera di allargare lo Stop Loss o restringere il Target
+                    # Mostra sempre l'analisi R/R
+                    st.markdown("#### 📊 Analisi Risk/Reward")
+                    col_rr1, col_rr2, col_rr3 = st.columns(3)
+                    with col_rr1:
+                        st.metric("Avg Win (TP)", f"${tp_avg:.3f}")
+                    with col_rr2:
+                        st.metric("Avg Loss (SL)", f"${sl_avg:.3f}")
+                    with col_rr3:
+                        rr_color = "normal" if rr_ratio >= 1.0 else "inverse"
+                        st.metric("R/R Ratio", f"{rr_ratio:.2f}",
+                                 delta="OK" if rr_ratio >= 1.0 else "Sotto 1!",
+                                 delta_color=rr_color)
+
+                    # Analisi dettagliata
+                    if rr_ratio < 1.0:
+                        breakeven_wr = (1 / (1 + rr_ratio)) * 100 if rr_ratio > 0 else 100
+                        current_wr = (tp_count / (tp_count + sl_count)) * 100
+                        st.warning(f"""
+                        **R/R Ratio {rr_ratio:.2f}** → Per essere profittevole serve Win Rate > **{breakeven_wr:.0f}%**
+
+                        Win Rate attuale: **{current_wr:.1f}%** {'✅' if current_wr > breakeven_wr else '❌'}
+
+                        💡 **Opzioni**:
+                        - Abbassa il Target (più TP_HIT, avg win più basso ma più frequente)
+                        - Allarga lo SL (meno SL_HIT, ma avg loss più alta)
+                        - Step trailing più aggressivi (lock profit prima)
+                        """)
+                    elif sl_total < 0 and abs(sl_total) > tp_total:
+                        st.info(f"""
+                        **Net negativo** nonostante R/R {rr_ratio:.2f} → Troppi SL_HIT ({sl_rate:.0f}%)
+
+                        💡 Considera entry più selettive (score threshold più alto) o SL più largo
                         """)
 
             # === SEZIONE 3: DISTRIBUZIONE PEAK P&L ===
@@ -3393,20 +3423,8 @@ with tab11:
             st.caption("Mostra dove i trade raggiungono il massimo profitto prima di chiudersi")
 
             peak_dist_df = query_db(f"""
-                SELECT
-                    CASE
-                        WHEN peak_pnl_percent < 0.5 THEN '< 0.5%'
-                        WHEN peak_pnl_percent < 1.0 THEN '0.5-1%'
-                        WHEN peak_pnl_percent < 1.5 THEN '1-1.5%'
-                        WHEN peak_pnl_percent < 2.0 THEN '1.5-2%'
-                        WHEN peak_pnl_percent < 2.5 THEN '2-2.5%'
-                        WHEN peak_pnl_percent < 3.0 THEN '2.5-3%'
-                        WHEN peak_pnl_percent < 4.0 THEN '3-4%'
-                        ELSE '4%+'
-                    END as peak_range,
-                    COUNT(*) as trades,
-                    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER(), 1) as pct,
-                    ROUND(100.0 * SUM(COUNT(*)) OVER(ORDER BY
+                WITH peak_buckets AS (
+                    SELECT
                         CASE
                             WHEN peak_pnl_percent < 0.5 THEN 1
                             WHEN peak_pnl_percent < 1.0 THEN 2
@@ -3416,21 +3434,27 @@ with tab11:
                             WHEN peak_pnl_percent < 3.0 THEN 6
                             WHEN peak_pnl_percent < 4.0 THEN 7
                             ELSE 8
-                        END
-                    ) / SUM(COUNT(*)) OVER(), 1) as cumulative_pct
-                FROM trades
-                WHERE {where_sql} AND peak_pnl_percent IS NOT NULL
-                GROUP BY 1
-                ORDER BY CASE
-                    WHEN peak_pnl_percent < 0.5 THEN 1
-                    WHEN peak_pnl_percent < 1.0 THEN 2
-                    WHEN peak_pnl_percent < 1.5 THEN 3
-                    WHEN peak_pnl_percent < 2.0 THEN 4
-                    WHEN peak_pnl_percent < 2.5 THEN 5
-                    WHEN peak_pnl_percent < 3.0 THEN 6
-                    WHEN peak_pnl_percent < 4.0 THEN 7
-                    ELSE 8
-                END
+                        END as bucket_order,
+                        CASE
+                            WHEN peak_pnl_percent < 0.5 THEN '< 0.5%'
+                            WHEN peak_pnl_percent < 1.0 THEN '0.5-1%'
+                            WHEN peak_pnl_percent < 1.5 THEN '1-1.5%'
+                            WHEN peak_pnl_percent < 2.0 THEN '1.5-2%'
+                            WHEN peak_pnl_percent < 2.5 THEN '2-2.5%'
+                            WHEN peak_pnl_percent < 3.0 THEN '2.5-3%'
+                            WHEN peak_pnl_percent < 4.0 THEN '3-4%'
+                            ELSE '4%+'
+                        END as peak_range
+                    FROM trades
+                    WHERE {where_sql} AND peak_pnl_percent IS NOT NULL
+                )
+                SELECT
+                    peak_range,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER(), 1) as pct
+                FROM peak_buckets
+                GROUP BY bucket_order, peak_range
+                ORDER BY bucket_order
             """)
 
             if not peak_dist_df.empty:
