@@ -2261,29 +2261,51 @@ def open_micro_gain_position(bot, symbol: str, direction: str, score: float, lev
 
     try:
         # === CLEANUP: Cancella tutti gli ordini esistenti per questo simbolo ===
-        # Evita che ordini LIMIT residui da trade precedenti chiudano la nuova posizione
-        try:
+        # Evita che ordini LIMIT/TRIGGER residui da trade precedenti causino problemi
+        # IMPORTANTE: Retry se cancellazione fallisce per evitare SL orfani
+        import time
+        max_cleanup_attempts = 3
+        for cleanup_attempt in range(max_cleanup_attempts):
             try:
-                existing_orders = bot.info.frontend_open_orders(bot.account_address)
-            except AttributeError:
-                existing_orders = bot.info.open_orders(bot.account_address)
+                try:
+                    existing_orders = bot.info.frontend_open_orders(bot.account_address)
+                except AttributeError:
+                    existing_orders = bot.info.open_orders(bot.account_address)
 
-            cancelled_count = 0
-            for order in existing_orders:
-                if order.get("coin") == symbol:
+                symbol_orders = [o for o in existing_orders if o.get("coin") == symbol]
+                if not symbol_orders:
+                    if cleanup_attempt > 0:
+                        log(f"   ✅ Tutti gli ordini residui per {symbol} cancellati (dopo {cleanup_attempt} tentativi)")
+                    break
+
+                cancelled_count = 0
+                failed_count = 0
+                for order in symbol_orders:
                     try:
                         bot.exchange.cancel(symbol, order.get("oid"))
                         cancelled_count += 1
                         log(f"   🗑️ Cancellato ordine residuo OID={order.get('oid')}")
+                        time.sleep(0.1)  # Piccola pausa tra cancellazioni
                     except Exception as cancel_err:
-                        log(f"   ⚠️ Errore cancellazione ordine residuo: {cancel_err}")
+                        failed_count += 1
+                        log(f"   ⚠️ Errore cancellazione ordine OID={order.get('oid')}: {cancel_err}")
 
-            if cancelled_count > 0:
-                log(f"   ✅ Cancellati {cancelled_count} ordini residui per {symbol}")
-                import time
-                time.sleep(0.3)  # Breve pausa per sincronizzazione
-        except Exception as cleanup_err:
-            log(f"   ⚠️ Errore cleanup ordini pre-apertura: {cleanup_err}")
+                if cancelled_count > 0:
+                    log(f"   ✅ Cancellati {cancelled_count} ordini residui per {symbol}")
+                    time.sleep(0.5)  # Attendi sync API prima di verificare
+
+                if failed_count > 0 and cleanup_attempt < max_cleanup_attempts - 1:
+                    log(f"   🔄 {failed_count} cancellazioni fallite, retry {cleanup_attempt + 2}/{max_cleanup_attempts}...")
+                    time.sleep(0.5)
+                elif failed_count > 0:
+                    log(f"   ⚠️ ATTENZIONE: {failed_count} ordini residui per {symbol} NON cancellati!")
+                else:
+                    break
+
+            except Exception as cleanup_err:
+                log(f"   ⚠️ Errore cleanup ordini pre-apertura (tentativo {cleanup_attempt + 1}): {cleanup_err}")
+                if cleanup_attempt < max_cleanup_attempts - 1:
+                    time.sleep(0.5)
 
         # === RESET SL LEVEL: Evita che il FAST loop usi valori vecchi ===
         # Deve essere fatto PRIMA di aprire la posizione
@@ -2561,6 +2583,24 @@ def initialize_micro_gain_sl_level(bot, symbol: str, direction: str, entry_price
                     # Moltiplica per leva per ottenere il livello SL in %
                     calculated_sl_level = price_diff_pct * actual_leverage
 
+                    # === VALIDAZIONE: Verifica che SL sia ragionevole per posizione corrente ===
+                    # Se SL calcolato è molto più negativo di quanto configurato, è probabilmente
+                    # un ordine residuo da una posizione precedente con entry_price diverso
+                    max_reasonable_sl = -MICRO_GAIN_STOP_LOSS_PERCENT * 2.5  # es. -2.5% se SL=1%
+                    if calculated_sl_level < max_reasonable_sl:
+                        log(f"   ⚠️ {symbol}: SL trovato su HL sembra di posizione VECCHIA!")
+                        log(f"      trigger=${trigger_px}, entry=${entry_price:.2f}")
+                        log(f"      sl_level calcolato={calculated_sl_level:+.2f}% (< {max_reasonable_sl:+.2f}%)")
+                        log(f"      🗑️ Cancello ordine SL obsoleto OID={order.get('oid')}...")
+                        try:
+                            bot.exchange.cancel(symbol, order.get("oid"))
+                            log(f"      ✅ Ordine SL obsoleto cancellato")
+                            time.sleep(0.2)
+                        except Exception as cancel_err:
+                            log(f"      ⚠️ Errore cancellazione SL obsoleto: {cancel_err}")
+                        # NON usare questo SL, continua a cercare altri ordini o usa default
+                        continue
+
                     _current_sl_level[symbol] = calculated_sl_level
                     log(f"   ✅ {symbol} MICRO_GAIN SL recuperato da HL:")
                     log(f"      trigger=${trigger_px}, entry=${entry_price:.2f}, leva={actual_leverage}x")
@@ -2608,29 +2648,51 @@ def open_micro_pay_position(bot, symbol: str, direction: str, score: float, leve
 
     try:
         # === CLEANUP: Cancella tutti gli ordini esistenti per questo simbolo ===
-        # Evita che ordini LIMIT residui da trade precedenti chiudano la nuova posizione
-        try:
+        # Evita che ordini LIMIT/TRIGGER residui da trade precedenti causino problemi
+        # IMPORTANTE: Retry se cancellazione fallisce per evitare SL orfani
+        import time
+        max_cleanup_attempts = 3
+        for cleanup_attempt in range(max_cleanup_attempts):
             try:
-                existing_orders = bot.info.frontend_open_orders(bot.account_address)
-            except AttributeError:
-                existing_orders = bot.info.open_orders(bot.account_address)
+                try:
+                    existing_orders = bot.info.frontend_open_orders(bot.account_address)
+                except AttributeError:
+                    existing_orders = bot.info.open_orders(bot.account_address)
 
-            cancelled_count = 0
-            for order in existing_orders:
-                if order.get("coin") == symbol:
+                symbol_orders = [o for o in existing_orders if o.get("coin") == symbol]
+                if not symbol_orders:
+                    if cleanup_attempt > 0:
+                        log(f"   ✅ Tutti gli ordini residui per {symbol} cancellati (dopo {cleanup_attempt} tentativi)")
+                    break
+
+                cancelled_count = 0
+                failed_count = 0
+                for order in symbol_orders:
                     try:
                         bot.exchange.cancel(symbol, order.get("oid"))
                         cancelled_count += 1
                         log(f"   🗑️ Cancellato ordine residuo OID={order.get('oid')}")
+                        time.sleep(0.1)
                     except Exception as cancel_err:
-                        log(f"   ⚠️ Errore cancellazione ordine residuo: {cancel_err}")
+                        failed_count += 1
+                        log(f"   ⚠️ Errore cancellazione ordine OID={order.get('oid')}: {cancel_err}")
 
-            if cancelled_count > 0:
-                log(f"   ✅ Cancellati {cancelled_count} ordini residui per {symbol}")
-                import time
-                time.sleep(0.3)  # Breve pausa per sincronizzazione
-        except Exception as cleanup_err:
-            log(f"   ⚠️ Errore cleanup ordini pre-apertura: {cleanup_err}")
+                if cancelled_count > 0:
+                    log(f"   ✅ Cancellati {cancelled_count} ordini residui per {symbol}")
+                    time.sleep(0.5)
+
+                if failed_count > 0 and cleanup_attempt < max_cleanup_attempts - 1:
+                    log(f"   🔄 {failed_count} cancellazioni fallite, retry {cleanup_attempt + 2}/{max_cleanup_attempts}...")
+                    time.sleep(0.5)
+                elif failed_count > 0:
+                    log(f"   ⚠️ ATTENZIONE: {failed_count} ordini residui per {symbol} NON cancellati!")
+                else:
+                    break
+
+            except Exception as cleanup_err:
+                log(f"   ⚠️ Errore cleanup ordini pre-apertura (tentativo {cleanup_attempt + 1}): {cleanup_err}")
+                if cleanup_attempt < max_cleanup_attempts - 1:
+                    time.sleep(0.5)
 
         # === RESET SL LEVEL: Evita che il FAST loop usi valori vecchi ===
         sl_key = f"{symbol}_MICROPAY"
@@ -3508,6 +3570,22 @@ def place_normal_initial_sl(bot, symbol: str, direction: str, entry_price: float
 
                         # Moltiplica per leva per ottenere il livello SL in %
                         calculated_sl_level = price_diff_pct * leverage
+
+                        # === VALIDAZIONE: Verifica che SL sia ragionevole per posizione corrente ===
+                        max_reasonable_sl = -NORMAL_STOP_LOSS_PERCENT * 2.5
+                        if calculated_sl_level < max_reasonable_sl:
+                            log(f"   ⚠️ {symbol}: SL NORMAL trovato su HL sembra di posizione VECCHIA!")
+                            log(f"      trigger=${trigger_px}, entry=${entry_price:.2f}")
+                            log(f"      sl_level={calculated_sl_level:+.2f}% (< {max_reasonable_sl:+.2f}%)")
+                            log(f"      🗑️ Cancello ordine SL obsoleto...")
+                            try:
+                                bot.exchange.cancel(symbol, order.get("oid"))
+                                log(f"      ✅ Ordine SL obsoleto cancellato")
+                                time.sleep(0.2)
+                            except Exception as cancel_err:
+                                log(f"      ⚠️ Errore cancellazione: {cancel_err}")
+                            # NON usare questo SL, continua
+                            continue
 
                         _current_sl_level[sl_key] = calculated_sl_level
                         log(f"   ✅ {symbol} SL già esistente su HL (trigger=${trigger_px}), livello calcolato: {calculated_sl_level:+.2f}%")

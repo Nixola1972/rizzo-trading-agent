@@ -304,6 +304,79 @@ if entry_time is None:
 
 ---
 
+## 2025-12-10: Fix SL Order Orfani Bug (CRITICO)
+
+### Problema
+**BUG CRITICO**: Lo SL veniva piazzato al prezzo sbagliato quando c'erano ordini SL residui da posizioni precedenti.
+
+**Caso SOL:**
+- Nuova posizione SHORT a $134.51
+- SL doveva essere a $134.78 (per -1% con 5x leva)
+- MA SL effettivo era a $136.40 (corrispondente a -7% P&L!)
+- Il prezzo scendeva ma lo SL non si triggerava
+
+### Causa Root
+Quando una posizione si chiude, gli ordini SL potevano NON essere cancellati se:
+1. La cancellazione falliva silenziosamente (eccezione catturata e continuava)
+2. L'ordine veniva trovato da `initialize_micro_gain_sl_level` che usava l'entry_price NUOVO ma il trigger_price VECCHIO, calcolando un sl_level sbagliato
+
+**Flusso bug:**
+```
+1. Posizione A (SOL) entry=$136.13, SL=$138.X chiude
+2. Ordine SL NON cancellato (errore ignorato)
+3. Nuova posizione B (SOL) entry=$134.51
+4. initialize_micro_gain_sl_level trova vecchio SL
+5. Calcola: price_diff = (134.51 - 136.40) / 134.51 = -1.4%
+6. sl_level = -1.4% × 5 = -7% (SBAGLIATO!)
+7. Verifica vede SL=$136.40, usa sl_level=-7%
+8. Calcola expected=$136.40, dice "OK" - ma è l'SL VECCHIO!
+```
+
+### Fix (Doppio)
+
+**1. Validazione in initialize_micro_gain_sl_level:**
+```python
+# Se SL calcolato è molto più negativo del configurato, è probabilmente orfano
+max_reasonable_sl = -MICRO_GAIN_STOP_LOSS_PERCENT * 2.5
+if calculated_sl_level < max_reasonable_sl:
+    log(f"SL trovato sembra di posizione VECCHIA!")
+    bot.exchange.cancel(symbol, order.get("oid"))  # Cancella ordine orfano
+    continue  # Non usare questo SL
+```
+
+**2. Cleanup robusto con retry in open_micro_gain_position:**
+```python
+max_cleanup_attempts = 3
+for cleanup_attempt in range(max_cleanup_attempts):
+    # Cancella ordini
+    # Se fallisce, retry
+    # Verifica che siano stati cancellati
+```
+
+### File Modificati
+- `sentinel.py` - Aggiunta validazione in `initialize_micro_gain_sl_level` (linee ~2564-2580)
+- `sentinel.py` - Aggiunta validazione in `place_normal_initial_sl` (linee ~3530-3544)
+- `sentinel.py` - Cleanup robusto in `open_micro_gain_position` (linee ~2263-2308)
+- `sentinel.py` - Cleanup robusto in `open_micro_pay_position` (linee ~2649-2695)
+
+### Come Verificare
+Nei log dovresti vedere quando un ordine orfano viene rilevato:
+```
+⚠️ SOL: SL trovato su HL sembra di posizione VECCHIA!
+   trigger=$136.40, entry=$134.51
+   sl_level calcolato=-7.00% (< -2.50%)
+   🗑️ Cancello ordine SL obsoleto OID=xxx...
+   ✅ Ordine SL obsoleto cancellato
+```
+
+E quando il cleanup ha successo dopo retry:
+```
+🗑️ Cancellato ordine residuo OID=xxx
+✅ Cancellati 2 ordini residui per SOL
+```
+
+---
+
 ## Template per Future Modifiche
 
 ```markdown
