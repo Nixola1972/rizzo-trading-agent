@@ -127,10 +127,10 @@ except:
 st.markdown("---")
 
 # Tabs
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "📊 Performance", "💼 Operations", "📈 Open Positions", "🎯 AI Decisions",
     "🧠 AI Strategy Analysis", "🔬 Backtesting", "⚙️ Settings",
-    "📒 Trade Journal", "💰 Profitability", "🔍 Controller"
+    "📒 Trade Journal", "💰 Profitability", "🔍 Controller", "🔧 Optimizer"
 ])
 
 with tab1:
@@ -3247,6 +3247,460 @@ for o in orders:
 
     except Exception as e:
         st.error(f"Errore Controller: {e}")
+
+# =============================================================================
+# TAB 11: PARAMETER OPTIMIZER
+# =============================================================================
+with tab11:
+    st.subheader("🔧 Parameter Optimizer")
+    st.markdown("""
+    Analizza i trade passati e suggerisce parametri ottimali per massimizzare profittabilità.
+    """)
+
+    # Selezione periodo e filtri
+    col_opt1, col_opt2, col_opt3 = st.columns(3)
+    with col_opt1:
+        opt_period = st.selectbox(
+            "📅 Periodo Analisi",
+            ["7 giorni", "14 giorni", "30 giorni", "Tutti"],
+            index=0,
+            key="opt_period"
+        )
+    with col_opt2:
+        opt_mode = st.selectbox(
+            "🎯 Trading Mode",
+            ["MICRO_GAIN", "MICRO_PAY", "NORMAL", "Tutti"],
+            index=0,
+            key="opt_mode"
+        )
+    with col_opt3:
+        opt_symbol = st.selectbox(
+            "💰 Symbol",
+            ["Tutti"] + ENABLED_SYMBOLS,
+            index=0,
+            key="opt_symbol"
+        )
+
+    # Costruisci filtri SQL
+    period_map_opt = {"7 giorni": 7, "14 giorni": 14, "30 giorni": 30, "Tutti": None}
+    opt_days = period_map_opt[opt_period]
+
+    where_clauses = ["status = 'CLOSED'"]
+    if opt_days:
+        where_clauses.append(f"closed_at > NOW() - INTERVAL '{opt_days} days'")
+    if opt_mode != "Tutti":
+        where_clauses.append(f"trading_mode = '{opt_mode}'")
+    if opt_symbol != "Tutti":
+        where_clauses.append(f"symbol = '{opt_symbol}'")
+
+    where_sql = " AND ".join(where_clauses)
+
+    st.markdown("---")
+
+    # === SEZIONE 1: PANORAMICA TRADE ===
+    st.markdown("### 📊 Panoramica Trade")
+
+    try:
+        # Query panoramica
+        overview_df = query_db(f"""
+            SELECT
+                COUNT(*) as total_trades,
+                COUNT(*) FILTER (WHERE profitable = true) as winning,
+                COUNT(*) FILTER (WHERE profitable = false) as losing,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                ROUND(SUM(fee_total)::numeric, 2) as total_fees,
+                ROUND(AVG(duration_seconds/60.0)::numeric, 1) as avg_duration_min
+            FROM trades
+            WHERE {where_sql}
+        """)
+
+        if not overview_df.empty and overview_df['total_trades'].iloc[0] > 0:
+            row = overview_df.iloc[0]
+
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            with col_m1:
+                st.metric("📈 Trade Totali", int(row['total_trades']))
+            with col_m2:
+                win_rate = row['win_rate'] or 0
+                st.metric("🎯 Win Rate", f"{win_rate}%",
+                         delta="OK" if win_rate >= 50 else "Sotto 50%",
+                         delta_color="normal" if win_rate >= 50 else "inverse")
+            with col_m3:
+                net_pnl = row['net_pnl'] or 0
+                st.metric("💰 Net P&L", f"${net_pnl:,.2f}",
+                         delta="Profit" if net_pnl >= 0 else "Loss",
+                         delta_color="normal" if net_pnl >= 0 else "inverse")
+            with col_m4:
+                fees = row['total_fees'] or 0
+                st.metric("💸 Fees Totali", f"${fees:,.2f}")
+
+            # === SEZIONE 2: CLOSE REASON BREAKDOWN ===
+            st.markdown("### 📋 Breakdown per Close Reason")
+
+            close_reason_df = query_db(f"""
+                SELECT
+                    close_reason,
+                    COUNT(*) as count,
+                    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER(), 1) as pct,
+                    ROUND(AVG(net_pnl_usd)::numeric, 3) as avg_net_pnl,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as total_net_pnl,
+                    ROUND(AVG(peak_pnl_percent)::numeric, 2) as avg_peak,
+                    ROUND(AVG(pnl_percent)::numeric, 2) as avg_exit
+                FROM trades
+                WHERE {where_sql}
+                GROUP BY close_reason
+                ORDER BY count DESC
+            """)
+
+            if not close_reason_df.empty:
+                # Colora la riga in base al P&L
+                def color_pnl(val):
+                    if val > 0:
+                        return 'background-color: rgba(0, 255, 0, 0.2)'
+                    elif val < 0:
+                        return 'background-color: rgba(255, 0, 0, 0.2)'
+                    return ''
+
+                st.dataframe(
+                    close_reason_df.style.applymap(color_pnl, subset=['total_net_pnl']),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # Analisi problemi
+                sl_hit = close_reason_df[close_reason_df['close_reason'] == 'SL_HIT']
+                tp_hit = close_reason_df[close_reason_df['close_reason'] == 'TP_HIT']
+
+                if not sl_hit.empty and not tp_hit.empty:
+                    sl_total = sl_hit['total_net_pnl'].iloc[0] or 0
+                    tp_total = tp_hit['total_net_pnl'].iloc[0] or 0
+                    sl_count = sl_hit['count'].iloc[0]
+                    tp_count = tp_hit['count'].iloc[0]
+
+                    if sl_total < 0 and abs(sl_total) > tp_total:
+                        st.error(f"""
+                        ⚠️ **PROBLEMA IDENTIFICATO**: SL_HIT sta cancellando i guadagni!
+                        - TP_HIT genera: +${tp_total:,.2f} ({tp_count} trade)
+                        - SL_HIT perde: ${sl_total:,.2f} ({sl_count} trade)
+                        - **Differenza**: ${tp_total + sl_total:,.2f}
+
+                        💡 **Suggerimento**: Considera di allargare lo Stop Loss o restringere il Target
+                        """)
+
+            # === SEZIONE 3: DISTRIBUZIONE PEAK P&L ===
+            st.markdown("### 📈 Distribuzione Peak P&L")
+            st.caption("Mostra dove i trade raggiungono il massimo profitto prima di chiudersi")
+
+            peak_dist_df = query_db(f"""
+                SELECT
+                    CASE
+                        WHEN peak_pnl_percent < 0.5 THEN '< 0.5%'
+                        WHEN peak_pnl_percent < 1.0 THEN '0.5-1%'
+                        WHEN peak_pnl_percent < 1.5 THEN '1-1.5%'
+                        WHEN peak_pnl_percent < 2.0 THEN '1.5-2%'
+                        WHEN peak_pnl_percent < 2.5 THEN '2-2.5%'
+                        WHEN peak_pnl_percent < 3.0 THEN '2.5-3%'
+                        WHEN peak_pnl_percent < 4.0 THEN '3-4%'
+                        ELSE '4%+'
+                    END as peak_range,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER(), 1) as pct,
+                    ROUND(100.0 * SUM(COUNT(*)) OVER(ORDER BY
+                        CASE
+                            WHEN peak_pnl_percent < 0.5 THEN 1
+                            WHEN peak_pnl_percent < 1.0 THEN 2
+                            WHEN peak_pnl_percent < 1.5 THEN 3
+                            WHEN peak_pnl_percent < 2.0 THEN 4
+                            WHEN peak_pnl_percent < 2.5 THEN 5
+                            WHEN peak_pnl_percent < 3.0 THEN 6
+                            WHEN peak_pnl_percent < 4.0 THEN 7
+                            ELSE 8
+                        END
+                    ) / SUM(COUNT(*)) OVER(), 1) as cumulative_pct
+                FROM trades
+                WHERE {where_sql} AND peak_pnl_percent IS NOT NULL
+                GROUP BY 1
+                ORDER BY CASE
+                    WHEN peak_pnl_percent < 0.5 THEN 1
+                    WHEN peak_pnl_percent < 1.0 THEN 2
+                    WHEN peak_pnl_percent < 1.5 THEN 3
+                    WHEN peak_pnl_percent < 2.0 THEN 4
+                    WHEN peak_pnl_percent < 2.5 THEN 5
+                    WHEN peak_pnl_percent < 3.0 THEN 6
+                    WHEN peak_pnl_percent < 4.0 THEN 7
+                    ELSE 8
+                END
+            """)
+
+            if not peak_dist_df.empty:
+                col_peak1, col_peak2 = st.columns([2, 1])
+
+                with col_peak1:
+                    # Grafico a barre
+                    fig_peak = px.bar(
+                        peak_dist_df,
+                        x='peak_range',
+                        y='trades',
+                        text='pct',
+                        title="Distribuzione Peak P&L",
+                        labels={'peak_range': 'Range Peak P&L', 'trades': 'Numero Trade'}
+                    )
+                    fig_peak.update_traces(texttemplate='%{text}%', textposition='outside')
+                    fig_peak.update_layout(height=350)
+                    st.plotly_chart(fig_peak, use_container_width=True)
+
+                with col_peak2:
+                    st.markdown("**📊 Statistiche**")
+
+                    # Calcola target raggiungibilità
+                    target_pct = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '4.0'))
+
+                    # Trova % che raggiunge il target
+                    reaches_target = peak_dist_df[peak_dist_df['peak_range'] == '4%+']['pct'].iloc[0] if '4%+' in peak_dist_df['peak_range'].values else 0
+
+                    # Trova % sotto 1.5%
+                    below_1_5 = peak_dist_df[peak_dist_df['peak_range'].isin(['< 0.5%', '0.5-1%', '1-1.5%'])]['pct'].sum()
+
+                    st.metric("🎯 Target Attuale", f"{target_pct}%")
+                    st.metric("✅ Raggiunge Target", f"{reaches_target}%",
+                             delta="Basso!" if reaches_target < 20 else "OK",
+                             delta_color="inverse" if reaches_target < 20 else "normal")
+                    st.metric("⚠️ Peak < 1.5%", f"{below_1_5}%")
+
+                    if reaches_target < 15:
+                        st.warning(f"Solo il {reaches_target}% dei trade raggiunge il target del {target_pct}%!")
+
+            # === SEZIONE 4: ANALISI PEAK VS EXIT ===
+            st.markdown("### 🔄 Peak vs Exit Analysis")
+
+            peak_exit_df = query_db(f"""
+                SELECT
+                    ROUND(AVG(peak_pnl_percent)::numeric, 2) as avg_peak,
+                    ROUND(AVG(pnl_percent)::numeric, 2) as avg_exit,
+                    ROUND(AVG(peak_pnl_percent - pnl_percent)::numeric, 2) as avg_left_on_table,
+                    COUNT(*) FILTER (WHERE peak_pnl_percent > pnl_percent + 0.3) as could_improve,
+                    COUNT(*) as total
+                FROM trades
+                WHERE {where_sql} AND peak_pnl_percent IS NOT NULL
+            """)
+
+            if not peak_exit_df.empty:
+                row_pe = peak_exit_df.iloc[0]
+
+                col_pe1, col_pe2, col_pe3, col_pe4 = st.columns(4)
+                with col_pe1:
+                    st.metric("📈 Peak Medio", f"{row_pe['avg_peak']}%")
+                with col_pe2:
+                    st.metric("📉 Exit Medio", f"{row_pe['avg_exit']}%")
+                with col_pe3:
+                    left = row_pe['avg_left_on_table'] or 0
+                    st.metric("💸 Lasciato", f"{left}%",
+                             delta="Trailing ok" if left < 0.3 else "Migliorabile",
+                             delta_color="normal" if left < 0.3 else "inverse")
+                with col_pe4:
+                    improve_pct = (row_pe['could_improve'] / row_pe['total'] * 100) if row_pe['total'] > 0 else 0
+                    st.metric("🔧 Migliorabili", f"{improve_pct:.0f}%")
+
+            st.markdown("---")
+
+            # === SEZIONE 5: SIMULATORE TRAILING STEPS ===
+            st.markdown("### ⚡ Simulatore Trailing Steps")
+            st.caption("Confronta diverse configurazioni di trailing sui trade passati")
+
+            # Configurazioni predefinite
+            configs = {
+                "Attuale": os.getenv('MICRO_GAIN_TRAILING_STEPS', '0.4:-1.5,0.75:0.15,1.2:0.5,1.8:1.0'),
+                "Conservativo (Lock veloce)": "0.3:-1.5,0.5:0.05,0.7:0.2,0.9:0.4,1.1:0.6,1.4:0.9,1.8:1.3",
+                "Bilanciato": "0.3:-2.0,0.5:0.0,0.8:0.25,1.0:0.45,1.3:0.7,1.6:1.0,2.0:1.4",
+                "Aggressivo (Max profit)": "0.4:-2.5,0.7:0.0,1.0:0.3,1.4:0.6,1.8:1.0,2.2:1.5,2.8:2.0"
+            }
+
+            def parse_trailing_steps(steps_str):
+                """Parse trailing steps string into list of (trigger, sl_level) tuples"""
+                steps = []
+                for step in steps_str.split(','):
+                    parts = step.strip().split(':')
+                    if len(parts) == 2:
+                        try:
+                            trigger = float(parts[0])
+                            sl_level = float(parts[1])
+                            steps.append((trigger, sl_level))
+                        except ValueError:
+                            continue
+                return sorted(steps, key=lambda x: x[0])
+
+            def simulate_trailing_exit(peak_pnl, steps):
+                """
+                Simula dove sarebbe uscito un trade con determinati trailing steps.
+                Assume che il prezzo raggiunga peak_pnl e poi scenda fino a trigger SL.
+                """
+                if not steps:
+                    return peak_pnl * 0.7  # Default fallback
+
+                # Trova il livello SL più alto raggiunto
+                final_sl = steps[0][1]  # Inizia con lo SL del primo step
+                for trigger, sl_level in steps:
+                    if peak_pnl >= trigger:
+                        final_sl = sl_level
+                    else:
+                        break
+
+                # Se il peak è sopra l'ultimo trigger, usa l'ultimo SL
+                if peak_pnl >= steps[-1][0]:
+                    final_sl = steps[-1][1]
+
+                return max(final_sl, peak_pnl * 0.3)  # Non sotto 30% del peak
+
+            # Prendi i trade per simulazione
+            sim_trades_df = query_db(f"""
+                SELECT
+                    id, symbol, peak_pnl_percent, pnl_percent, net_pnl_usd
+                FROM trades
+                WHERE {where_sql}
+                  AND peak_pnl_percent IS NOT NULL
+                  AND peak_pnl_percent > 0.3
+                ORDER BY closed_at DESC
+                LIMIT 500
+            """)
+
+            if not sim_trades_df.empty and len(sim_trades_df) >= 10:
+                st.info(f"📊 Simulazione su {len(sim_trades_df)} trade con peak > 0.3%")
+
+                results = []
+                for config_name, steps_str in configs.items():
+                    steps = parse_trailing_steps(steps_str)
+
+                    simulated_exits = []
+                    for _, trade in sim_trades_df.iterrows():
+                        peak = trade['peak_pnl_percent']
+                        sim_exit = simulate_trailing_exit(peak, steps)
+                        simulated_exits.append(sim_exit)
+
+                    avg_sim_exit = sum(simulated_exits) / len(simulated_exits)
+                    # Stima win rate: trade con exit > 0 sono vincenti
+                    sim_wins = sum(1 for e in simulated_exits if e > 0)
+                    sim_win_rate = (sim_wins / len(simulated_exits)) * 100
+
+                    results.append({
+                        "Config": config_name,
+                        "Avg Exit Simulato": f"{avg_sim_exit:.2f}%",
+                        "Win Rate Stimato": f"{sim_win_rate:.1f}%",
+                        "Steps": steps_str[:50] + "..." if len(steps_str) > 50 else steps_str
+                    })
+
+                results_df = pd.DataFrame(results)
+                st.dataframe(results_df, use_container_width=True, hide_index=True)
+
+                # Confronto visivo
+                fig_sim = go.Figure()
+                for config_name, steps_str in configs.items():
+                    steps = parse_trailing_steps(steps_str)
+                    if steps:
+                        x_vals = [s[0] for s in steps]
+                        y_vals = [s[1] for s in steps]
+                        fig_sim.add_trace(go.Scatter(
+                            x=x_vals, y=y_vals,
+                            mode='lines+markers',
+                            name=config_name
+                        ))
+
+                fig_sim.update_layout(
+                    title="Confronto Trailing Steps",
+                    xaxis_title="P&L Trigger (%)",
+                    yaxis_title="SL Level (%)",
+                    height=350
+                )
+                st.plotly_chart(fig_sim, use_container_width=True)
+            else:
+                st.warning("Dati insufficienti per simulazione (servono almeno 10 trade con peak > 0.3%)")
+
+            st.markdown("---")
+
+            # === SEZIONE 6: RACCOMANDAZIONI ===
+            st.markdown("### 💡 Raccomandazioni Parametri")
+
+            # Calcola raccomandazioni basate sui dati
+            current_target = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '4.0'))
+            current_sl = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '2.0'))
+
+            # Trova il percentile 75 dei peak
+            p75_df = query_db(f"""
+                SELECT
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY peak_pnl_percent) as p50_peak,
+                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY peak_pnl_percent) as p75_peak,
+                    PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY peak_pnl_percent) as p90_peak
+                FROM trades
+                WHERE {where_sql} AND peak_pnl_percent IS NOT NULL AND peak_pnl_percent > 0
+            """)
+
+            rec_target = current_target
+            rec_sl = current_sl
+            rec_steps = os.getenv('MICRO_GAIN_TRAILING_STEPS', '')
+
+            recommendations = []
+
+            if not p75_df.empty:
+                p50 = p75_df['p50_peak'].iloc[0] or 1.0
+                p75 = p75_df['p75_peak'].iloc[0] or 1.5
+                p90 = p75_df['p90_peak'].iloc[0] or 2.0
+
+                # Raccomandazione Target
+                if current_target > p75 * 1.5:
+                    rec_target = round(p75, 1)
+                    recommendations.append(f"🎯 **Target**: Abbassa da {current_target}% a **{rec_target}%** (il 75% dei trade non supera {p75:.1f}%)")
+
+                # Raccomandazione SL
+                if not sl_hit.empty:
+                    sl_avg_peak = sl_hit['avg_peak'].iloc[0] or 0.5
+                    if sl_avg_peak < 0.5 and current_sl < 2.5:
+                        rec_sl = min(current_sl + 0.5, 3.0)
+                        recommendations.append(f"🛡️ **Stop Loss**: Allarga da {current_sl}% a **{rec_sl}%** (SL_HIT hanno peak medio di solo {sl_avg_peak}%)")
+
+                # Raccomandazione Trailing
+                if not peak_exit_df.empty and row_pe['avg_left_on_table'] and row_pe['avg_left_on_table'] > 0.4:
+                    rec_steps = "0.3:-1.8,0.5:0.0,0.7:0.2,0.9:0.4,1.1:0.6,1.4:0.9,1.8:1.3"
+                    recommendations.append(f"⚡ **Trailing Steps**: Step più aggressivi per non lasciare {row_pe['avg_left_on_table']}% sul tavolo")
+
+            if recommendations:
+                for rec in recommendations:
+                    st.markdown(rec)
+
+                st.markdown("---")
+
+                # Genera .env snippet
+                st.markdown("### 📋 Configurazione Suggerita (.env)")
+
+                env_snippet = f"""# === MICRO_GAIN OTTIMIZZATO (basato su {row['total_trades']} trade) ===
+MICRO_GAIN_TARGET_PERCENT={rec_target}
+MICRO_GAIN_STOP_LOSS_PERCENT={rec_sl}
+MICRO_GAIN_TRAILING_STEPS={rec_steps}
+
+# Note:
+# - Target abbassato per match con peak reali (50% raggiunge {p50:.1f}%, 75% raggiunge {p75:.1f}%)
+# - SL ottimizzato per bilanciare R/R ratio
+# - Trailing steps per profit lock anticipato
+"""
+
+                st.code(env_snippet, language="bash")
+
+                # Bottone copia
+                st.download_button(
+                    label="📥 Scarica .env.optimized",
+                    data=env_snippet,
+                    file_name="env_optimized.txt",
+                    mime="text/plain"
+                )
+            else:
+                st.success("✅ I parametri attuali sembrano già ottimizzati per i dati disponibili!")
+
+        else:
+            st.warning("⚠️ Nessun trade trovato per il periodo/filtri selezionati")
+
+    except Exception as e:
+        st.error(f"Errore nell'analisi: {e}")
+        import traceback
+        st.code(traceback.format_exc())
 
 # Refresh button
 st.markdown("---")
