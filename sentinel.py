@@ -64,7 +64,7 @@ except ImportError:
 try:
     import smart_exit
     SMART_EXIT_AVAILABLE = True
-    print(f"[SENTINEL] ✅ smart_exit: Enabled={smart_exit.SMART_EXIT_ENABLED}")
+    print(f"[SENTINEL] ✅ smart_exit: Enabled={smart_exit.SMART_EXIT_ENABLED}, AI_HOLD_CHECK={smart_exit.AI_HOLD_CHECK_ENABLED}")
 except ImportError:
     SMART_EXIT_AVAILABLE = False
     smart_exit = None
@@ -6042,7 +6042,88 @@ def run_sentinel_fast():
 
             # Se trailing/SL triggered, gestisci chiusura
             if result.get("triggered"):
-                _handle_position_close(bot, pos, tracking_data, "CLOSE_TRAILING_STOP", result.get("reason", "Trailing Stop"))
+                should_close_trailing = True  # Default: chiudi
+
+                # === AI HOLD CHECK ===
+                # Prima di chiudere, controlla se l'AI dice di tenere la posizione
+                if SMART_EXIT_AVAILABLE and smart_exit.AI_HOLD_CHECK_ENABLED:
+                    try:
+                        # Calcola P&L per check
+                        if direction == "long":
+                            pnl_pct = ((mark_price - entry_price) / entry_price) * 100 * pos_leverage
+                        else:
+                            pnl_pct = ((entry_price - mark_price) / entry_price) * 100 * pos_leverage
+
+                        # Ottieni quick score per direzione
+                        quick_score = calculate_quick_score(symbol, verbose=False)
+                        score_direction = "long" if quick_score > 0 else "short"
+
+                        # Ottieni current SL level
+                        if trading_mode == "MICRO_GAIN":
+                            current_sl = _current_sl_level.get(symbol, -MICRO_GAIN_STOP_LOSS_PERCENT)
+                        else:
+                            current_sl = _current_sl_level.get(f"{symbol}_NORMAL", -NORMAL_STOP_LOSS_PERCENT)
+
+                        # Fetch indicatori per AI (leggeri)
+                        indicators = {}
+                        try:
+                            from indicators import analyze_multiple_tickers
+                            _, indicators_list = analyze_multiple_tickers([symbol])
+                            if indicators_list:
+                                ind_data = indicators_list[0].get('current', {})
+                                indicators = {
+                                    'macd': ind_data.get('macd', 0),
+                                    'rsi': ind_data.get('rsi', 50),
+                                    'adx': ind_data.get('adx', 0),
+                                    'price_vs_ema20': ind_data.get('price_vs_ema20_pct', 0)
+                                }
+                        except Exception:
+                            pass  # Usa indicatori vuoti se errore
+
+                        # Funzione per chiamare AI
+                        def call_ai_for_hold_check(prompt):
+                            try:
+                                from trading_agent import previsione_trading_agent
+                                return previsione_trading_agent(prompt)
+                            except Exception:
+                                return None
+
+                        # Chiedi all'AI
+                        hold_result = smart_exit.get_ai_hold_check_recommendation(
+                            symbol=symbol,
+                            direction=direction,
+                            entry_price=entry_price,
+                            current_price=mark_price,
+                            pnl_percent=pnl_pct,
+                            current_sl_pct=current_sl,
+                            score_direction=score_direction,
+                            score_value=abs(quick_score),
+                            indicators=indicators,
+                            call_ai_func=call_ai_for_hold_check
+                        )
+
+                        # Log risultato
+                        log(smart_exit.format_hold_check_log(hold_result, symbol))
+
+                        # Se AI dice HOLD, aggiorna SL a breakeven e non chiudere
+                        if hold_result.get("should_hold"):
+                            new_sl = hold_result.get("new_sl_pct", 0.0)
+                            log(f"   [HOLD_CHECK] 🔒 AI dice HOLD! SL → {new_sl:+.1f}% (breakeven)")
+
+                            # Aggiorna SL level
+                            if trading_mode == "MICRO_GAIN":
+                                _current_sl_level[symbol] = new_sl
+                            else:
+                                _current_sl_level[f"{symbol}_NORMAL"] = new_sl
+
+                            should_close_trailing = False  # Non chiudere!
+
+                    except Exception as e:
+                        log(f"   [HOLD_CHECK] ⚠️ Errore: {e}")
+
+                # Chiudi solo se AI non ha detto HOLD
+                if should_close_trailing:
+                    _handle_position_close(bot, pos, tracking_data, "CLOSE_TRAILING_STOP", result.get("reason", "Trailing Stop"))
 
             # Se TP triggered
             if tp_result.get("triggered"):
@@ -6092,9 +6173,10 @@ def _handle_position_close(bot, pos, tracking_data, action_taken, reason):
     try:
         log(f"   [FAST] 🔻 {symbol}: Chiusura per {action_taken}")
 
-        # Pulisci Smart Exit price history
+        # Pulisci Smart Exit price history e AI Hold Check state
         if SMART_EXIT_AVAILABLE:
             smart_exit.clear_price_history(symbol)
+            smart_exit.reset_hold_check_state(symbol)
 
         # La chiusura effettiva viene gestita dall'ordine SL su exchange
         # Qui aggiorniamo solo tracking se necessario

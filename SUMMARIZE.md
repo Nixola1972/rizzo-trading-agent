@@ -377,6 +377,118 @@ E quando il cleanup ha successo dopo retry:
 
 ---
 
+## 2025-12-12: AI Hold Check + Wide Trailing Strategy
+
+### Problema
+**CHURNING**: Il trailing SL stretto chiudeva posizioni su piccole oscillazioni, poi il sistema riapriva subito nella stessa direzione perché lo score era ancora valido. Questo bruciava fees senza senso.
+
+**Esempio del problema:**
+```
+14:00  LONG BTC @ $97,000  (fee: $0.45)
+14:05  Piccola oscillazione → SL triggered → CLOSE (fee: $0.45)
+14:06  Score ancora LONG → OPEN LONG @ $96,850 (fee: $0.45)
+14:12  Altra oscillazione → SL triggered → CLOSE (fee: $0.45)
+...
+TOTALE: fees bruciate + perdite su oscillazioni normali
+```
+
+### Soluzione: 2 Componenti
+
+#### 1. Wide Trailing Strategy
+Trailing steps più larghi che tollerano oscillazioni normali, con breakeven a +2.5%:
+
+```bash
+# Vecchio (troppo stretto):
+MICRO_GAIN_STOP_LOSS_PERCENT=1.0
+MICRO_GAIN_TRAILING_STEPS=0.4:0.1,0.6:0.2,0.8:0.35,1.0:0.5,1.2:0.7,1.5:1.0
+
+# Nuovo (più largo, breakeven a +2.5%):
+MICRO_GAIN_STOP_LOSS_PERCENT=5.0
+MICRO_GAIN_TRAILING_STEPS=0.5:-5.0,1.0:-4.0,1.5:-2.5,2.0:-1.0,2.5:0.0,3.0:0.5,4.0:1.5,5.0:2.5,7.0:4.5,10.0:7.0
+```
+
+**Filosofia:**
+- Sotto +2.5%: SL largo, tollera oscillazioni
+- A +2.5%: BREAKEVEN (da qui non perdi più)
+- Sopra +2.5%: Proteggi profitti progressivamente
+
+#### 2. AI Hold Check
+Prima che il trailing SL chiuda una posizione IN PROFITTO, chiede all'AI: "È un'inversione reale o solo un pullback?"
+
+```
+Trailing SL sta per chiudere
+        │
+        └─→ Posizione in profitto > 0.1%?
+               │
+               ├─→ NO → Chiudi normalmente
+               │
+               └─→ SÌ → Score ancora nella stessa direzione?
+                          │
+                          ├─→ NO → Chiudi normalmente
+                          │
+                          └─→ SÌ → CHIEDI AI: "Reversal o Pullback?"
+                                    │
+                                    ├─→ "REVERSAL" → Chiudi
+                                    │
+                                    └─→ "PULLBACK" → SL a breakeven (0%)
+                                                     Posizione resta aperta!
+```
+
+**Differenza da AI_DECISION (che aveva 0% win rate):**
+- AI_DECISION: AI decide QUANDO chiudere (decisore primario) → FALLITO
+- AI_HOLD_CHECK: AI VALIDA chiusura già triggerata (filtro secondario) → più sicuro
+
+### Configurazione .env
+
+```bash
+# === WIDE TRAILING ===
+MICRO_GAIN_STOP_LOSS_PERCENT=5.0
+MICRO_GAIN_TRAILING_STEPS=0.5:-5.0,1.0:-4.0,1.5:-2.5,2.0:-1.0,2.5:0.0,3.0:0.5,4.0:1.5,5.0:2.5,7.0:4.5,10.0:7.0
+MICRO_GAIN_COOLDOWN_SECONDS=600  # 10 minuti tra trades
+
+# === AI HOLD CHECK ===
+AI_HOLD_CHECK_ENABLED=true
+AI_HOLD_CHECK_MIN_PROFIT=0.1          # Solo se P&L > 0.1%
+AI_HOLD_CHECK_REQUIRE_SAME_SCORE=true # Score deve essere nella stessa direzione
+AI_HOLD_CHECK_FALLBACK_SL=0.0         # Se HOLD, SL va a breakeven
+AI_HOLD_CHECK_MAX_HOLDS=2             # Max 2 HOLD consecutivi, poi chiude
+AI_HOLD_CHECK_COOLDOWN_SECONDS=60     # Cooldown tra check
+```
+
+### File Modificati
+- `.env.example` - Nuove configurazioni trailing + AI Hold Check
+- `smart_exit.py` - Aggiunte funzioni `get_ai_hold_check_recommendation()`, `should_check_ai_hold()`, ecc.
+- `sentinel.py` - Integrazione AI Hold Check nel FAST loop prima di `_handle_position_close()`
+
+### Come Verificare
+Nei log FAST vedrai:
+
+**Quando AI dice HOLD:**
+```
+[FAST] Trailing SL triggered
+   [HOLD_CHECK] BTC: 🔒 HOLD (SL → +0.0%) (85%)
+                💬 MACD still bullish, ADX strong, pullback in trend
+                📊 Nuovo SL: +0.0% (breakeven)
+   [HOLD_CHECK] 🔒 AI dice HOLD! SL → +0.0% (breakeven)
+```
+
+**Quando AI dice CLOSE:**
+```
+[FAST] Trailing SL triggered
+   [HOLD_CHECK] BTC: 🚪 CLOSE (75%)
+                💬 Multiple indicators reversing, exit now
+   [FAST] 🔻 BTC: Chiusura per CLOSE_TRAILING_STOP
+```
+
+**Quando check viene skippato:**
+```
+   [HOLD_CHECK] BTC: Skip - P&L 0.05% < minimo 0.1%
+   [HOLD_CHECK] BTC: Skip - Score (short) != Position (long)
+   [HOLD_CHECK] BTC: Skip - Max HOLD raggiunti (2/2)
+```
+
+---
+
 ## Template per Future Modifiche
 
 ```markdown

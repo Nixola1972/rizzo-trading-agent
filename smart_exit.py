@@ -42,6 +42,20 @@ MIN_PROFIT_FOR_ACCELERATE = float(os.getenv('SMART_EXIT_MIN_PROFIT', '0.3'))  # 
 # AI Decision
 SMART_EXIT_AI_ENABLED = os.getenv('SMART_EXIT_AI_ENABLED', 'false').lower() == 'true'
 
+# =============================================================================
+# AI HOLD CHECK - Conferma AI prima di chiudere posizioni profittevoli
+# =============================================================================
+AI_HOLD_CHECK_ENABLED = os.getenv('AI_HOLD_CHECK_ENABLED', 'false').lower() == 'true'
+AI_HOLD_CHECK_MIN_PROFIT = float(os.getenv('AI_HOLD_CHECK_MIN_PROFIT', '0.1'))  # % minimo profit
+AI_HOLD_CHECK_REQUIRE_SAME_SCORE = os.getenv('AI_HOLD_CHECK_REQUIRE_SAME_SCORE', 'true').lower() == 'true'
+AI_HOLD_CHECK_FALLBACK_SL = float(os.getenv('AI_HOLD_CHECK_FALLBACK_SL', '0.0'))  # SL se HOLD
+AI_HOLD_CHECK_MAX_HOLDS = int(os.getenv('AI_HOLD_CHECK_MAX_HOLDS', '2'))  # Max HOLD consecutivi
+AI_HOLD_CHECK_COOLDOWN_SECONDS = int(os.getenv('AI_HOLD_CHECK_COOLDOWN_SECONDS', '60'))
+
+# Storage per tracking hold counts e timestamps
+_hold_check_counts: Dict[str, int] = {}  # symbol -> numero di HOLD consecutivi
+_hold_check_timestamps: Dict[str, float] = {}  # symbol -> ultimo check timestamp
+
 
 @dataclass
 class PositionMetrics:
@@ -786,3 +800,309 @@ def format_smart_exit_log(recommendation: dict, symbol: str, verbose: bool = Tru
     log_lines.append(f"           💡 {reason}")
 
     return "\n".join(log_lines)
+
+
+# =============================================================================
+# AI HOLD CHECK - Conferma AI prima di chiudere posizioni profittevoli
+# =============================================================================
+
+def get_ai_hold_check_prompt(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    current_price: float,
+    pnl_percent: float,
+    current_sl_pct: float,
+    score_direction: str,
+    score_value: float,
+    indicators: dict
+) -> str:
+    """
+    Genera il prompt per chiedere all'AI se chiudere o tenere la posizione.
+
+    Returns:
+        Prompt string per l'AI
+    """
+    # Indicatori formattati
+    macd = indicators.get('macd', 0)
+    rsi = indicators.get('rsi', 50)
+    adx = indicators.get('adx', 0)
+    ema_diff = indicators.get('price_vs_ema20', 0)
+
+    macd_str = f"{macd:+.3f}" if macd else "N/A"
+    ema_status = "above EMA20" if ema_diff > 0 else "below EMA20"
+
+    return f"""You are a trading AI analyzing whether to CLOSE or HOLD a position.
+
+SITUATION:
+The trailing stop is about to close a {direction.upper()} position, but the system
+would likely REOPEN the same direction immediately (score still favors {score_direction}).
+Closing and reopening wastes fees. You must decide if this is a real reversal or just a pullback.
+
+POSITION DATA:
+- Symbol: {symbol}
+- Direction: {direction.upper()}
+- Entry Price: ${entry_price:.2f}
+- Current Price: ${current_price:.2f}
+- Current P&L: {pnl_percent:+.2f}%
+- Trailing SL was at: {current_sl_pct:+.1f}%
+
+SCORE ANALYSIS:
+- Current Score Direction: {score_direction} (value: {score_value:+.1f})
+- Position Direction: {direction.upper()}
+- Match: {"YES - would reopen same direction" if score_direction.lower() == direction.lower() else "NO - different direction"}
+
+MARKET INDICATORS:
+- MACD: {macd_str}
+- RSI: {rsi:.1f}
+- ADX: {adx:.1f}
+- Price vs EMA20: {ema_status} ({ema_diff:+.2f}%)
+
+DECISION OPTIONS:
+
+1. CLOSE - This is a REAL REVERSAL
+   → Close the position now
+   → Accept the current P&L
+   → Appropriate when: trend is clearly changing, indicators confirm reversal
+
+2. HOLD - This is just a PULLBACK
+   → Keep the position open
+   → Move SL to breakeven (0%) to protect capital
+   → Let the position breathe and potentially continue in the original direction
+   → Appropriate when: trend is intact, this is normal market noise
+
+GUIDELINES:
+- If MACD still supports the position direction → likely HOLD
+- If ADX > 25 and trend intact → likely HOLD
+- If score would reopen same direction → strong HOLD signal
+- If multiple indicators turning against → likely CLOSE
+- When in doubt with profit → HOLD (capital is protected at breakeven)
+
+Respond in JSON only:
+{{
+  "decision": "CLOSE" or "HOLD",
+  "confidence": 0-100,
+  "reason": "brief explanation (max 30 words)"
+}}
+"""
+
+
+def should_check_ai_hold(
+    symbol: str,
+    pnl_percent: float,
+    score_direction: str,
+    position_direction: str
+) -> Tuple[bool, str]:
+    """
+    Determina se dobbiamo chiedere all'AI prima di chiudere.
+
+    Args:
+        symbol: Simbolo
+        pnl_percent: P&L attuale in %
+        score_direction: Direzione suggerita dallo score ('long' o 'short')
+        position_direction: Direzione posizione attuale ('long' o 'short')
+
+    Returns:
+        (should_check, reason): True se dobbiamo chiedere all'AI
+    """
+    global _hold_check_counts, _hold_check_timestamps
+
+    # Feature disabilitata
+    if not AI_HOLD_CHECK_ENABLED:
+        return False, "AI Hold Check disabilitato"
+
+    # Non in profitto sufficiente
+    if pnl_percent < AI_HOLD_CHECK_MIN_PROFIT:
+        return False, f"P&L {pnl_percent:.2f}% < minimo {AI_HOLD_CHECK_MIN_PROFIT}%"
+
+    # Score non nella stessa direzione (se richiesto)
+    if AI_HOLD_CHECK_REQUIRE_SAME_SCORE:
+        if score_direction.lower() != position_direction.lower():
+            return False, f"Score ({score_direction}) != Position ({position_direction})"
+
+    # Troppi HOLD consecutivi
+    hold_count = _hold_check_counts.get(symbol, 0)
+    if hold_count >= AI_HOLD_CHECK_MAX_HOLDS:
+        return False, f"Max HOLD raggiunti ({hold_count}/{AI_HOLD_CHECK_MAX_HOLDS})"
+
+    # Cooldown check
+    last_check = _hold_check_timestamps.get(symbol, 0)
+    time_since_last = time.time() - last_check
+    if time_since_last < AI_HOLD_CHECK_COOLDOWN_SECONDS:
+        return False, f"Cooldown attivo ({int(AI_HOLD_CHECK_COOLDOWN_SECONDS - time_since_last)}s rimanenti)"
+
+    return True, "Condizioni soddisfatte per AI Hold Check"
+
+
+def record_hold_check_result(symbol: str, decision: str):
+    """
+    Registra il risultato del check AI per tracking.
+
+    Args:
+        symbol: Simbolo
+        decision: "HOLD" o "CLOSE"
+    """
+    global _hold_check_counts, _hold_check_timestamps
+
+    _hold_check_timestamps[symbol] = time.time()
+
+    if decision.upper() == "HOLD":
+        _hold_check_counts[symbol] = _hold_check_counts.get(symbol, 0) + 1
+    else:
+        # Reset counter on CLOSE
+        _hold_check_counts[symbol] = 0
+
+
+def reset_hold_check_state(symbol: str):
+    """
+    Resetta lo stato del hold check per un simbolo (chiamare quando posizione chiude).
+
+    Args:
+        symbol: Simbolo
+    """
+    global _hold_check_counts, _hold_check_timestamps
+
+    if symbol in _hold_check_counts:
+        del _hold_check_counts[symbol]
+    if symbol in _hold_check_timestamps:
+        del _hold_check_timestamps[symbol]
+
+
+def get_ai_hold_check_recommendation(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    current_price: float,
+    pnl_percent: float,
+    current_sl_pct: float,
+    score_direction: str,
+    score_value: float,
+    indicators: dict,
+    call_ai_func=None
+) -> dict:
+    """
+    Ottiene la raccomandazione AI su HOLD vs CLOSE.
+
+    Args:
+        symbol: Simbolo
+        direction: Direzione posizione ('long' o 'short')
+        entry_price: Prezzo di entrata
+        current_price: Prezzo corrente
+        pnl_percent: P&L in %
+        current_sl_pct: SL attuale in %
+        score_direction: Direzione dallo score
+        score_value: Valore score
+        indicators: Dict con indicatori (macd, rsi, adx, price_vs_ema20)
+        call_ai_func: Funzione per chiamare AI (opzionale)
+
+    Returns:
+        dict con decision, confidence, reason, should_hold, new_sl_pct
+    """
+    # Verifica se dobbiamo fare il check
+    should_check, check_reason = should_check_ai_hold(
+        symbol, pnl_percent, score_direction, direction
+    )
+
+    if not should_check:
+        return {
+            "checked": False,
+            "reason": check_reason,
+            "decision": "CLOSE",
+            "should_hold": False,
+            "new_sl_pct": None
+        }
+
+    # Genera prompt
+    prompt = get_ai_hold_check_prompt(
+        symbol=symbol,
+        direction=direction,
+        entry_price=entry_price,
+        current_price=current_price,
+        pnl_percent=pnl_percent,
+        current_sl_pct=current_sl_pct,
+        score_direction=score_direction,
+        score_value=score_value,
+        indicators=indicators
+    )
+
+    result = {
+        "checked": True,
+        "prompt": prompt,
+        "decision": "CLOSE",  # Default se AI non disponibile
+        "confidence": 0,
+        "reason": "AI non disponibile",
+        "should_hold": False,
+        "new_sl_pct": None
+    }
+
+    # Se abbiamo la funzione AI, chiamala
+    if call_ai_func:
+        try:
+            ai_response = call_ai_func(prompt)
+
+            if ai_response:
+                # Parse JSON response
+                import json
+                import re
+
+                # Estrai JSON dalla risposta
+                json_match = re.search(r'\{[^}]+\}', ai_response, re.DOTALL)
+                if json_match:
+                    parsed = json.loads(json_match.group())
+                    decision = parsed.get("decision", "CLOSE").upper()
+                    confidence = int(parsed.get("confidence", 0))
+                    reason = parsed.get("reason", "")
+
+                    result["decision"] = decision
+                    result["confidence"] = confidence
+                    result["reason"] = reason
+
+                    if decision == "HOLD":
+                        result["should_hold"] = True
+                        result["new_sl_pct"] = AI_HOLD_CHECK_FALLBACK_SL
+
+                    # Registra risultato
+                    record_hold_check_result(symbol, decision)
+
+        except Exception as e:
+            result["reason"] = f"Errore AI: {str(e)}"
+
+    return result
+
+
+def format_hold_check_log(result: dict, symbol: str) -> str:
+    """
+    Formatta il log per il risultato del hold check.
+
+    Args:
+        result: Dict con risultato del check
+        symbol: Simbolo
+
+    Returns:
+        Stringa formattata per log
+    """
+    if not result.get("checked"):
+        return f"   [HOLD_CHECK] {symbol}: Skip - {result.get('reason', 'N/A')}"
+
+    decision = result.get("decision", "CLOSE")
+    confidence = result.get("confidence", 0)
+    reason = result.get("reason", "")
+    should_hold = result.get("should_hold", False)
+    new_sl = result.get("new_sl_pct")
+
+    if should_hold:
+        emoji = "🔒"
+        action = f"HOLD (SL → {new_sl:+.1f}%)"
+    else:
+        emoji = "🚪"
+        action = "CLOSE"
+
+    lines = [
+        f"   [HOLD_CHECK] {symbol}: {emoji} {action} ({confidence}%)",
+        f"                💬 {reason}"
+    ]
+
+    if should_hold and new_sl is not None:
+        lines.append(f"                📊 Nuovo SL: {new_sl:+.1f}% (breakeven)")
+
+    return "\n".join(lines)
