@@ -3162,9 +3162,20 @@ def update_micro_gain_sl_order(bot, symbol: str, direction: str, entry_price: fl
         # SL corrente (iniziale = -STOP_LOSS_PERCENT)
         current_sl = _current_sl_level.get(symbol, -MICRO_GAIN_STOP_LOSS_PERCENT)
 
-        # Log stato trailing con indicazione modalità
+        # Log stato trailing con indicazione modalità e dati economici
         mode_str = MICRO_GAIN_TRAILING_MODE.upper()
-        log(f"   📊 {symbol} MICRO_GAIN ({mode_str}): P&L={pnl_pct:+.2f}% | SL={current_sl:+.2f}%")
+
+        # Calcoli economici
+        notional_value = size * current_price
+        margin = notional_value / actual_leverage
+        pnl_usd = (pnl_pct / 100) * margin
+        fee_estimate = notional_value * 0.00045 * 2  # 0.045% per side (open+close)
+        net_pnl_usd = pnl_usd - fee_estimate
+
+        # Log arricchito con dati economici
+        log(f"   📊 {symbol} MICRO_GAIN ({mode_str}): P&L={pnl_pct:+.2f}% (${pnl_usd:+.2f}) | SL={current_sl:+.2f}%")
+        log(f"      💰 Entry=${entry_price:.2f} | Now=${current_price:.2f} | Size={size:.4f}")
+        log(f"      📈 Margin=${margin:.2f} ({actual_leverage}x) | Net≈${net_pnl_usd:+.2f} (fees≈${fee_estimate:.2f})")
 
         # Calcola nuovo SL in base alla modalità
         new_sl_level = None
@@ -3380,9 +3391,20 @@ def update_normal_sl_order(bot, symbol: str, direction: str, entry_price: float,
         sl_key = f"{symbol}_NORMAL"
         current_sl = _current_sl_level.get(sl_key, -NORMAL_STOP_LOSS_PERCENT)
 
-        # Log stato trailing con indicazione modalità
+        # Log stato trailing con indicazione modalità e dati economici
         mode_str = NORMAL_TRAILING_MODE.upper()
-        log(f"   📊 {symbol} NORMAL ({mode_str}): P&L={pnl_pct:+.2f}% | SL={current_sl:+.2f}%")
+
+        # Calcoli economici
+        notional_value = size * current_price
+        margin = notional_value / actual_leverage
+        pnl_usd = (pnl_pct / 100) * margin
+        fee_estimate = notional_value * 0.00045 * 2  # 0.045% per side (open+close)
+        net_pnl_usd = pnl_usd - fee_estimate
+
+        # Log arricchito con dati economici
+        log(f"   📊 {symbol} NORMAL ({mode_str}): P&L={pnl_pct:+.2f}% (${pnl_usd:+.2f}) | SL={current_sl:+.2f}%")
+        log(f"      💰 Entry=${entry_price:.2f} | Now=${current_price:.2f} | Size={size:.4f}")
+        log(f"      📈 Margin=${margin:.2f} ({actual_leverage}x) | Net≈${net_pnl_usd:+.2f} (fees≈${fee_estimate:.2f})")
 
         # Calcola nuovo SL in base alla modalità
         new_sl_level = None
@@ -5907,9 +5929,19 @@ def run_sentinel_fast():
             # === CHECK TRAILING STOP TRIGGER ===
             result = check_trailing_stop(pos, tracking_data)
 
-            # Log stato sintetico
+            # Log stato sintetico con dati economici
             trailing_status = "ACTIVE" if result.get("trailing_active") else "inactive"
-            log(f"   [FAST] {symbol}: {direction.upper()} P&L={pnl_pct:+.2f}% trailing={trailing_status}")
+
+            # Calcoli economici per log FAST
+            notional_value = position_size * mark_price
+            margin = notional_value / pos_leverage if pos_leverage > 0 else notional_value
+            pnl_usd = (pnl_pct / 100) * margin
+            fee_estimate = notional_value * 0.00045 * 2  # 0.045% per side
+            net_pnl_usd = pnl_usd - fee_estimate
+            current_sl = _current_sl_level.get(symbol, -MICRO_GAIN_STOP_LOSS_PERCENT) if trading_mode == "MICRO_GAIN" else _current_sl_level.get(f"{symbol}_NORMAL", -NORMAL_STOP_LOSS_PERCENT)
+
+            log(f"   [FAST] {symbol}: {direction.upper()} P&L={pnl_pct:+.2f}% (${pnl_usd:+.2f}) | SL={current_sl:+.1f}% | trailing={trailing_status}")
+            log(f"      💰 ${mark_price:.2f} | Margin=${margin:.2f} | Net≈${net_pnl_usd:+.2f}")
 
             # === CHECK FORCE_ACCELERATE (from contrary pattern detection in SLOW) ===
             if tracking_data.get('force_accelerate'):
