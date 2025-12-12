@@ -481,6 +481,17 @@ def create_pending_entry(
         log(f"   ⚠️ Cannot create pending entry for {symbol}: invalid invalidation price")
         return False
 
+    # BUGFIX: Check if current price is already past invalidation
+    # If so, pattern is already broken - don't create pending entry
+    current_price = pattern_data.get('current_price', 0)
+    if current_price > 0:
+        if direction == "LONG" and current_price < invalidation_price:
+            log(f"   ⚠️ Cannot create pending entry for {symbol}: price ${current_price:.2f} already below invalidation ${invalidation_price:.2f}")
+            return False
+        elif direction == "SHORT" and current_price > invalidation_price:
+            log(f"   ⚠️ Cannot create pending entry for {symbol}: price ${current_price:.2f} already above invalidation ${invalidation_price:.2f}")
+            return False
+
     # Get suggested SL from pattern
     suggested_sl = pattern_data.get('suggested_sl') or 0
     confidence = pattern_data.get('confidence', 0.5)
@@ -4926,6 +4937,13 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
 
             # Check if we should use pending entry system (FAST_LOOP)
             if active_pattern and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
+                # Add current price to pattern data for invalidation check
+                try:
+                    current_price = float(bot.info.all_mids()[symbol])
+                    active_pattern['current_price'] = current_price
+                except Exception as e:
+                    log(f"   ⚠️ {symbol}: Cannot get current price for pending entry: {e}")
+
                 # Create pending entry instead of opening immediately
                 if create_pending_entry(symbol, direction.upper(), active_pattern, "MICRO_GAIN"):
                     log(f"   ⏳ {symbol}: Using FAST_LOOP pending entry system (waiting for breakout)")
@@ -4970,6 +4988,13 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
 
             # Check if we should use pending entry system (FAST_LOOP)
             if active_pattern and PATTERN_ENTRY_SYSTEM == "FAST_LOOP":
+                # Add current price to pattern data for invalidation check
+                try:
+                    current_price = float(bot.info.all_mids()[symbol])
+                    active_pattern['current_price'] = current_price
+                except Exception as e:
+                    log(f"   ⚠️ {symbol}: Cannot get current price for pending entry: {e}")
+
                 # Create pending entry instead of opening immediately
                 if create_pending_entry(symbol, direction.upper(), active_pattern, "MICRO_PAY"):
                     log(f"   ⏳ {symbol}: Using FAST_LOOP pending entry system (waiting for breakout)")
