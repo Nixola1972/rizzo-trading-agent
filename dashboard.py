@@ -1,0 +1,3743 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
+import psycopg2
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Leggi ENABLED_SYMBOLS da env (dinamico)
+def get_enabled_symbols():
+    """Ottiene la lista dei simboli abilitati dal file .env"""
+    symbols_str = os.getenv('ENABLED_SYMBOLS', 'BTC,ETH,SOL')
+    return [s.strip() for s in symbols_str.split(',')]
+
+ENABLED_SYMBOLS = get_enabled_symbols()
+
+# Configurazione pagina
+st.set_page_config(
+    page_title="Trading Agent Dashboard",
+    page_icon="🤖",
+    layout="wide"
+)
+
+# Connessione database
+@st.cache_resource
+def get_db_connection():
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        st.error("DATABASE_URL non configurato nel file .env")
+        st.stop()
+    return psycopg2.connect(database_url)
+
+def query_db(query, params=None):
+    """Esegue una query e restituisce un DataFrame"""
+    conn = get_db_connection()
+    try:
+        df = pd.read_sql_query(query, conn, params=params)
+        return df
+    except Exception as e:
+        st.error(f"Errore query database: {e}")
+        return pd.DataFrame()
+
+# Header
+st.title("🤖 Trading Agent Dashboard")
+st.markdown("---")
+
+# Metriche principali
+col1, col2, col3, col4 = st.columns(4)
+
+# Total Account Value
+try:
+    latest_snapshot = query_db("""
+        SELECT balance_usd, created_at
+        FROM account_snapshots
+        ORDER BY created_at DESC
+        LIMIT 1
+    """)
+
+    if not latest_snapshot.empty:
+        current_balance = float(latest_snapshot['balance_usd'].iloc[0])
+        col1.metric("💰 Account Value", f"${current_balance:,.2f}",
+                   help="Valore totale del tuo account su Hyperliquid in USD")
+    else:
+        col1.metric("💰 Account Value", "N/A",
+                   help="Valore totale del tuo account in USD")
+except Exception as e:
+    col1.metric("💰 Account Value", "Error")
+
+# Total Operations
+try:
+    total_ops = query_db("SELECT COUNT(*) as count FROM bot_operations")
+    if not total_ops.empty:
+        col2.metric("📊 Total Operations", int(total_ops['count'].iloc[0]),
+                   help="Numero totale di operazioni eseguite dal bot (open, close, hold)")
+    else:
+        col2.metric("📊 Total Operations", "0",
+                   help="Numero totale di operazioni eseguite")
+except:
+    col2.metric("📊 Total Operations", "Error")
+
+# Open Positions
+try:
+    open_positions_query = query_db("""
+        SELECT COUNT(DISTINCT op.symbol) as count
+        FROM open_positions op
+        JOIN account_snapshots snap ON op.snapshot_id = snap.id
+        WHERE snap.id = (SELECT MAX(id) FROM account_snapshots)
+    """)
+    if not open_positions_query.empty:
+        col3.metric("📈 Open Positions", int(open_positions_query['count'].iloc[0]),
+                   help="Numero di posizioni attualmente aperte (BTC, ETH, SOL)")
+    else:
+        col3.metric("📈 Open Positions", "0",
+                   help="Numero di posizioni attualmente aperte")
+except:
+    col3.metric("📈 Open Positions", "Error")
+
+# Bot Status
+try:
+    last_operation = query_db("""
+        SELECT created_at
+        FROM bot_operations
+        ORDER BY created_at DESC
+        LIMIT 1
+    """)
+
+    if not last_operation.empty:
+        last_time = pd.to_datetime(last_operation['created_at'].iloc[0])
+        now = datetime.now(last_time.tzinfo)
+        diff = (now - last_time).total_seconds() / 60
+
+        if diff < 30:
+            col4.metric("🟢 Status", "Active", f"{int(diff)}m ago",
+                       help="Il bot è attivo se ha eseguito operazioni negli ultimi 30 minuti")
+        else:
+            col4.metric("🟡 Status", "Idle", f"{int(diff)}m ago",
+                       help="Il bot è inattivo da più di 30 minuti - potrebbe esserci un problema")
+    else:
+        col4.metric("⚪ Status", "No Data",
+                   help="Nessuna operazione registrata ancora")
+except:
+    col4.metric("❌ Status", "Error")
+
+st.markdown("---")
+
+# Tabs
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+    "📊 Performance", "💼 Operations", "📈 Open Positions", "🎯 AI Decisions",
+    "🧠 AI Strategy Analysis", "🔬 Backtesting", "⚙️ Settings",
+    "📒 Trade Journal", "💰 Profitability", "🔍 Controller", "🔧 Optimizer"
+])
+
+with tab1:
+    st.subheader("Account Balance Over Time")
+
+    # Selezione periodo ✅ NUOVO!
+    col_period1, col_period2 = st.columns([1, 4])
+    with col_period1:
+        period = st.selectbox(
+            "📅 Period",
+            ["1 Day", "3 Days", "7 Days", "30 Days", "All Time"],
+            index=2  # Default: 7 Days
+        )
+
+    # Calcola data inizio
+    period_map = {
+        "1 Day": 1,
+        "3 Days": 3,
+        "7 Days": 7,
+        "30 Days": 30,
+        "All Time": None
+    }
+
+    days = period_map[period]
+
+    # Query balance con filtro periodo
+    try:
+        if days:
+            balance_data = query_db(f"""
+                SELECT created_at, balance_usd
+                FROM account_snapshots
+                WHERE created_at > NOW() - INTERVAL '{days} days'
+                ORDER BY created_at ASC
+            """)
+        else:
+            balance_data = query_db("""
+                SELECT created_at, balance_usd
+                FROM account_snapshots
+                ORDER BY created_at ASC
+            """)
+
+        if not balance_data.empty:
+            # Calcola P&L %
+            initial_balance = balance_data['balance_usd'].iloc[0]
+            final_balance = balance_data['balance_usd'].iloc[-1]
+            pnl = final_balance - initial_balance
+            pnl_pct = (pnl / initial_balance * 100) if initial_balance > 0 else 0
+
+            # Mostra P&L
+            col_pnl1, col_pnl2 = st.columns(2)
+            with col_pnl1:
+                st.metric("💵 P&L (Period)", f"${pnl:,.2f}", f"{pnl_pct:+.2f}%")
+            with col_pnl2:
+                win_color = "green" if pnl >= 0 else "red"
+                st.markdown(f"<h3 style='color: {win_color};'>{'📈 Profit' if pnl >= 0 else '📉 Loss'}</h3>", unsafe_allow_html=True)
+
+            # Grafico
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=balance_data['created_at'],
+                y=balance_data['balance_usd'],
+                mode='lines+markers',
+                name='Balance',
+                line=dict(color='#00ff00' if pnl >= 0 else '#ff0000', width=2),
+                marker=dict(size=6),
+                fill='tozeroy',
+                fillcolor='rgba(0,255,0,0.1)' if pnl >= 0 else 'rgba(255,0,0,0.1)'
+            ))
+
+            fig.update_layout(
+                title=f"Account Balance History ({period})",
+                xaxis_title="Date",
+                yaxis_title="Balance (USD)",
+                hovermode='x unified',
+                height=400
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Nessun dato disponibile ancora. Il bot deve eseguire almeno un ciclo.")
+    except Exception as e:
+        st.error(f"Errore nel caricamento dei dati: {e}")
+
+    # P&L per symbol
+    st.subheader("P&L by Symbol")
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        try:
+            pnl_by_symbol = query_db("""
+                SELECT
+                    symbol,
+                    SUM(pnl_usd) as total_pnl,
+                    COUNT(*) as num_positions,
+                    AVG(pnl_usd) as avg_pnl
+                FROM open_positions op
+                JOIN account_snapshots snap ON op.snapshot_id = snap.id
+                WHERE pnl_usd IS NOT NULL
+                GROUP BY symbol
+                ORDER BY total_pnl DESC
+            """)
+
+            if not pnl_by_symbol.empty:
+                fig_pnl = px.bar(
+                    pnl_by_symbol,
+                    x='symbol',
+                    y='total_pnl',
+                    title='Total P&L by Symbol',
+                    color='total_pnl',
+                    color_continuous_scale=['red', 'yellow', 'green'],
+                    hover_data=['num_positions', 'avg_pnl']
+                )
+                st.plotly_chart(fig_pnl, use_container_width=True)
+
+                # Tabella con dettagli
+                pnl_by_symbol['avg_pnl'] = pnl_by_symbol['avg_pnl'].round(2)
+                pnl_by_symbol['total_pnl'] = pnl_by_symbol['total_pnl'].round(2)
+                st.dataframe(pnl_by_symbol, use_container_width=True)
+            else:
+                st.info("Nessuna posizione con P&L registrato")
+        except Exception as e:
+            st.error(f"Errore: {e}")
+
+    with col_right:
+        try:
+            operations_by_type = query_db("""
+                SELECT
+                    operation,
+                    COUNT(*) as count
+                FROM bot_operations
+                GROUP BY operation
+            """)
+
+            if not operations_by_type.empty:
+                fig_ops = px.pie(
+                    operations_by_type,
+                    values='count',
+                    names='operation',
+                    title='Operations Distribution',
+                    color_discrete_map={
+                        'open': '#00ff00',
+                        'close': '#ff0000',
+                        'hold': '#808080'
+                    }
+                )
+                st.plotly_chart(fig_ops, use_container_width=True)
+            else:
+                st.info("Nessuna operazione registrata")
+        except Exception as e:
+            st.error(f"Errore: {e}")
+
+    # ========================================
+    # TRADING ANALYTICS SECTION (NEW)
+    # ========================================
+    st.markdown("---")
+    st.subheader("📈 Trading Analytics")
+
+    # Info box con spiegazione generale
+    with st.expander("ℹ️ Cosa significano queste metriche?", expanded=False):
+        st.markdown("""
+        **Metriche di Performance del Trading Bot:**
+
+        | Metrica | Significato | Valori Ideali |
+        |---------|-------------|---------------|
+        | **Win Rate** | Percentuale di trade chiusi in profitto | >50% è buono, >60% è ottimo |
+        | **Avg P&L/Trade** | Guadagno/perdita media per ogni trade | Positivo = bot profittevole |
+        | **Max Drawdown** | Massima perdita dal picco più alto | <20% è accettabile, <10% è ottimo |
+        | **Profit Factor** | Rapporto tra profitti totali e perdite totali | >1.5 è buono, >2 è ottimo |
+
+        **Come leggere i grafici:**
+        - **Long vs Short**: Confronta le performance tra posizioni rialziste (Long) e ribassiste (Short)
+        - **Performance by Symbol**: Mostra quali criptovalute stanno performando meglio
+        - **Equity Curve**: Andamento del capitale nel tempo - la linea verde tratteggiata è il "picco" massimo raggiunto
+        - **Drawdown %**: Mostra quanto sei "sotto" rispetto al massimo - più è basso meglio è
+        """)
+
+    # Row 1: Key Metrics
+    col_an1, col_an2, col_an3, col_an4 = st.columns(4)
+
+    # WIN RATE
+    try:
+        win_rate_data = query_db("""
+            SELECT
+                COUNT(*) FILTER (WHERE pnl_usd > 0) as wins,
+                COUNT(*) FILTER (WHERE pnl_usd < 0) as losses,
+                COUNT(*) FILTER (WHERE pnl_usd = 0) as breakeven,
+                COUNT(*) as total
+            FROM open_positions
+            WHERE pnl_usd IS NOT NULL
+        """)
+
+        if not win_rate_data.empty and win_rate_data['total'].iloc[0] > 0:
+            wins = int(win_rate_data['wins'].iloc[0])
+            losses = int(win_rate_data['losses'].iloc[0])
+            total = int(win_rate_data['total'].iloc[0])
+            win_rate = (wins / total * 100) if total > 0 else 0
+
+            with col_an1:
+                st.metric("🎯 Win Rate", f"{win_rate:.1f}%", f"{wins}W / {losses}L",
+                         help="Percentuale di trade chiusi in profitto. >50% buono, >60% ottimo")
+        else:
+            with col_an1:
+                st.metric("🎯 Win Rate", "N/A", "No closed trades",
+                         help="Percentuale di trade chiusi in profitto")
+    except Exception as e:
+        with col_an1:
+            st.metric("🎯 Win Rate", "Error", help="Errore nel calcolo")
+
+    # AVG P&L PER TRADE
+    try:
+        avg_pnl_data = query_db("""
+            SELECT
+                AVG(pnl_usd) as avg_pnl,
+                AVG(CASE WHEN pnl_usd > 0 THEN pnl_usd END) as avg_win,
+                AVG(CASE WHEN pnl_usd < 0 THEN pnl_usd END) as avg_loss
+            FROM open_positions
+            WHERE pnl_usd IS NOT NULL
+        """)
+
+        if not avg_pnl_data.empty and pd.notna(avg_pnl_data['avg_pnl'].iloc[0]):
+            avg_pnl = float(avg_pnl_data['avg_pnl'].iloc[0])
+            avg_win = float(avg_pnl_data['avg_win'].iloc[0]) if pd.notna(avg_pnl_data['avg_win'].iloc[0]) else 0
+            avg_loss = float(avg_pnl_data['avg_loss'].iloc[0]) if pd.notna(avg_pnl_data['avg_loss'].iloc[0]) else 0
+
+            with col_an2:
+                delta_color = "normal" if avg_pnl >= 0 else "inverse"
+                st.metric("💰 Avg P&L/Trade", f"${avg_pnl:.2f}",
+                         help="Guadagno/perdita media per trade. Se positivo, il bot è profittevole in media")
+                st.caption(f"Avg Win: ${avg_win:.2f} | Avg Loss: ${avg_loss:.2f}")
+        else:
+            with col_an2:
+                st.metric("💰 Avg P&L/Trade", "N/A",
+                         help="Guadagno/perdita media per trade")
+    except Exception as e:
+        with col_an2:
+            st.metric("💰 Avg P&L/Trade", "Error", help="Errore nel calcolo")
+
+    # MAX DRAWDOWN
+    try:
+        drawdown_data = query_db("""
+            SELECT balance_usd, created_at
+            FROM account_snapshots
+            ORDER BY created_at ASC
+        """)
+
+        if not drawdown_data.empty and len(drawdown_data) > 1:
+            balances = drawdown_data['balance_usd'].astype(float).values
+
+            # Calculate running max and drawdown
+            running_max = balances[0]
+            max_drawdown = 0
+            max_drawdown_pct = 0
+
+            for balance in balances:
+                if balance > running_max:
+                    running_max = balance
+                drawdown = running_max - balance
+                drawdown_pct = (drawdown / running_max * 100) if running_max > 0 else 0
+                if drawdown_pct > max_drawdown_pct:
+                    max_drawdown = drawdown
+                    max_drawdown_pct = drawdown_pct
+
+            with col_an3:
+                st.metric("📉 Max Drawdown", f"{max_drawdown_pct:.2f}%", f"-${max_drawdown:.2f}",
+                         help="Massima perdita dal picco più alto. <10% ottimo, <20% accettabile, >30% rischioso")
+        else:
+            with col_an3:
+                st.metric("📉 Max Drawdown", "N/A",
+                         help="Massima perdita dal picco più alto")
+    except Exception as e:
+        with col_an3:
+            st.metric("📉 Max Drawdown", "Error", help="Errore nel calcolo")
+
+    # PROFIT FACTOR
+    try:
+        pf_data = query_db("""
+            SELECT
+                COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd END), 0) as gross_profit,
+                COALESCE(ABS(SUM(CASE WHEN pnl_usd < 0 THEN pnl_usd END)), 0.01) as gross_loss
+            FROM open_positions
+            WHERE pnl_usd IS NOT NULL
+        """)
+
+        if not pf_data.empty:
+            gross_profit = float(pf_data['gross_profit'].iloc[0])
+            gross_loss = float(pf_data['gross_loss'].iloc[0])
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+
+            with col_an4:
+                pf_status = "Good" if profit_factor > 1.5 else ("Ok" if profit_factor > 1 else "Poor")
+                st.metric("⚖️ Profit Factor", f"{profit_factor:.2f}", pf_status,
+                         help="Profitti totali / Perdite totali. >1 = profittevole, >1.5 buono, >2 ottimo")
+        else:
+            with col_an4:
+                st.metric("⚖️ Profit Factor", "N/A",
+                         help="Profitti totali / Perdite totali")
+    except Exception as e:
+        with col_an4:
+            st.metric("⚖️ Profit Factor", "Error", help="Errore nel calcolo")
+
+    # Row 2: Performance by Direction (Long vs Short)
+    col_dir1, col_dir2 = st.columns(2)
+
+    with col_dir1:
+        st.markdown("#### 📊 Performance by Direction")
+        try:
+            direction_perf = query_db("""
+                SELECT
+                    side as direction,
+                    COUNT(*) as trades,
+                    SUM(pnl_usd) as total_pnl,
+                    AVG(pnl_usd) as avg_pnl,
+                    COUNT(*) FILTER (WHERE pnl_usd > 0) as wins,
+                    COUNT(*) FILTER (WHERE pnl_usd < 0) as losses
+                FROM open_positions
+                WHERE pnl_usd IS NOT NULL AND side IS NOT NULL
+                GROUP BY side
+            """)
+
+            if not direction_perf.empty:
+                for _, row in direction_perf.iterrows():
+                    direction = row['direction'].upper() if row['direction'] else "N/A"
+                    total_pnl = float(row['total_pnl']) if pd.notna(row['total_pnl']) else 0
+                    avg_pnl = float(row['avg_pnl']) if pd.notna(row['avg_pnl']) else 0
+                    wins = int(row['wins']) if pd.notna(row['wins']) else 0
+                    losses = int(row['losses']) if pd.notna(row['losses']) else 0
+                    trades = int(row['trades'])
+                    win_rate = (wins / trades * 100) if trades > 0 else 0
+
+                    icon = "🟢" if direction == "LONG" else "🔴"
+                    pnl_color = "green" if total_pnl >= 0 else "red"
+
+                    st.markdown(f"""
+                    <div style="background: {'#28a74522' if direction == 'LONG' else '#dc354522'};
+                                padding: 15px; border-radius: 10px; margin-bottom: 10px;">
+                        <h4 style="margin: 0;">{icon} {direction}</h4>
+                        <p style="margin: 5px 0;">
+                            <b>Trades:</b> {trades} |
+                            <b>Win Rate:</b> {win_rate:.1f}% |
+                            <b>Total P&L:</b> <span style="color: {pnl_color};">${total_pnl:+,.2f}</span>
+                        </p>
+                        <p style="margin: 0; color: #666;">Avg P&L: ${avg_pnl:+,.2f}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("Nessun dato di direzione disponibile")
+        except Exception as e:
+            st.error(f"Errore: {e}")
+
+    with col_dir2:
+        st.markdown("#### 🪙 Performance by Symbol (Detailed)")
+        try:
+            symbol_perf = query_db("""
+                SELECT
+                    symbol,
+                    COUNT(*) as trades,
+                    SUM(pnl_usd) as total_pnl,
+                    AVG(pnl_usd) as avg_pnl,
+                    COUNT(*) FILTER (WHERE pnl_usd > 0) as wins,
+                    MAX(pnl_usd) as best_trade,
+                    MIN(pnl_usd) as worst_trade
+                FROM open_positions
+                WHERE pnl_usd IS NOT NULL
+                GROUP BY symbol
+                ORDER BY total_pnl DESC
+            """)
+
+            if not symbol_perf.empty:
+                for _, row in symbol_perf.iterrows():
+                    symbol = row['symbol']
+                    total_pnl = float(row['total_pnl']) if pd.notna(row['total_pnl']) else 0
+                    avg_pnl = float(row['avg_pnl']) if pd.notna(row['avg_pnl']) else 0
+                    trades = int(row['trades'])
+                    wins = int(row['wins']) if pd.notna(row['wins']) else 0
+                    win_rate = (wins / trades * 100) if trades > 0 else 0
+                    best = float(row['best_trade']) if pd.notna(row['best_trade']) else 0
+                    worst = float(row['worst_trade']) if pd.notna(row['worst_trade']) else 0
+
+                    pnl_color = "green" if total_pnl >= 0 else "red"
+
+                    st.markdown(f"""
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 8px;
+                                margin-bottom: 8px; border-left: 4px solid {pnl_color};">
+                        <b>{symbol}</b>
+                        <span style="float: right; color: {pnl_color}; font-weight: bold;">${total_pnl:+,.2f}</span>
+                        <br/>
+                        <small style="color: #666;">
+                            {trades} trades | {win_rate:.0f}% WR |
+                            Best: ${best:+,.2f} | Worst: ${worst:+,.2f}
+                        </small>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("Nessun dato per symbol disponibile")
+        except Exception as e:
+            st.error(f"Errore: {e}")
+
+    # Row 3: Equity Curve with Drawdown
+    st.markdown("#### 📈 Equity Curve with Drawdown")
+    try:
+        equity_data = query_db("""
+            SELECT balance_usd, created_at
+            FROM account_snapshots
+            ORDER BY created_at ASC
+        """)
+
+        if not equity_data.empty and len(equity_data) > 1:
+            equity_data['created_at'] = pd.to_datetime(equity_data['created_at'])
+            equity_data['balance_usd'] = equity_data['balance_usd'].astype(float)
+
+            # Calculate running max and drawdown for each point
+            equity_data['running_max'] = equity_data['balance_usd'].cummax()
+            equity_data['drawdown'] = equity_data['running_max'] - equity_data['balance_usd']
+            equity_data['drawdown_pct'] = (equity_data['drawdown'] / equity_data['running_max'] * 100)
+
+            # Create figure with secondary y-axis
+            from plotly.subplots import make_subplots
+
+            fig_equity = make_subplots(
+                rows=2, cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.03,
+                row_heights=[0.7, 0.3],
+                subplot_titles=('Equity Curve', 'Drawdown %')
+            )
+
+            # Equity curve
+            fig_equity.add_trace(
+                go.Scatter(
+                    x=equity_data['created_at'],
+                    y=equity_data['balance_usd'],
+                    mode='lines',
+                    name='Balance',
+                    line=dict(color='#2196F3', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(33, 150, 243, 0.1)'
+                ),
+                row=1, col=1
+            )
+
+            # Running max (peak)
+            fig_equity.add_trace(
+                go.Scatter(
+                    x=equity_data['created_at'],
+                    y=equity_data['running_max'],
+                    mode='lines',
+                    name='Peak',
+                    line=dict(color='#4CAF50', width=1, dash='dot')
+                ),
+                row=1, col=1
+            )
+
+            # Drawdown
+            fig_equity.add_trace(
+                go.Scatter(
+                    x=equity_data['created_at'],
+                    y=equity_data['drawdown_pct'],
+                    mode='lines',
+                    name='Drawdown %',
+                    line=dict(color='#f44336', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(244, 67, 54, 0.3)'
+                ),
+                row=2, col=1
+            )
+
+            fig_equity.update_layout(
+                height=500,
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+
+            fig_equity.update_yaxes(title_text="Balance (USD)", row=1, col=1)
+            fig_equity.update_yaxes(title_text="Drawdown %", row=2, col=1, autorange="reversed")
+            fig_equity.update_xaxes(title_text="Date", row=2, col=1)
+
+            st.plotly_chart(fig_equity, use_container_width=True)
+        else:
+            st.info("Non ci sono abbastanza dati per l'equity curve. Attendi almeno 2 snapshot.")
+    except Exception as e:
+        st.error(f"Errore equity curve: {e}")
+
+with tab2:
+    st.subheader("Recent Operations")
+
+    # Filtri
+    col_filter1, col_filter2, col_filter3 = st.columns(3)
+
+    with col_filter1:
+        operation_filter = st.selectbox(
+            "Operation Type",
+            ["All", "open", "close", "hold"]
+        )
+
+    with col_filter2:
+        symbol_filter = st.selectbox(
+            "Symbol",
+            ["All"] + ENABLED_SYMBOLS
+        )
+
+    with col_filter3:
+        limit = st.number_input("Show Last N", min_value=10, max_value=1000, value=50)
+
+    # Query operations ✅ FIXATO!
+    try:
+        where_clauses = []
+        if operation_filter != "All":
+            where_clauses.append(f"operation = '{operation_filter}'")
+        if symbol_filter != "All":
+            where_clauses.append(f"symbol = '{symbol_filter}'")
+
+        where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+        operations = query_db(f"""
+            SELECT
+                id,
+                created_at,
+                operation,
+                symbol,
+                direction,
+                target_portion_of_balance,
+                leverage,
+                raw_payload->>'reason' as reason
+            FROM bot_operations
+            {where_sql}
+            ORDER BY created_at DESC
+            LIMIT {limit}
+        """)
+
+        if not operations.empty:
+            # Formatta il dataframe
+            operations['created_at'] = pd.to_datetime(operations['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
+            operations['target_%'] = (operations['target_portion_of_balance'] * 100).round(2)
+
+            # Colorizza operations
+            def highlight_operation(row):
+                if row['operation'] == 'open':
+                    return ['background-color: rgba(0, 255, 0, 0.1)'] * len(row)
+                elif row['operation'] == 'close':
+                    return ['background-color: rgba(255, 0, 0, 0.1)'] * len(row)
+                else:
+                    return ['background-color: rgba(128, 128, 128, 0.05)'] * len(row)
+
+            styled_ops = operations.style.apply(highlight_operation, axis=1)
+            st.dataframe(styled_ops, use_container_width=True, height=600)
+
+            # Download CSV
+            csv = operations.to_csv(index=False)
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv,
+                file_name=f"trading_operations_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("Nessuna operazione trovata con i filtri selezionati")
+    except Exception as e:
+        st.error(f"Errore nel caricamento delle operazioni: {e}")
+
+with tab3:
+    st.subheader("📈 Open Positions with P&L")
+
+    # === SENTINEL STATUS BOX ===
+    st.markdown("### 🛡️ Sentinel Monitor")
+
+    try:
+        # Stato sentinel
+        sentinel_status = query_db("""
+            SELECT
+                MAX(created_at) as last_check,
+                COUNT(*) as checks_24h,
+                COUNT(action_taken) as actions_24h,
+                COUNT(CASE WHEN action_taken = 'CLOSE_STOP_LOSS' THEN 1 END) as stop_loss_count,
+                COUNT(CASE WHEN action_taken = 'CLOSE_TRAILING_STOP' THEN 1 END) as trailing_stop_count,
+                COUNT(CASE WHEN action_taken = 'CLOSE_MICRO_GAIN_REVERSAL' THEN 1 END) as micro_gain_reversal_count,
+                COUNT(CASE WHEN action_taken = 'CLOSE_TAKE_PROFIT' THEN 1 END) as take_profit_count
+            FROM sentinel_logs
+            WHERE created_at > NOW() - INTERVAL '24 hours'
+        """)
+
+        # Config da .env (valori di default se non letti)
+        trailing_pct = os.getenv('TRAILING_STOP_PERCENT', '7')
+        activation_pct = os.getenv('TRAILING_STOP_ACTIVATION_PERCENT', '3')
+        stop_loss_pct = os.getenv('INITIAL_STOP_LOSS_PERCENT', '10')
+        sentinel_enabled = os.getenv('SENTINEL_ENABLED', 'true').lower() == 'true'
+        micro_gain_enabled = os.getenv('MICRO_GAIN_ENABLED', 'false').lower() == 'true'
+
+        col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+
+        with col_s1:
+            status_icon = "🟢" if sentinel_enabled else "🔴"
+            st.metric("Stato", f"{status_icon} {'ATTIVO' if sentinel_enabled else 'OFF'}")
+
+        with col_s2:
+            last_check = sentinel_status['last_check'].iloc[0] if not sentinel_status.empty and pd.notna(sentinel_status['last_check'].iloc[0]) else None
+            if last_check:
+                # Formatta timestamp
+                last_check_str = pd.to_datetime(last_check).strftime('%H:%M:%S')
+                st.metric("Ultimo Check", last_check_str)
+            else:
+                st.metric("Ultimo Check", "N/A")
+
+        with col_s3:
+            checks = int(sentinel_status['checks_24h'].iloc[0]) if not sentinel_status.empty else 0
+            st.metric("Check 24h", checks)
+
+        with col_s4:
+            actions = int(sentinel_status['actions_24h'].iloc[0]) if not sentinel_status.empty else 0
+            st.metric("Azioni 24h", actions)
+
+        with col_s5:
+            st.caption(f"**Config:**")
+            st.caption(f"Trailing: {trailing_pct}%")
+            st.caption(f"Activation: {activation_pct}%")
+            st.caption(f"Stop Loss: {stop_loss_pct}%")
+            if micro_gain_enabled:
+                micro_target = os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.15')
+                st.caption(f"🎯 MICRO: {micro_target}%")
+
+    except Exception as e:
+        st.warning(f"⚠️ Sentinel status non disponibile: {e}")
+
+    st.markdown("---")
+
+    # Posizioni aperte correnti ✅ NUOVO!
+    try:
+        open_positions = query_db("""
+            SELECT
+                op.symbol,
+                op.side,
+                op.size,
+                op.entry_price,
+                op.mark_price,
+                op.pnl_usd,
+                op.leverage,
+                snap.created_at as last_update
+            FROM open_positions op
+            JOIN account_snapshots snap ON op.snapshot_id = snap.id
+            WHERE snap.id = (SELECT MAX(id) FROM account_snapshots)
+            AND op.size > 0
+            ORDER BY ABS(op.pnl_usd) DESC
+        """)
+
+        if not open_positions.empty:
+            st.success(f"🎯 {len(open_positions)} posizioni aperte")
+
+            # Carica tracking per tutte le posizioni (include trading_mode e opening_score)
+            tracking_data = query_db("""
+                SELECT symbol, direction, entry_price, peak_price, trailing_active,
+                       last_checked_price, updated_at, opening_score, trading_mode
+                FROM position_tracking
+            """)
+            tracking_dict = {row['symbol']: row.to_dict() for _, row in tracking_data.iterrows()} if not tracking_data.empty else {}
+
+            for idx, pos in open_positions.iterrows():
+                pnl = float(pos['pnl_usd']) if pd.notna(pos['pnl_usd']) else 0
+                pnl_color = "green" if pnl >= 0 else "red"
+                pnl_icon = "📈" if pnl >= 0 else "📉"
+
+                # Ottieni tracking per questa posizione
+                symbol_tracking = tracking_dict.get(pos['symbol'])
+
+                # Determina trading_mode per il titolo
+                trading_mode = symbol_tracking.get('trading_mode', 'NORMAL') if symbol_tracking is not None else 'NORMAL'
+                mode_badge = "🎯 MICRO" if trading_mode == "MICRO_GAIN" else ""
+
+                with st.expander(
+                    f"{pnl_icon} {pos['symbol']} {pos['side'].upper()} {mode_badge} - P&L: ${pnl:,.2f}",
+                    expanded=True
+                ):
+                    col_pos1, col_pos2, col_pos3, col_pos4 = st.columns(4)
+
+                    with col_pos1:
+                        st.metric("Size", f"{pos['size']:.4f}")
+                        st.metric("Entry", f"${pos['entry_price']:,.2f}")
+
+                    with col_pos2:
+                        st.metric("Mark Price", f"${pos['mark_price']:,.2f}")
+                        price_change = ((pos['mark_price'] - pos['entry_price']) / pos['entry_price'] * 100) if pos['entry_price'] > 0 else 0
+                        st.metric("Price Change", f"{price_change:+.2f}%")
+
+                    with col_pos3:
+                        st.metric("P&L", f"${pnl:,.2f}", delta_color="normal")
+                        st.metric("Leverage", pos['leverage'])
+
+                    with col_pos4:
+                        st.metric("Side", pos['side'].upper())
+                        st.caption(f"Updated: {pos['last_update']}")
+
+                    # === POSITION MONITOR (MICRO_GAIN o TRAILING STOP) ===
+                    if symbol_tracking is not None:
+                        st.markdown("---")
+
+                        # Mostra sezione diversa in base al trading_mode
+                        if trading_mode == "MICRO_GAIN":
+                            st.markdown("**🎯 MICRO-GAIN Monitor**")
+
+                            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+                            opening_score = symbol_tracking.get('opening_score')
+                            micro_gain_target = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '0.15'))
+
+                            with col_m1:
+                                st.metric("Trading Mode", "🎯 MICRO-GAIN")
+
+                            with col_m2:
+                                if opening_score:
+                                    st.metric("Opening Score", f"{float(opening_score):.1f}")
+                                else:
+                                    st.metric("Opening Score", "N/A")
+
+                            with col_m3:
+                                st.metric("Target P&L", f"+{micro_gain_target}%")
+
+                            with col_m4:
+                                # Calcola P&L corrente con leva
+                                leverage_val = float(str(pos['leverage']).replace('x', '').split()[0]) if pos['leverage'] else 1
+                                if pos['side'].lower() == 'long':
+                                    current_pnl_pct = ((float(pos['mark_price']) - float(pos['entry_price'])) / float(pos['entry_price'])) * 100 * leverage_val
+                                else:
+                                    current_pnl_pct = ((float(pos['entry_price']) - float(pos['mark_price'])) / float(pos['entry_price'])) * 100 * leverage_val
+                                st.metric("P&L Attuale", f"{current_pnl_pct:+.3f}%")
+
+                            # Barra progresso verso target
+                            progress_to_target = min(100, max(0, (current_pnl_pct / micro_gain_target) * 100)) if micro_gain_target > 0 else 0
+                            if current_pnl_pct >= 0:
+                                st.progress(progress_to_target / 100, text=f"Progresso verso target: {current_pnl_pct:.3f}% / {micro_gain_target}%")
+                            else:
+                                st.warning(f"⚠️ P&L negativo: {current_pnl_pct:.3f}% - Sentinel monitora inversione")
+
+                            st.caption("💡 Questa posizione ha un limit order TP su Hyperliquid. La sentinel monitora per inversioni.")
+
+                        else:
+                            # === TRAILING STOP MONITOR (modalità NORMAL) ===
+                            st.markdown("**🛡️ Trailing Stop Monitor**")
+
+                            col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+
+                            peak_price = float(symbol_tracking['peak_price'])
+                            trailing_active = symbol_tracking['trailing_active']
+                            current_price = float(pos['mark_price'])
+
+                            # Calcola distanza dal peak
+                            if pos['side'].lower() == 'long':
+                                peak_dist = ((current_price - peak_price) / peak_price) * 100
+                            else:
+                                peak_dist = ((peak_price - current_price) / peak_price) * 100
+
+                            with col_t1:
+                                st.metric("Peak Price", f"${peak_price:,.2f}")
+
+                            with col_t2:
+                                # Colore per distanza dal peak
+                                dist_color = "green" if peak_dist >= 0 else ("red" if peak_dist < -5 else "orange")
+                                st.metric("Dist. dal Peak", f"{peak_dist:+.2f}%")
+
+                            with col_t3:
+                                trailing_icon = "🟢 ATTIVO" if trailing_active else "⚪ Inattivo"
+                                st.metric("Trailing", trailing_icon)
+
+                            with col_t4:
+                                # Calcola soglia stop
+                                if trailing_active:
+                                    stop_trigger = f"-{trailing_pct}% dal peak"
+                                else:
+                                    stop_trigger = f"-{stop_loss_pct}% da entry"
+                                st.metric("Stop Trigger", stop_trigger)
+
+                            # Barra progresso verso stop
+                            if trailing_active:
+                                # Trailing attivo: mostra quanto manca allo stop
+                                progress = min(100, max(0, (float(trailing_pct) + peak_dist) / float(trailing_pct) * 100))
+                                st.progress(progress / 100, text=f"Margine trailing: {float(trailing_pct) + peak_dist:.2f}%")
+                            else:
+                                # Stop loss: mostra quanto manca
+                                profit_pct = price_change if pos['side'].lower() == 'long' else -price_change
+                                progress = min(100, max(0, (float(stop_loss_pct) + profit_pct) / float(stop_loss_pct) * 100))
+                                st.progress(progress / 100, text=f"Margine stop loss: {float(stop_loss_pct) + profit_pct:.2f}%")
+                    else:
+                        st.caption("⚠️ Tracking non ancora inizializzato per questa posizione")
+
+            # Grafico posizioni
+            fig_pos = go.Figure()
+
+            for _, pos in open_positions.iterrows():
+                color = 'green' if pos['side'] == 'long' else 'red'
+                fig_pos.add_trace(go.Bar(
+                    x=[pos['symbol']],
+                    y=[pos['pnl_usd']],
+                    name=f"{pos['symbol']} {pos['side']}",
+                    marker_color=color
+                ))
+
+            fig_pos.update_layout(
+                title="P&L per Position",
+                xaxis_title="Symbol",
+                yaxis_title="P&L (USD)",
+                showlegend=True,
+                height=300
+            )
+            st.plotly_chart(fig_pos, use_container_width=True)
+
+        else:
+            st.info("📊 Nessuna posizione aperta al momento")
+            st.caption("Il bot aprirà posizioni automaticamente quando identifica opportunità di trading")
+
+    except Exception as e:
+        st.error(f"Errore nel caricamento delle posizioni: {e}")
+
+    # === SENTINEL HISTORY ===
+    st.markdown("---")
+    st.markdown("### 📜 Sentinel Price History")
+
+    try:
+        sentinel_logs = query_db("""
+            SELECT
+                created_at,
+                symbol,
+                direction,
+                entry_price,
+                current_price,
+                peak_price,
+                profit_pct,
+                profit_from_peak_pct,
+                trailing_active,
+                action_taken,
+                action_reason
+            FROM sentinel_logs
+            ORDER BY created_at DESC
+            LIMIT 30
+        """)
+
+        if not sentinel_logs.empty:
+            # Filtri
+            col_f1, col_f2 = st.columns([1, 3])
+            with col_f1:
+                symbols = ['Tutti'] + sorted(sentinel_logs['symbol'].unique().tolist())
+                selected_symbol = st.selectbox("Filtra Symbol", symbols, key="sentinel_filter")
+
+            if selected_symbol != 'Tutti':
+                sentinel_logs = sentinel_logs[sentinel_logs['symbol'] == selected_symbol]
+
+            # Formatta la tabella
+            display_df = sentinel_logs.copy()
+            display_df['created_at'] = pd.to_datetime(display_df['created_at']).dt.strftime('%H:%M:%S')
+            display_df['profit_pct'] = display_df['profit_pct'].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+            display_df['profit_from_peak_pct'] = display_df['profit_from_peak_pct'].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+            display_df['entry_price'] = display_df['entry_price'].apply(lambda x: f"${x:,.2f}")
+            display_df['current_price'] = display_df['current_price'].apply(lambda x: f"${x:,.2f}")
+            display_df['peak_price'] = display_df['peak_price'].apply(lambda x: f"${x:,.2f}")
+            display_df['trailing_active'] = display_df['trailing_active'].apply(lambda x: "🟢" if x else "⚪")
+            display_df['action_taken'] = display_df['action_taken'].fillna("-")
+
+            # Rinomina colonne
+            display_df = display_df.rename(columns={
+                'created_at': 'Time',
+                'symbol': 'Symbol',
+                'direction': 'Dir',
+                'entry_price': 'Entry',
+                'current_price': 'Price',
+                'peak_price': 'Peak',
+                'profit_pct': 'P/L%',
+                'profit_from_peak_pct': 'Peak%',
+                'trailing_active': 'Trail',
+                'action_taken': 'Action',
+                'action_reason': 'Reason'
+            })
+
+            # Mostra solo colonne rilevanti
+            columns_to_show = ['Time', 'Symbol', 'Dir', 'Entry', 'Price', 'Peak', 'P/L%', 'Peak%', 'Trail', 'Action']
+            st.dataframe(display_df[columns_to_show], use_container_width=True, hide_index=True)
+
+            # Mostra azioni recenti se ci sono
+            actions = sentinel_logs[sentinel_logs['action_taken'].notna() & (sentinel_logs['action_taken'] != '')]
+            if not actions.empty:
+                st.markdown("#### ⚡ Azioni Recenti")
+                for _, action in actions.iterrows():
+                    action_icon = "🛑" if action['action_taken'] else "ℹ️"
+                    st.warning(f"{action_icon} **{action['action_taken']}** - {action['symbol']} {action['direction'].upper()}: {action['action_reason']}")
+        else:
+            st.info("📊 Nessun log sentinel disponibile. Il sentinel registrerà i dati quando ci sono posizioni aperte.")
+
+    except Exception as e:
+        st.warning(f"⚠️ Sentinel history non disponibile: {e}")
+
+with tab4:
+    st.subheader("🎯 AI Decision Analysis")
+
+    # === SIGNAL SCORES SECTION (NEW) ===
+    st.markdown("### 📊 Signal Scoring (Latest)")
+
+    try:
+        latest_scores = query_db("""
+            SELECT
+                symbol,
+                score_bullish,
+                score_bearish,
+                net_score,
+                direction,
+                confidence,
+                signals,
+                created_at
+            FROM signal_scores
+            WHERE created_at = (SELECT MAX(created_at) FROM signal_scores)
+            ORDER BY symbol
+        """)
+
+        if not latest_scores.empty:
+            # Mostra metriche per ogni symbol
+            score_cols = st.columns(len(latest_scores))
+
+            for idx, (_, row) in enumerate(latest_scores.iterrows()):
+                with score_cols[idx]:
+                    symbol = row['symbol']
+                    direction = row['direction']
+                    net_score = float(row['net_score'])
+                    confidence = row['confidence']
+
+                    # Colore e icona basati sulla direzione
+                    if direction == 'LONG':
+                        icon = "🟢"
+                        bg_color = "#28a74522"
+                    elif direction == 'SHORT':
+                        icon = "🔴"
+                        bg_color = "#dc354522"
+                    else:
+                        icon = "⚪"
+                        bg_color = "#6c757d22"
+
+                    st.markdown(f"""
+                    <div style="background: {bg_color}; padding: 15px; border-radius: 10px; text-align: center;">
+                        <h3 style="margin: 0;">{icon} {symbol}</h3>
+                        <h2 style="margin: 5px 0; color: {'green' if net_score > 0 else 'red' if net_score < 0 else 'gray'};">
+                            {net_score:+.1f}
+                        </h2>
+                        <p style="margin: 0;"><b>{direction}</b> ({confidence})</p>
+                        <small style="color: #666;">
+                            Bull: {float(row['score_bullish']):.1f} | Bear: {float(row['score_bearish']):.1f}
+                        </small>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # Dettagli segnali in expander
+            with st.expander("📈 Dettaglio Segnali", expanded=False):
+                for _, row in latest_scores.iterrows():
+                    st.markdown(f"**{row['symbol']}**")
+                    signals = row['signals']
+                    if signals:
+                        for sig in signals:
+                            if sig.get('contribution', 0) > 0:
+                                dir_icon = "🟢" if sig.get('direction') == 'BULLISH' else "🔴"
+                                st.markdown(f"  {dir_icon} {sig.get('indicator')}: {sig.get('reason')} (+{sig.get('contribution', 0):.1f})")
+                    st.markdown("---")
+
+            st.caption(f"Ultimo aggiornamento: {latest_scores['created_at'].iloc[0]}")
+        else:
+            st.info("📊 Nessun dato di scoring disponibile. Il bot deve eseguire almeno un ciclo con il sistema di scoring attivo.")
+
+    except Exception as e:
+        st.warning(f"Signal Scores non disponibili: {e}")
+        st.caption("La tabella signal_scores potrebbe non esistere ancora. Eseguire il bot per crearla.")
+
+    st.markdown("---")
+
+    # Ultime decisioni AI con dati di contesto completi
+    try:
+        ai_decisions = query_db("""
+            SELECT
+                bo.id,
+                bo.created_at,
+                bo.context_id,
+                bo.operation,
+                bo.symbol,
+                bo.direction,
+                bo.leverage,
+                bo.target_portion_of_balance,
+                bo.raw_payload->>'reason' as reason,
+                bo.raw_payload as full_payload
+            FROM bot_operations bo
+            ORDER BY bo.created_at DESC
+            LIMIT 50
+        """)
+
+        if not ai_decisions.empty:
+            st.success(f"📊 {len(ai_decisions)} decisioni AI trovate")
+
+            # Filtri
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                decision_filter = st.selectbox(
+                    "🔍 Filtra per Operazione",
+                    ["Tutte", "open", "close", "hold"]
+                )
+            with col_f2:
+                symbol_filter_ai = st.selectbox(
+                    "🪙 Filtra per Symbol",
+                    ["Tutti"] + ENABLED_SYMBOLS,
+                    key="ai_symbol_filter"
+                )
+
+            filtered_decisions = ai_decisions
+            if decision_filter != "Tutte":
+                filtered_decisions = filtered_decisions[filtered_decisions['operation'] == decision_filter]
+            if symbol_filter_ai != "Tutti":
+                filtered_decisions = filtered_decisions[filtered_decisions['symbol'] == symbol_filter_ai]
+
+            for idx, row in filtered_decisions.iterrows():
+                # Icon e colore per tipo operazione
+                if row['operation'] == 'open':
+                    icon = "🟢"
+                    badge_color = "#28a745"
+                elif row['operation'] == 'close':
+                    icon = "🔴"
+                    badge_color = "#dc3545"
+                else:
+                    icon = "⚪"
+                    badge_color = "#6c757d"
+
+                with st.expander(
+                    f"{icon} {row['created_at']} - {row['operation'].upper()} {row['symbol']} ({row['direction']})",
+                    expanded=(idx==0)
+                ):
+                    # Header con decisione
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(90deg, {badge_color}22, transparent);
+                                padding: 15px; border-radius: 10px; border-left: 4px solid {badge_color}; margin-bottom: 15px;">
+                        <h3 style="margin: 0; color: {badge_color};">{icon} {row['operation'].upper()} {row['symbol']}</h3>
+                        <p style="margin: 5px 0 0 0; color: #666;">Direction: {row['direction']} | Leverage: {row['leverage']}x | Target: {(row['target_portion_of_balance'] or 0) * 100:.1f}%</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # === REASONING PRINCIPALE ===
+                    st.markdown("### 💭 Ragionamento AI")
+                    reason_text = row['reason'] or "Nessun reasoning disponibile"
+                    st.info(reason_text)
+
+                    # === DATI INPUT - Carica solo se context_id esiste ===
+                    context_id = row.get('context_id')
+                    if pd.notna(context_id):
+                        st.markdown("---")
+                        st.markdown("### 📊 Dati Input Analizzati dall'AI")
+
+                        # Tab interni per i dati
+                        data_tab1, data_tab2, data_tab3, data_tab4, data_tab5, data_tab6 = st.tabs([
+                            "📈 Indicatori", "😊 Sentiment", "🔮 Forecasts", "📰 News", "📊 Signal Scores", "📝 Prompt AI"
+                        ])
+
+                        # --- INDICATORI ---
+                        with data_tab1:
+                            indicators_data = query_db(f"""
+                                SELECT
+                                    ticker,
+                                    price,
+                                    ema20,
+                                    macd,
+                                    rsi_7,
+                                    pp, s1, s2, r1, r2,
+                                    funding_rate,
+                                    open_interest_latest,
+                                    volume_bid,
+                                    volume_ask
+                                FROM indicators_contexts
+                                WHERE context_id = {context_id}
+                            """)
+
+                            if not indicators_data.empty:
+                                for _, ind in indicators_data.iterrows():
+                                    ticker = ind['ticker']
+
+                                    # Calcola segnali
+                                    price = float(ind['price']) if pd.notna(ind['price']) else 0
+                                    ema20 = float(ind['ema20']) if pd.notna(ind['ema20']) else 0
+                                    macd = float(ind['macd']) if pd.notna(ind['macd']) else 0
+                                    rsi = float(ind['rsi_7']) if pd.notna(ind['rsi_7']) else 50
+
+                                    # Segnali visivi
+                                    trend_signal = "🟢 BULLISH" if price > ema20 else "🔴 BEARISH"
+                                    macd_signal = "🟢 Positivo" if macd > 0 else "🔴 Negativo"
+                                    if rsi > 70:
+                                        rsi_signal = "🔴 Overbought"
+                                    elif rsi < 30:
+                                        rsi_signal = "🟢 Oversold"
+                                    else:
+                                        rsi_signal = "⚪ Neutro"
+
+                                    st.markdown(f"#### {ticker}")
+
+                                    col_i1, col_i2, col_i3, col_i4 = st.columns(4)
+                                    with col_i1:
+                                        st.metric("💰 Price", f"${price:,.2f}")
+                                        st.caption(f"EMA20: ${ema20:,.2f}")
+                                    with col_i2:
+                                        st.metric("📊 RSI(7)", f"{rsi:.1f}")
+                                        st.caption(rsi_signal)
+                                    with col_i3:
+                                        st.metric("📈 MACD", f"{macd:.4f}")
+                                        st.caption(macd_signal)
+                                    with col_i4:
+                                        st.metric("🎯 Trend", trend_signal.split()[1])
+                                        st.caption(trend_signal)
+
+                                    # Pivot points
+                                    if pd.notna(ind['pp']):
+                                        with st.expander(f"📍 Pivot Points {ticker}"):
+                                            pp_col1, pp_col2 = st.columns(2)
+                                            with pp_col1:
+                                                st.write(f"**PP:** ${float(ind['pp']):,.2f}")
+                                                st.write(f"**S1:** ${float(ind['s1']):,.2f}" if pd.notna(ind['s1']) else "S1: N/A")
+                                                st.write(f"**S2:** ${float(ind['s2']):,.2f}" if pd.notna(ind['s2']) else "S2: N/A")
+                                            with pp_col2:
+                                                st.write(f"**R1:** ${float(ind['r1']):,.2f}" if pd.notna(ind['r1']) else "R1: N/A")
+                                                st.write(f"**R2:** ${float(ind['r2']):,.2f}" if pd.notna(ind['r2']) else "R2: N/A")
+                                                if pd.notna(ind['funding_rate']):
+                                                    st.write(f"**Funding:** {float(ind['funding_rate'])*100:.4f}%")
+
+                                    st.markdown("---")
+                            else:
+                                st.info("Nessun dato indicatori disponibile per questa decisione")
+
+                        # --- SENTIMENT ---
+                        with data_tab2:
+                            sentiment_data = query_db(f"""
+                                SELECT value, classification, raw
+                                FROM sentiment_contexts
+                                WHERE context_id = {context_id}
+                            """)
+
+                            if not sentiment_data.empty:
+                                sent = sentiment_data.iloc[0]
+                                value = int(sent['value']) if pd.notna(sent['value']) else 50
+                                classification = sent['classification'] or "Unknown"
+
+                                # Colore basato su valore
+                                if value <= 25:
+                                    sent_color = "#dc3545"  # Extreme Fear - Red
+                                    sent_icon = "😱"
+                                elif value <= 45:
+                                    sent_color = "#fd7e14"  # Fear - Orange
+                                    sent_icon = "😰"
+                                elif value <= 55:
+                                    sent_color = "#ffc107"  # Neutral - Yellow
+                                    sent_icon = "😐"
+                                elif value <= 75:
+                                    sent_color = "#28a745"  # Greed - Green
+                                    sent_icon = "😊"
+                                else:
+                                    sent_color = "#20c997"  # Extreme Greed - Teal
+                                    sent_icon = "🤑"
+
+                                st.markdown(f"""
+                                <div style="text-align: center; padding: 20px; background: {sent_color}22; border-radius: 15px;">
+                                    <h1 style="font-size: 64px; margin: 0;">{sent_icon}</h1>
+                                    <h2 style="color: {sent_color}; margin: 10px 0;">{value}/100</h2>
+                                    <p style="font-size: 18px; margin: 0;"><strong>{classification}</strong></p>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                                # Barra visiva del sentiment
+                                st.progress(value / 100)
+                                st.caption("0 = Extreme Fear | 50 = Neutral | 100 = Extreme Greed")
+                            else:
+                                st.info("Nessun dato sentiment disponibile")
+
+                        # --- FORECASTS ---
+                        with data_tab3:
+                            forecasts_data = query_db(f"""
+                                SELECT ticker, timeframe, last_price, prediction,
+                                       lower_bound, upper_bound, change_pct
+                                FROM forecasts_contexts
+                                WHERE context_id = {context_id}
+                                ORDER BY ticker, timeframe
+                            """)
+
+                            if not forecasts_data.empty:
+                                for _, fc in forecasts_data.iterrows():
+                                    change = float(fc['change_pct']) if pd.notna(fc['change_pct']) else 0
+                                    change_color = "green" if change >= 0 else "red"
+                                    change_icon = "📈" if change >= 0 else "📉"
+
+                                    st.markdown(f"#### {fc['ticker']} - {fc['timeframe']}")
+
+                                    fc_col1, fc_col2, fc_col3 = st.columns(3)
+                                    with fc_col1:
+                                        last_p = float(fc['last_price']) if pd.notna(fc['last_price']) else 0
+                                        st.metric("Prezzo Attuale", f"${last_p:,.2f}")
+                                    with fc_col2:
+                                        pred = float(fc['prediction']) if pd.notna(fc['prediction']) else 0
+                                        st.metric("Previsione", f"${pred:,.2f}", f"{change:+.2f}%")
+                                    with fc_col3:
+                                        lower = float(fc['lower_bound']) if pd.notna(fc['lower_bound']) else 0
+                                        upper = float(fc['upper_bound']) if pd.notna(fc['upper_bound']) else 0
+                                        st.metric("Range", f"${lower:,.0f} - ${upper:,.0f}")
+
+                                    st.markdown("---")
+                            else:
+                                st.info("Nessun forecast disponibile")
+
+                        # --- NEWS ---
+                        with data_tab4:
+                            news_data = query_db(f"""
+                                SELECT news_text
+                                FROM news_contexts
+                                WHERE context_id = {context_id}
+                            """)
+
+                            if not news_data.empty:
+                                news_text = news_data.iloc[0]['news_text']
+                                if news_text:
+                                    # Mostra le news formattate (key unica per evitare duplicati)
+                                    st.text_area("📰 News analizzate dall'AI", news_text, height=300, key=f"news_{row['id']}")
+                                else:
+                                    st.info("Nessuna news disponibile")
+                            else:
+                                st.info("Nessuna news disponibile")
+
+                        # --- SIGNAL SCORES ---
+                        with data_tab5:
+                            # Cerca scores salvati vicino al timestamp della decisione
+                            scores_data = query_db(f"""
+                                SELECT
+                                    symbol,
+                                    score_bullish,
+                                    score_bearish,
+                                    net_score,
+                                    direction,
+                                    confidence,
+                                    signals,
+                                    thresholds,
+                                    created_at
+                                FROM signal_scores
+                                WHERE created_at BETWEEN
+                                    '{row['created_at']}'::timestamp - interval '5 minutes'
+                                    AND '{row['created_at']}'::timestamp + interval '5 minutes'
+                                ORDER BY created_at DESC
+                            """)
+
+                            if not scores_data.empty:
+                                st.success(f"📊 {len(scores_data)} signal scores trovati")
+
+                                for _, score in scores_data.iterrows():
+                                    symbol = score['symbol']
+                                    net = float(score['net_score'])
+                                    bull = float(score['score_bullish'])
+                                    bear = float(score['score_bearish'])
+                                    direction = score['direction']
+                                    confidence = score['confidence']
+
+                                    # Colore basato sulla direzione
+                                    if direction == 'LONG':
+                                        dir_color = "#28a745"
+                                        dir_icon = "🟢"
+                                    elif direction == 'SHORT':
+                                        dir_color = "#dc3545"
+                                        dir_icon = "🔴"
+                                    else:
+                                        dir_color = "#6c757d"
+                                        dir_icon = "⚪"
+
+                                    st.markdown(f"""
+                                    <div style="background: {dir_color}22; padding: 15px; border-radius: 10px;
+                                                border-left: 4px solid {dir_color}; margin-bottom: 10px;">
+                                        <h4 style="margin: 0;">{dir_icon} {symbol} → {direction} ({confidence})</h4>
+                                        <p style="margin: 5px 0;">
+                                            <b>Net Score:</b> <span style="color: {'green' if net > 0 else 'red' if net < 0 else 'gray'}; font-size: 1.2em;">{net:+.1f}</span> |
+                                            <b>Bull:</b> {bull:.1f} |
+                                            <b>Bear:</b> {bear:.1f}
+                                        </p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+
+                                    # Mostra segnali individuali
+                                    signals = score['signals']
+                                    if signals:
+                                        with st.expander(f"📈 Dettaglio segnali {symbol}"):
+                                            for sig in signals:
+                                                contrib = sig.get('contribution', 0)
+                                                if contrib > 0:
+                                                    sig_dir = sig.get('direction', 'NEUTRAL')
+                                                    sig_icon = "🟢" if sig_dir == 'BULLISH' else "🔴" if sig_dir == 'BEARISH' else "⚪"
+                                                    st.markdown(f"""
+                                                    {sig_icon} **{sig.get('indicator')}**: {sig.get('reason')}
+                                                    *Contributo: +{contrib:.1f} (peso: {sig.get('weight', 0)}, intensità: {sig.get('intensity', 0):.1%})*
+                                                    """)
+                            else:
+                                st.info("Nessun signal score disponibile per questa decisione")
+
+                        # --- PROMPT AI COMPLETO ---
+                        with data_tab6:
+                            # Carica il prompt dalla tabella ai_contexts
+                            prompt_data = query_db(f"""
+                                SELECT system_prompt, created_at
+                                FROM ai_contexts
+                                WHERE id = {context_id}
+                            """)
+
+                            if not prompt_data.empty:
+                                prompt = prompt_data.iloc[0]['system_prompt']
+                                if prompt:
+                                    st.markdown("#### 📝 Prompt inviato all'AI")
+                                    st.text_area(
+                                        "System Prompt completo",
+                                        prompt,
+                                        height=500,
+                                        key=f"prompt_{row['id']}"
+                                    )
+
+                                    # Statistiche prompt
+                                    st.caption(f"Lunghezza: {len(prompt)} caratteri | ~{len(prompt.split())} parole")
+                                else:
+                                    st.info("Prompt non disponibile")
+                            else:
+                                st.info("Prompt non disponibile per questa decisione")
+
+                            # Mostra anche la risposta AI
+                            st.markdown("#### 🤖 Risposta AI")
+                            if pd.notna(row['full_payload']):
+                                st.json(row['full_payload'])
+                            else:
+                                st.info("Risposta AI non disponibile")
+
+                    # === DETTAGLI TECNICI (collassati) ===
+                    with st.expander("🔧 Dettagli Tecnici"):
+                        st.caption(f"Operation ID: {row['id']} | Context ID: {context_id}")
+
+                        if pd.notna(row['full_payload']):
+                            st.markdown("**Raw Decision Payload:**")
+                            st.json(row['full_payload'])
+
+        else:
+            st.info("Nessuna decisione AI registrata. Il bot deve eseguire almeno un ciclo.")
+    except Exception as e:
+        st.error(f"Errore nel caricamento decisioni AI: {e}")
+        st.exception(e)
+
+with tab5:
+    st.subheader("🧠 AI Strategy Analysis")
+
+    st.markdown("""
+    ### Performance Analytics & AI-Powered Optimization
+
+    This module analyzes your historical trading performance and uses AI to suggest concrete improvements.
+    """)
+
+    # Import analytics modules
+    try:
+        import analytics
+        import strategy_controller
+
+        col_days, col_analyze = st.columns([1, 3])
+
+        with col_days:
+            analysis_days = st.selectbox(
+                "📅 Analysis Period",
+                [7, 14, 30, 60],
+                index=2,  # Default: 30 days
+                help="Days of historical data to analyze"
+            )
+
+        with col_analyze:
+            st.write("")  # Spacer
+            st.write("")  # Spacer
+            if st.button("🚀 Run AI Analysis", type="primary", use_container_width=True):
+                st.session_state['run_analysis'] = True
+
+        if st.session_state.get('run_analysis', False):
+            with st.spinner(f"🔍 Analyzing last {analysis_days} days of trading data..."):
+                # Run analytics
+                performance = analytics.get_performance_summary(days=analysis_days)
+
+                if performance.get('error'):
+                    st.error(f"❌ Error: {performance['error']}")
+                else:
+                    # Display Performance Summary
+                    st.markdown("---")
+                    st.subheader("📊 Performance Summary")
+
+                    col_metric1, col_metric2, col_metric3, col_metric4 = st.columns(4)
+
+                    col_metric1.metric(
+                        "Total Trades",
+                        performance['total_trades'],
+                        help="Total number of completed trades"
+                    )
+
+                    col_metric2.metric(
+                        "Win Rate",
+                        f"{performance['win_rate']*100:.1f}%",
+                        delta=f"{performance['winning_trades']}W / {performance['losing_trades']}L",
+                        help="Percentage of winning trades"
+                    )
+
+                    col_metric3.metric(
+                        "Profit Factor",
+                        f"{performance['profit_factor']:.2f}",
+                        delta="Good" if performance['profit_factor'] > 1.5 else "Needs Improvement",
+                        delta_color="normal" if performance['profit_factor'] > 1.5 else "inverse",
+                        help="Profit to loss ratio"
+                    )
+
+                    col_metric4.metric(
+                        "Net Profit",
+                        f"${performance['net_profit_usd']:.2f}",
+                        delta=f"Avg: ${performance['net_profit_usd']/performance['total_trades']:.2f}/trade" if performance['total_trades'] > 0 else "N/A",
+                        help="Total net profit"
+                    )
+
+                    # Trade Metrics
+                    st.markdown("---")
+                    st.subheader("📈 Trade Metrics")
+
+                    col_trade1, col_trade2 = st.columns(2)
+
+                    with col_trade1:
+                        st.metric("Avg Win", f"+{performance['avg_win_pct']:.2f}%", help="Average winning trade")
+                        st.metric("Max Win", f"+{performance['max_win_pct']:.2f}%", help="Best trade")
+
+                    with col_trade2:
+                        st.metric("Avg Loss", f"{performance['avg_loss_pct']:.2f}%", help="Average losing trade")
+                        st.metric("Max Loss", f"{performance['max_loss_pct']:.2f}%", help="Worst trade")
+
+                    st.metric("Avg Duration", f"{performance['avg_duration_minutes']:.0f} minutes", help="Average trade duration")
+
+                    # Close Quality Analysis
+                    st.markdown("---")
+                    st.subheader("🎯 Close Quality Analysis")
+
+                    st.markdown("""
+                    Hindsight analysis: how well you closed your positions relative to subsequent price movements.
+                    """)
+
+                    close_quality = performance['close_quality_distribution']
+
+                    col_quality1, col_quality2 = st.columns(2)
+
+                    with col_quality1:
+                        # Close quality distribution
+                        quality_df = pd.DataFrame([
+                            {"Quality": k, "Count": v} for k, v in close_quality.items()
+                        ])
+
+                        if not quality_df.empty:
+                            fig = px.pie(
+                                quality_df,
+                                values='Count',
+                                names='Quality',
+                                title="Close Quality Distribution",
+                                color_discrete_sequence=px.colors.qualitative.Set3
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                    with col_quality2:
+                        st.metric(
+                            "Total Missed Profit",
+                            f"{performance['total_missed_profit_pct']:.1f}%",
+                            delta=f"Avg: {performance['avg_missed_per_trade_pct']:.2f}% per trade",
+                            delta_color="inverse",
+                            help="Profit left on the table by closing too early"
+                        )
+
+                        st.info(f"""
+                        **Interpretation:**
+                        - EXCELLENT: Closed near peak (<1% missed)
+                        - GOOD: Price dropped after close
+                        - TOO_EARLY: Left >5% on table
+                        - TOO_LATE: Held too long, gave back profit
+                        """)
+
+                    # Per-Symbol Breakdown
+                    st.markdown("---")
+                    st.subheader("📊 Per-Symbol Performance")
+
+                    per_symbol_data = []
+                    for symbol, stats in performance['per_symbol'].items():
+                        per_symbol_data.append({
+                            "Symbol": symbol,
+                            "Trades": stats['total_trades'],
+                            "Win Rate": f"{stats['win_rate']*100:.1f}%",
+                            "Profit Factor": f"{stats['profit_factor']:.2f}",
+                            "Net Profit": f"${stats['net_profit_usd']:.2f}",
+                            "Avg Win": f"+{stats['avg_win_pct']:.2f}%",
+                            "Avg Loss": f"{stats['avg_loss_pct']:.2f}%"
+                        })
+
+                    if per_symbol_data:
+                        df_symbols = pd.DataFrame(per_symbol_data)
+                        st.dataframe(df_symbols, use_container_width=True)
+
+                    # AI Analysis
+                    st.markdown("---")
+                    st.subheader("🤖 AI-Powered Strategy Recommendations")
+
+                    with st.spinner("🧠 Running AI analysis..."):
+                        try:
+                            ai_result = strategy_controller.analyze_with_ai(days=analysis_days, verbose=False)
+
+                            if ai_result.get('error'):
+                                st.error(f"❌ AI Analysis Error: {ai_result['error']}")
+                            else:
+                                st.success("✅ AI Analysis Complete!")
+
+                                # Display AI Analysis
+                                st.markdown(ai_result['analysis'])
+
+                                # Download Report Button
+                                if 'report_path' in ai_result:
+                                    st.markdown("---")
+                                    st.success(f"📄 Report saved: {ai_result['report_path']}")
+
+                                    try:
+                                        with open(ai_result['report_path'], 'r') as f:
+                                            report_content = f.read()
+
+                                        st.download_button(
+                                            label="📥 Download Full Report",
+                                            data=report_content,
+                                            file_name=f"strategy_analysis_{datetime.now().strftime('%Y%m%d')}.md",
+                                            mime="text/markdown"
+                                        )
+                                    except:
+                                        pass
+
+                        except Exception as e:
+                            st.error(f"❌ Error running AI analysis: {e}")
+                            st.exception(e)
+
+                    # Reset button
+                    if st.button("🔄 Run New Analysis"):
+                        st.session_state['run_analysis'] = False
+                        st.rerun()
+
+        else:
+            st.info("👆 Select analysis period and click 'Run AI Analysis' to start")
+
+            st.markdown("""
+            ### 📋 What This Analysis Provides:
+
+            1. **Performance Metrics**: Win rate, profit factor, average trade duration
+            2. **Per-Symbol Breakdown**: Performance for each crypto (BTC/ETH/SOL)
+            3. **AI Recommendations**: Concrete suggestions to improve profitability
+            4. **Parameter Optimization**: Suggested changes to .env configuration
+
+            ### 🆕 Advanced Features:
+
+            - **Per-symbol inactivity analysis**: Identifies when bot was inactive on specific symbols
+            - **Portfolio opportunity cost**: Finds suboptimal position choices
+            - **Threshold optimization**: Calculates optimal SCORE_THRESHOLD_OPEN per symbol
+
+            ### ℹ️ Note:
+
+            - Analysis uses **database-only mode** to avoid Hyperliquid API rate limits
+            - Hindsight analysis (close quality) is disabled in this mode
+            - All performance metrics are calculated from your local trading database
+
+            See [README_ANALYTICS.md](/README_ANALYTICS.md) for full documentation.
+            """)
+
+    except ImportError as e:
+        st.error(f"❌ Analytics modules not found: {e}")
+        st.info("Make sure analytics.py and strategy_controller.py are in the same directory as dashboard.py")
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {e}")
+        st.exception(e)
+
+with tab6:
+    st.subheader("🔬 Backtesting e Ottimizzazione Pesi")
+
+    st.markdown("""
+    ### Testa Diverse Configurazioni sui Dati Storici
+
+    Questo modulo ti permette di testare diverse configurazioni di pesi sui dati storici
+    per trovare i parametri ottimali **prima** di applicarli al trading reale.
+    """)
+
+    # Info box con spiegazione parametri
+    with st.expander("ℹ️ Guida ai Parametri - Clicca per espandere", expanded=False):
+        st.markdown("""
+        ### 📊 Parametri di Configurazione
+
+        | Parametro | Descrizione | Consigliato |
+        |-----------|-------------|-------------|
+        | **RSI Overbought Weight** | Peso del segnale quando RSI > 70 (ipercomprato → SHORT) | 12-15 |
+        | **RSI Oversold Weight** | Peso del segnale quando RSI < 30 (ipervenduto → LONG) | 12-15 |
+        | **Score Threshold Open** | Punteggio minimo per aprire. Alto = meno trade ma più selettivi | 5-15 |
+        | **Take Profit %** | % di profitto a cui chiudere automaticamente | 3-6% |
+        | **Stop Loss %** | % di perdita massima accettabile | 8-12% |
+
+        ### 📈 Metriche di Performance
+
+        | Metrica | Significato | Valori Ideali |
+        |---------|-------------|---------------|
+        | **Win Rate** | % di trade chiusi in profitto | > 50% buono, > 60% ottimo |
+        | **Profit Factor** | Profitti totali / Perdite totali | > 1.5 buono, > 2 ottimo |
+        | **Total P&L** | Profitto/perdita totale nel periodo | Positivo! |
+        """)
+
+    try:
+        from backtester import Backtester, WeightsConfig, BacktestResult
+        from weight_optimizer import WeightOptimizer
+
+        # Configuration Section
+        st.markdown("---")
+        st.subheader("⚙️ Configurazione Backtest")
+
+        col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+
+        with col_cfg1:
+            bt_symbols = st.multiselect(
+                "📊 Simboli da Testare",
+                ENABLED_SYMBOLS,
+                default=ENABLED_SYMBOLS,
+                help="Seleziona le crypto da includere"
+            )
+
+        with col_cfg2:
+            bt_days = st.selectbox(
+                "📅 Periodo (Giorni)",
+                [7, 14, 30, 60],
+                index=2,
+                help="Giorni di dati storici. Consigliato: 30 giorni"
+            )
+
+        with col_cfg3:
+            bt_interval = st.selectbox(
+                "⏱️ Intervallo Candele",
+                ["15m", "1h", "4h", "1d"],
+                index=0,  # Default: 15m come il bot
+                help="Intervallo candele. Consigliato: 15m (stesso del bot)"
+            )
+            st.caption("⭐ **15m** = stesso intervallo del bot")
+
+        # Operation Mode
+        st.markdown("---")
+        mode = st.radio(
+            "🔧 Modalità Operativa",
+            ["Confronta Configurazioni", "Ottimizzazione Automatica"],
+            horizontal=True,
+            help="Confronta: manuale | Ottimizzazione: il sistema trova i valori migliori"
+        )
+
+        if mode == "Confronta Configurazioni":
+            st.markdown("### 📋 Configura i Pesi da Confrontare")
+            st.info("💡 **Tip:** Config 1 = valori attuali .env | Config 2 = conservativa | Config 3 = aggressiva")
+
+            # Current config from .env
+            current_config = WeightsConfig.from_env("Attuale (.env)")
+
+            # Allow user to define configs
+            num_configs = st.slider("Numero configurazioni da testare", 2, 6, 3,
+                                   help="Quante configurazioni vuoi confrontare? Consigliato: 3")
+
+            configs = []
+            config_expanders = st.columns(min(num_configs, 3))
+
+            # Valori consigliati
+            REC = {'rsi': 15.0, 'thresh': 10.0, 'tp': 5.0, 'sl': 10.0}
+
+            for i in range(num_configs):
+                col_idx = i % 3
+                with config_expanders[col_idx]:
+                    if i == 0:
+                        with st.expander(f"⚙️ Config 1 - Attuale", expanded=True):
+                            st.caption("🔵 Valori attuali dal tuo .env")
+                            cfg_name = st.text_input("Nome", "Attuale (.env)", key=f"name_{i}")
+                            cfg_rsi_ob = st.number_input(f"Peso RSI Overbought (📌 Cons: {REC['rsi']})", 5.0, 25.0, current_config.weight_rsi_overbought, key=f"rsi_ob_{i}",
+                                                        help="Peso segnale SHORT quando RSI > 70")
+                            cfg_rsi_os = st.number_input(f"Peso RSI Oversold (📌 Cons: {REC['rsi']})", 5.0, 25.0, current_config.weight_rsi_oversold, key=f"rsi_os_{i}",
+                                                        help="Peso segnale LONG quando RSI < 30")
+                            cfg_threshold = st.number_input(f"Soglia Apertura (📌 Cons: {REC['thresh']})", 3.0, 30.0, current_config.score_threshold_open, key=f"thresh_{i}",
+                                                           help="Score minimo per aprire posizione")
+                            cfg_tp = st.number_input(f"Take Profit % (📌 Cons: {REC['tp']}%)", 1.0, 20.0, current_config.take_profit_pct, key=f"tp_{i}")
+                            cfg_sl = st.number_input(f"Stop Loss % (📌 Cons: {REC['sl']}%)", 3.0, 25.0, current_config.stop_loss_pct, key=f"sl_{i}")
+                    elif i == 1:
+                        with st.expander(f"⚙️ Config 2 - Conservativa", expanded=True):
+                            st.caption("🟢 Meno trade, più selettivi, meno rischio")
+                            cfg_name = st.text_input("Nome", "Conservativa", key=f"name_{i}")
+                            cfg_rsi_ob = st.number_input("Peso RSI Overbought", 5.0, 25.0, 18.0, key=f"rsi_ob_{i}")
+                            cfg_rsi_os = st.number_input("Peso RSI Oversold", 5.0, 25.0, 18.0, key=f"rsi_os_{i}")
+                            cfg_threshold = st.number_input("Soglia Apertura", 3.0, 30.0, 18.0, key=f"thresh_{i}")
+                            cfg_tp = st.number_input("Take Profit %", 1.0, 20.0, 4.0, key=f"tp_{i}")
+                            cfg_sl = st.number_input("Stop Loss %", 3.0, 25.0, 8.0, key=f"sl_{i}")
+                    elif i == 2:
+                        with st.expander(f"⚙️ Config 3 - Aggressiva", expanded=True):
+                            st.caption("🔴 Più trade, più rischio, potenziale maggiore")
+                            cfg_name = st.text_input("Nome", "Aggressiva", key=f"name_{i}")
+                            cfg_rsi_ob = st.number_input("Peso RSI Overbought", 5.0, 25.0, 12.0, key=f"rsi_ob_{i}")
+                            cfg_rsi_os = st.number_input("Peso RSI Oversold", 5.0, 25.0, 12.0, key=f"rsi_os_{i}")
+                            cfg_threshold = st.number_input("Soglia Apertura", 3.0, 30.0, 8.0, key=f"thresh_{i}")
+                            cfg_tp = st.number_input("Take Profit %", 1.0, 20.0, 6.0, key=f"tp_{i}")
+                            cfg_sl = st.number_input("Stop Loss %", 3.0, 25.0, 12.0, key=f"sl_{i}")
+                    else:
+                        with st.expander(f"⚙️ Config {i+1} - Personalizzata", expanded=False):
+                            st.caption("✏️ Personalizza i valori")
+                            cfg_name = st.text_input("Nome", f"Custom {i+1}", key=f"name_{i}")
+                            cfg_rsi_ob = st.number_input("Peso RSI Overbought", 5.0, 25.0, 15.0, key=f"rsi_ob_{i}")
+                            cfg_rsi_os = st.number_input("Peso RSI Oversold", 5.0, 25.0, 15.0, key=f"rsi_os_{i}")
+                            cfg_threshold = st.number_input("Soglia Apertura", 3.0, 30.0, 12.0, key=f"thresh_{i}")
+                            cfg_tp = st.number_input("Take Profit %", 1.0, 20.0, 5.0, key=f"tp_{i}")
+                            cfg_sl = st.number_input("Stop Loss %", 3.0, 25.0, 10.0, key=f"sl_{i}")
+
+                    configs.append(WeightsConfig(
+                        name=cfg_name,
+                        weight_rsi_overbought=cfg_rsi_ob,
+                        weight_rsi_oversold=cfg_rsi_os,
+                        score_threshold_open=cfg_threshold,
+                        take_profit_pct=cfg_tp,
+                        stop_loss_pct=cfg_sl
+                    ))
+
+            if st.button("🚀 Avvia Backtest", type="primary", use_container_width=True):
+                with st.spinner(f"⏳ Scaricamento {bt_days} giorni di dati {bt_interval}..."):
+                    bt = Backtester(symbols=bt_symbols, days=bt_days, interval=bt_interval)
+
+                    if bt.download_data(verbose=False):
+                        st.success(f"✅ Scaricati dati per {len(bt.data)} simboli")
+
+                        results = []
+                        progress_bar = st.progress(0)
+
+                        for i, config in enumerate(configs):
+                            with st.spinner(f"Test {config.name}..."):
+                                result = bt.run(config)
+                                results.append(result)
+                            progress_bar.progress((i + 1) / len(configs))
+
+                        progress_bar.empty()
+
+                        # Sort by profit factor
+                        results.sort(key=lambda r: r.profit_factor, reverse=True)
+
+                        # Display Results
+                        st.markdown("---")
+                        st.subheader("📊 Risultati Backtest")
+
+                        # Summary table
+                        summary_data = []
+                        for i, r in enumerate(results):
+                            medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else ""
+                            summary_data.append({
+                                "Pos.": f"{medal} {i+1}",
+                                "Configurazione": r.config.name,
+                                "Trade": r.total_trades,
+                                "Win Rate": f"{r.win_rate*100:.1f}%",
+                                "Profit Factor": f"{r.profit_factor:.2f}",
+                                "P&L Totale": f"{r.total_pnl_pct:+.2f}%",
+                                "Media Win": f"{r.avg_win_pct:+.2f}%",
+                                "Media Loss": f"{r.avg_loss_pct:.2f}%"
+                            })
+
+                        df_results = pd.DataFrame(summary_data)
+                        st.dataframe(df_results, use_container_width=True)
+
+                        # Best config details
+                        best = results[0]
+                        st.markdown("---")
+                        st.subheader(f"🏆 Migliore: {best.config.name}")
+
+                        col_best1, col_best2, col_best3, col_best4 = st.columns(4)
+
+                        with col_best1:
+                            st.metric("Profit Factor", f"{best.profit_factor:.2f}", help=">1.5 buono, >2 ottimo")
+                            st.metric("Win Rate", f"{best.win_rate*100:.1f}%")
+
+                        with col_best2:
+                            st.metric("Trade Totali", best.total_trades)
+                            st.metric("P&L Totale", f"{best.total_pnl_pct:+.2f}%")
+
+                        with col_best3:
+                            st.metric("Media Vincita", f"{best.avg_win_pct:+.2f}%")
+                            st.metric("Max Vincita", f"{best.max_win_pct:+.2f}%")
+
+                        with col_best4:
+                            st.metric("Media Perdita", f"{best.avg_loss_pct:.2f}%")
+                            st.metric("Max Perdita", f"{best.max_loss_pct:.2f}%")
+
+                        # Exit reasons chart
+                        if best.exit_reasons:
+                            st.markdown("#### 📊 Come sono stati chiusi i trade")
+                            exit_labels = {
+                                'take_profit': 'Take Profit ✅',
+                                'stop_loss': 'Stop Loss ❌',
+                                'trailing_stop': 'Trailing Stop 🔄',
+                                'signal_reversal': 'Inversione Segnale ↩️',
+                                'end_of_data': 'Fine Dati 📊'
+                            }
+                            exit_df = pd.DataFrame([
+                                {"Motivo": exit_labels.get(k, k), "Numero": v} for k, v in best.exit_reasons.items()
+                            ])
+                            fig = px.pie(exit_df, values='Numero', names='Motivo',
+                                        title="Distribuzione chiusure")
+                            st.plotly_chart(fig, use_container_width=True)
+
+                        # Suggested .env values
+                        st.markdown("---")
+                        st.subheader("📝 Valori Suggeriti per .env")
+                        st.info("💡 Copia questi valori nel tuo file .env per applicare questa configurazione")
+
+                        env_code = f"""# Configurazione migliore: {best.config.name}
+# Testata su {bt_days} giorni, candele {bt_interval}
+# Performance: PF={best.profit_factor:.2f}, WR={best.win_rate*100:.1f}%
+
+WEIGHT_RSI_OVERBOUGHT={best.config.weight_rsi_overbought}
+WEIGHT_RSI_OVERSOLD={best.config.weight_rsi_oversold}
+SCORE_THRESHOLD_OPEN={best.config.score_threshold_open}
+TAKE_PROFIT_PERCENT={best.config.take_profit_pct}
+INITIAL_STOP_LOSS_PERCENT={best.config.stop_loss_pct}
+TRAILING_STOP_PERCENT={best.config.trailing_stop_pct}"""
+                        st.code(env_code, language="bash")
+
+                        # Download report
+                        report = bt.generate_report(results)
+                        st.download_button(
+                            label="📥 Scarica Report Completo",
+                            data=report,
+                            file_name=f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                            mime="text/markdown"
+                        )
+
+                    else:
+                        st.error("❌ Errore download dati storici. Controlla la connessione internet.")
+
+        else:  # Auto-Optimize
+            st.markdown("### 🧬 Ottimizzazione Automatica dei Pesi")
+
+            st.info("""
+            🤖 **Il sistema testerà automaticamente molte combinazioni di pesi** e troverà i parametri ottimali.
+            Può richiedere alcuni minuti a seconda del numero di iterazioni.
+            """)
+
+            col_opt1, col_opt2 = st.columns(2)
+
+            with col_opt1:
+                opt_method = st.selectbox(
+                    "Metodo di Ottimizzazione",
+                    ["random", "grid", "genetic"],
+                    format_func=lambda x: {
+                        "random": "🎲 Ricerca Casuale (Veloce, Buono)",
+                        "grid": "📊 Ricerca Griglia (Completa, Lenta)",
+                        "genetic": "🧬 Algoritmo Genetico (Migliore, Media)"
+                    }[x],
+                    help="Random consigliato per iniziare"
+                )
+
+            with col_opt2:
+                if opt_method == "random":
+                    iterations = st.slider("Iterazioni", 20, 200, 50, help="Più iterazioni = migliori risultati")
+                elif opt_method == "grid":
+                    st.caption("📌 Iterazioni determinate dai range parametri")
+                    iterations = None
+                else:
+                    pop_size = st.slider("Dimensione Popolazione", 20, 100, 30)
+                    generations = st.slider("Generazioni", 5, 30, 10)
+
+            if st.button("🚀 Avvia Ottimizzazione", type="primary", use_container_width=True):
+                with st.spinner(f"⏳ Scaricamento {bt_days} giorni di dati {bt_interval}..."):
+                    bt = Backtester(symbols=bt_symbols, days=bt_days, interval=bt_interval)
+
+                    if bt.download_data(verbose=False):
+                        st.success(f"✅ Scaricati dati per {len(bt.data)} simboli")
+
+                        optimizer = WeightOptimizer(bt)
+
+                        method_names = {"random": "ricerca casuale", "grid": "ricerca griglia", "genetic": "algoritmo genetico"}
+                        with st.spinner(f"🔄 Ottimizzazione con {method_names[opt_method]}..."):
+                            if opt_method == "random":
+                                opt_result = optimizer.random_search(n_iterations=iterations, verbose=False)
+                            elif opt_method == "grid":
+                                opt_result = optimizer.grid_search(verbose=False)
+                            else:
+                                opt_result = optimizer.genetic_algorithm(
+                                    population_size=pop_size,
+                                    generations=generations,
+                                    verbose=False
+                                )
+
+                        # Display Results
+                        st.markdown("---")
+                        st.subheader("🏆 Risultati Ottimizzazione")
+
+                        st.success(f"""
+                        ✅ **Ottimizzazione completata!**
+                        - Metodo: {method_names[opt_method]}
+                        - Iterazioni testate: {opt_result.iterations}
+                        - Durata: {opt_result.duration_seconds:.1f} secondi
+                        """)
+
+                        best = opt_result.best_result
+                        cfg = opt_result.best_config
+
+                        col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+
+                        with col_res1:
+                            st.metric("Profit Factor", f"{best.profit_factor:.2f}")
+                        with col_res2:
+                            st.metric("Win Rate", f"{best.win_rate*100:.1f}%")
+                        with col_res3:
+                            st.metric("Total P&L", f"{best.total_pnl_pct:+.2f}%")
+                        with col_res4:
+                            st.metric("Total Trades", best.total_trades)
+
+                        # Best weights
+                        st.markdown("---")
+                        st.subheader("📝 Pesi Ottimizzati")
+
+                        col_w1, col_w2 = st.columns(2)
+
+                        with col_w1:
+                            st.markdown("**🔴 Pesi Bearish (segnali SHORT):**")
+                            st.write(f"- RSI Overbought: **{cfg.weight_rsi_overbought}**")
+                            st.write(f"- Fear & Greed Paura: {cfg.weight_fear_greed_fear}")
+                            st.write(f"- Trend Ribassista: {cfg.weight_trend_bearish}")
+                            st.write(f"- Forecast Negativo: {cfg.weight_forecast_negative}")
+
+                        with col_w2:
+                            st.markdown("**🟢 Pesi Bullish (segnali LONG):**")
+                            st.write(f"- RSI Oversold: **{cfg.weight_rsi_oversold}**")
+                            st.write(f"- Fear & Greed Avidità: {cfg.weight_fear_greed_greed}")
+                            st.write(f"- Trend Rialzista: {cfg.weight_trend_bullish}")
+                            st.write(f"- Forecast Positivo: {cfg.weight_forecast_positive}")
+
+                        st.markdown("**⚙️ Soglie e Trading:**")
+                        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+                        with col_t1:
+                            st.metric("Soglia Apertura", cfg.score_threshold_open)
+                        with col_t2:
+                            st.metric("Take Profit", f"{cfg.take_profit_pct}%")
+                        with col_t3:
+                            st.metric("Stop Loss", f"{cfg.stop_loss_pct}%")
+                        with col_t4:
+                            st.metric("Trailing Stop", f"{cfg.trailing_stop_pct}%")
+
+                        # .env format
+                        st.markdown("---")
+                        st.subheader("📋 Copia nel .env")
+                        st.info("💡 Copia questi valori nel tuo file .env per applicare i pesi ottimizzati")
+
+                        env_code = f"""# Ottimizzato con {method_names[opt_method]} il {datetime.now().strftime('%Y-%m-%d')}
+# Performance: PF={best.profit_factor:.2f}, WR={best.win_rate*100:.1f}%, P&L={best.total_pnl_pct:+.2f}%
+
+# Pesi BEARISH (segnali SHORT)
+WEIGHT_FEAR_GREED_FEAR={cfg.weight_fear_greed_fear}
+WEIGHT_RSI_OVERBOUGHT={cfg.weight_rsi_overbought}
+WEIGHT_TREND_BEARISH={cfg.weight_trend_bearish}
+WEIGHT_FORECAST_NEGATIVE={cfg.weight_forecast_negative}
+WEIGHT_MACD_NEGATIVE={cfg.weight_macd_negative}
+
+# Pesi BULLISH (segnali LONG)
+WEIGHT_FEAR_GREED_GREED={cfg.weight_fear_greed_greed}
+WEIGHT_RSI_OVERSOLD={cfg.weight_rsi_oversold}
+WEIGHT_TREND_BULLISH={cfg.weight_trend_bullish}
+WEIGHT_FORECAST_POSITIVE={cfg.weight_forecast_positive}
+WEIGHT_MACD_POSITIVE={cfg.weight_macd_positive}
+
+# Soglie decisionali
+SCORE_THRESHOLD_OPEN={cfg.score_threshold_open}
+SCORE_THRESHOLD_STRONG={cfg.score_threshold_strong}
+
+# Parametri trading
+TAKE_PROFIT_PERCENT={cfg.take_profit_pct}
+INITIAL_STOP_LOSS_PERCENT={cfg.stop_loss_pct}
+TRAILING_STOP_PERCENT={cfg.trailing_stop_pct}
+TRAILING_STOP_ACTIVATION_PERCENT={cfg.trailing_activation_pct}"""
+                        st.code(env_code, language="bash")
+
+                        # Download report
+                        report = optimizer.generate_report(opt_result)
+                        st.download_button(
+                            label="📥 Scarica Report Ottimizzazione",
+                            data=report,
+                            file_name=f"optimization_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                            mime="text/markdown"
+                        )
+
+                    else:
+                        st.error("❌ Errore download dati storici. Controlla la connessione internet.")
+
+    except ImportError as e:
+        st.error(f"❌ Moduli backtesting non trovati: {e}")
+        st.info("""
+        Assicurati che questi file esistano:
+        - backtester.py
+        - weight_optimizer.py
+
+        E che yfinance sia installato: `pip install yfinance`
+        """)
+    except Exception as e:
+        st.error(f"❌ Errore inaspettato: {e}")
+        st.exception(e)
+
+with tab7:
+    st.subheader("⚙️ Bot Configuration")
+
+    # Mostra env vars (senza valori sensibili)
+    st.markdown("### Environment Variables Status")
+
+    env_vars = {
+        "AI_PROVIDER": os.getenv("AI_PROVIDER", "Not Set"),
+        "OPENROUTER_MODEL": os.getenv("OPENROUTER_MODEL", "Not Set"),
+        "TESTNET": os.getenv("TESTNET", "Not Set"),
+        "DATABASE_URL": "✅ Configured" if os.getenv("DATABASE_URL") else "❌ Not Set",
+        "OPENAI_API_KEY": "✅ Configured" if os.getenv("OPENAI_API_KEY") else "❌ Not Set",
+        "OPENROUTER_API_KEY": "✅ Configured" if os.getenv("OPENROUTER_API_KEY") else "❌ Not Set",
+        "CMC_PRO_API_KEY": "✅ Configured" if os.getenv("CMC_PRO_API_KEY") else "❌ Not Set",
+        "PRIVATE_KEY": "✅ Configured" if os.getenv("PRIVATE_KEY") else "❌ Not Set",
+        "WALLET_ADDRESS": os.getenv("WALLET_ADDRESS", "Not Set") if os.getenv("WALLET_ADDRESS") else "❌ Not Set",
+    }
+
+    df_env = pd.DataFrame(list(env_vars.items()), columns=["Variable", "Value"])
+    st.dataframe(df_env, use_container_width=True)
+
+    st.markdown("### Database Tables")
+    try:
+        tables = query_db("""
+            SELECT
+                table_name,
+                (SELECT COUNT(*)
+                 FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                 AND table_name = t.table_name) as num_columns
+            FROM information_schema.tables t
+            WHERE table_schema = 'public'
+            ORDER BY table_name
+        """)
+
+        if not tables.empty:
+            st.dataframe(tables, use_container_width=True)
+
+            # Conta righe per ogni tabella
+            st.markdown("### Table Row Counts")
+            row_counts = []
+            for table in tables['table_name']:
+                try:
+                    count_df = query_db(f"SELECT COUNT(*) as count FROM {table}")
+                    if not count_df.empty:
+                        row_counts.append({
+                            'Table': table,
+                            'Rows': int(count_df['count'].iloc[0])
+                        })
+                except:
+                    pass
+
+            if row_counts:
+                df_counts = pd.DataFrame(row_counts)
+                st.dataframe(df_counts, use_container_width=True)
+
+        else:
+            st.warning("Nessuna tabella trovata")
+    except Exception as e:
+        st.error(f"Errore: {e}")
+
+# =====================
+# TAB 8: Trade Journal
+# =====================
+with tab8:
+    st.subheader("📒 Trade Journal")
+    st.markdown("Storico completo di tutti i trades con dettagli eventi")
+
+    # Filtri
+    col_filter1, col_filter2, col_filter3, col_filter4 = st.columns(4)
+    with col_filter1:
+        journal_period = st.selectbox(
+            "📅 Periodo",
+            ["7 Days", "30 Days", "90 Days", "All Time"],
+            key="journal_period"
+        )
+    with col_filter2:
+        journal_symbol = st.selectbox(
+            "💱 Symbol",
+            ["All"] + ENABLED_SYMBOLS,
+            key="journal_symbol"
+        )
+    with col_filter3:
+        journal_mode = st.selectbox(
+            "📊 Mode",
+            ["All", "MICRO_GAIN", "NORMAL"],
+            key="journal_mode"
+        )
+    with col_filter4:
+        journal_result = st.selectbox(
+            "📈 Result",
+            ["All", "Profitable", "Loss"],
+            key="journal_result"
+        )
+
+    # Query trades
+    try:
+        period_days = {"7 Days": 7, "30 Days": 30, "90 Days": 90, "All Time": 9999}.get(journal_period, 30)
+
+        # Build query
+        where_clauses = ["status = 'CLOSED'", f"closed_at >= NOW() - INTERVAL '{period_days} days'"]
+        if journal_symbol != "All":
+            where_clauses.append(f"symbol = '{journal_symbol}'")
+        if journal_mode != "All":
+            where_clauses.append(f"trading_mode = '{journal_mode}'")
+        if journal_result == "Profitable":
+            where_clauses.append("profitable = true")
+        elif journal_result == "Loss":
+            where_clauses.append("profitable = false")
+
+        where_sql = " AND ".join(where_clauses)
+
+        trades_df = query_db(f"""
+            SELECT
+                trade_uuid,
+                symbol,
+                direction,
+                trading_mode,
+                opened_at,
+                closed_at,
+                duration_seconds,
+                entry_price,
+                exit_price,
+                leverage,
+                ROUND(pnl_percent::numeric, 2) as pnl_pct,
+                ROUND(pnl_usd::numeric, 2) as pnl_gross,
+                ROUND(fee_total::numeric, 2) as fees,
+                ROUND(net_pnl_usd::numeric, 2) as net_pnl,
+                close_reason,
+                profitable
+            FROM trades
+            WHERE {where_sql}
+            ORDER BY closed_at DESC
+            LIMIT 100
+        """)
+
+        if not trades_df.empty:
+            # Summary metrics
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            total_trades = len(trades_df)
+            profitable_trades = trades_df['profitable'].sum()
+            win_rate = (profitable_trades / total_trades * 100) if total_trades > 0 else 0
+            total_net_pnl = trades_df['net_pnl'].sum()
+
+            col_m1.metric("Total Trades", total_trades)
+            col_m2.metric("Win Rate", f"{win_rate:.1f}%")
+            col_m3.metric("Net P&L", f"${total_net_pnl:.2f}",
+                         delta_color="normal" if total_net_pnl >= 0 else "inverse")
+            col_m4.metric("Total Fees", f"${trades_df['fees'].sum():.2f}")
+
+            st.markdown("---")
+
+            # Trades table
+            st.dataframe(
+                trades_df[[
+                    'symbol', 'direction', 'trading_mode', 'opened_at', 'closed_at',
+                    'entry_price', 'exit_price', 'pnl_pct', 'pnl_gross', 'fees', 'net_pnl', 'close_reason'
+                ]],
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # ========================================
+            # GRAFICI ANALITICI DETTAGLIATI
+            # ========================================
+            st.markdown("---")
+            st.markdown("### 📊 Analisi Grafica Trades")
+
+            # ROW 1: Close Reason Analysis + Symbol Performance
+            col_graph1, col_graph2 = st.columns(2)
+
+            with col_graph1:
+                st.markdown("#### 🎯 Distribuzione Close Reason")
+                # Query per close reason
+                close_reason_df = query_db(f"""
+                    SELECT
+                        close_reason,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) as percentage,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as total_pnl,
+                        ROUND(AVG(net_pnl_usd)::numeric, 2) as avg_pnl
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND close_reason IS NOT NULL
+                    GROUP BY close_reason
+                    ORDER BY trades DESC
+                """)
+
+                if not close_reason_df.empty:
+                    # Pie chart
+                    fig_close = px.pie(
+                        close_reason_df,
+                        values='trades',
+                        names='close_reason',
+                        title='Come si chiudono i trade?',
+                        color='close_reason',
+                        color_discrete_map={
+                            'TP_HIT': '#4CAF50',
+                            'SL_HIT': '#f44336',
+                            'TRAILING_SL': '#FF9800',
+                            'REVERSAL': '#9C27B0',
+                            'AI_DECISION': '#2196F3',
+                            'MANUAL': '#607D8B'
+                        },
+                        hole=0.4
+                    )
+                    fig_close.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig_close, use_container_width=True)
+
+                    # Summary box
+                    for _, row_cr in close_reason_df.iterrows():
+                        color = 'green' if row_cr['avg_pnl'] >= 0 else 'red'
+                        st.markdown(f"**{row_cr['close_reason']}**: {row_cr['trades']} trades | P&L: <span style='color:{color}'>${row_cr['total_pnl']:.2f}</span>", unsafe_allow_html=True)
+                else:
+                    st.info("Nessun dato close_reason disponibile")
+
+            with col_graph2:
+                st.markdown("#### 💱 Performance per Symbol")
+                # Query per symbol dettagliata
+                symbol_perf_df = query_db(f"""
+                    SELECT
+                        symbol,
+                        COUNT(*) as total_trades,
+                        COUNT(*) FILTER (WHERE profitable = true) as wins,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') as sl_hits,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') / NULLIF(COUNT(*), 0), 1) as sl_hit_rate,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY symbol
+                    ORDER BY net_pnl DESC
+                """)
+
+                if not symbol_perf_df.empty:
+                    # Bar chart con P&L e win rate
+                    fig_symbol = go.Figure()
+
+                    # P&L bars
+                    colors = ['#4CAF50' if x >= 0 else '#f44336' for x in symbol_perf_df['net_pnl']]
+                    fig_symbol.add_trace(go.Bar(
+                        x=symbol_perf_df['symbol'],
+                        y=symbol_perf_df['net_pnl'],
+                        name='Net P&L ($)',
+                        marker_color=colors,
+                        text=[f"${x:.2f}" for x in symbol_perf_df['net_pnl']],
+                        textposition='outside'
+                    ))
+
+                    fig_symbol.update_layout(
+                        title='P&L Netto per Symbol',
+                        xaxis_title='Symbol',
+                        yaxis_title='Net P&L ($)',
+                        height=350
+                    )
+                    st.plotly_chart(fig_symbol, use_container_width=True)
+
+                    # Tabella dettagliata
+                    st.dataframe(
+                        symbol_perf_df[['symbol', 'total_trades', 'win_rate', 'sl_hit_rate', 'net_pnl', 'avg_duration_min']],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("Nessun dato per symbol disponibile")
+
+            # ROW 2: SL Analysis per Symbol + Duration Distribution
+            col_graph3, col_graph4 = st.columns(2)
+
+            with col_graph3:
+                st.markdown("#### 🛡️ Analisi Stop Loss per Symbol")
+                sl_analysis_df = query_db(f"""
+                    SELECT
+                        symbol,
+                        close_reason,
+                        COUNT(*) as trades,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min,
+                        ROUND(AVG(ABS(pnl_percent))::numeric, 2) as avg_pnl_pct
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND close_reason IN ('SL_HIT', 'TP_HIT', 'REVERSAL')
+                    GROUP BY symbol, close_reason
+                    ORDER BY symbol, close_reason
+                """)
+
+                if not sl_analysis_df.empty:
+                    # Grouped bar chart
+                    fig_sl = px.bar(
+                        sl_analysis_df,
+                        x='symbol',
+                        y='trades',
+                        color='close_reason',
+                        barmode='group',
+                        title='Distribuzione Close Reason per Symbol',
+                        color_discrete_map={
+                            'TP_HIT': '#4CAF50',
+                            'SL_HIT': '#f44336',
+                            'REVERSAL': '#9C27B0'
+                        }
+                    )
+                    st.plotly_chart(fig_sl, use_container_width=True)
+
+                    # Alert per symbol problematici
+                    for _, row_sl in symbol_perf_df.iterrows() if not symbol_perf_df.empty else []:
+                        if row_sl['sl_hit_rate'] and float(row_sl['sl_hit_rate']) > 55:
+                            st.warning(f"⚠️ **{row_sl['symbol']}**: SL Hit Rate {row_sl['sl_hit_rate']:.0f}% - considera SL più largo")
+                else:
+                    st.info("Dati SL non disponibili")
+
+            with col_graph4:
+                st.markdown("#### ⏱️ Distribuzione Durata Trade")
+                duration_df = query_db(f"""
+                    SELECT
+                        duration_seconds / 60.0 as duration_min,
+                        profitable,
+                        close_reason
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND duration_seconds IS NOT NULL
+                """)
+
+                if not duration_df.empty:
+                    # Histogram
+                    fig_duration = px.histogram(
+                        duration_df,
+                        x='duration_min',
+                        color='profitable',
+                        nbins=20,
+                        title='Distribuzione Durata (minuti)',
+                        color_discrete_map={True: '#4CAF50', False: '#f44336'},
+                        labels={'duration_min': 'Durata (min)', 'profitable': 'Profittevole'}
+                    )
+                    fig_duration.update_layout(
+                        xaxis_title='Durata (minuti)',
+                        yaxis_title='Numero Trade'
+                    )
+                    st.plotly_chart(fig_duration, use_container_width=True)
+
+                    # Stats
+                    avg_dur = duration_df['duration_min'].mean()
+                    avg_dur_win = duration_df[duration_df['profitable'] == True]['duration_min'].mean() if len(duration_df[duration_df['profitable'] == True]) > 0 else 0
+                    avg_dur_loss = duration_df[duration_df['profitable'] == False]['duration_min'].mean() if len(duration_df[duration_df['profitable'] == False]) > 0 else 0
+                    st.caption(f"Media: {avg_dur:.1f}min | Win: {avg_dur_win:.1f}min | Loss: {avg_dur_loss:.1f}min")
+                else:
+                    st.info("Dati durata non disponibili")
+
+            # ROW 3: Score Analysis + Mode Comparison
+            col_graph5, col_graph6 = st.columns(2)
+
+            with col_graph5:
+                st.markdown("#### 🎯 Analisi Score vs Risultato")
+                score_analysis_df = query_db(f"""
+                    SELECT
+                        CASE
+                            WHEN ABS(open_score) < 15 THEN '<15'
+                            WHEN ABS(open_score) BETWEEN 15 AND 17.99 THEN '15-18'
+                            WHEN ABS(open_score) BETWEEN 18 AND 21.99 THEN '18-22'
+                            WHEN ABS(open_score) BETWEEN 22 AND 25 THEN '22-25'
+                            ELSE '25+'
+                        END as score_range,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        ROUND(AVG(net_pnl_usd)::numeric, 3) as avg_pnl
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND open_score IS NOT NULL
+                    GROUP BY score_range
+                    ORDER BY score_range
+                """)
+
+                if not score_analysis_df.empty and len(score_analysis_df) > 0:
+                    # Bar chart win rate per score range
+                    fig_score = go.Figure()
+                    fig_score.add_trace(go.Bar(
+                        x=score_analysis_df['score_range'],
+                        y=score_analysis_df['win_rate'],
+                        name='Win Rate %',
+                        marker_color='#2196F3',
+                        text=[f"{x:.0f}%" for x in score_analysis_df['win_rate']],
+                        textposition='outside'
+                    ))
+                    fig_score.add_hline(y=50, line_dash="dash", line_color="gray", annotation_text="50%")
+                    fig_score.update_layout(
+                        title='Win Rate per Score Range',
+                        xaxis_title='Score Range',
+                        yaxis_title='Win Rate %',
+                        yaxis_range=[0, 100]
+                    )
+                    st.plotly_chart(fig_score, use_container_width=True)
+
+                    # Suggerimento
+                    low_score_wr = score_analysis_df[score_analysis_df['score_range'] == '15-18']['win_rate'].values
+                    if len(low_score_wr) > 0 and low_score_wr[0] < 45:
+                        st.warning(f"⚠️ Score 15-18 ha win rate {low_score_wr[0]:.0f}% - aumenta SCORE_THRESHOLD_OPEN a 20")
+                else:
+                    st.info("Dati score non disponibili - assicurati che open_score sia registrato")
+
+            with col_graph6:
+                st.markdown("#### 📊 Confronto Trading Mode")
+                mode_comparison_df = query_db(f"""
+                    SELECT
+                        trading_mode,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') / NULLIF(COUNT(*), 0), 1) as sl_hit_rate,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min,
+                        ROUND(SUM(fee_total)::numeric, 2) as total_fees
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY trading_mode
+                """)
+
+                if not mode_comparison_df.empty:
+                    # Comparison chart
+                    fig_mode = go.Figure()
+
+                    for metric, color in [('win_rate', '#4CAF50'), ('sl_hit_rate', '#f44336')]:
+                        fig_mode.add_trace(go.Bar(
+                            x=mode_comparison_df['trading_mode'],
+                            y=mode_comparison_df[metric],
+                            name=metric.replace('_', ' ').title(),
+                            marker_color=color,
+                            text=[f"{x:.0f}%" for x in mode_comparison_df[metric]],
+                            textposition='outside'
+                        ))
+
+                    fig_mode.update_layout(
+                        title='Win Rate vs SL Hit Rate per Mode',
+                        xaxis_title='Trading Mode',
+                        yaxis_title='Percentuale',
+                        barmode='group',
+                        yaxis_range=[0, 100]
+                    )
+                    st.plotly_chart(fig_mode, use_container_width=True)
+
+                    # Summary table
+                    st.dataframe(mode_comparison_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Dati trading mode non disponibili")
+
+            # ========================================
+            # ROW 4: P&L Cumulativo per Mode + Fees Impact
+            # ========================================
+            st.markdown("---")
+            st.markdown("### 📈 Analisi Avanzata Performance")
+
+            col_graph7, col_graph8 = st.columns(2)
+
+            with col_graph7:
+                st.markdown("#### 💰 P&L Cumulativo per Trading Mode")
+                pnl_by_mode_df = query_db(f"""
+                    SELECT
+                        DATE(closed_at) as date,
+                        trading_mode,
+                        SUM(net_pnl_usd) as daily_pnl
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND trading_mode IS NOT NULL
+                    GROUP BY DATE(closed_at), trading_mode
+                    ORDER BY date, trading_mode
+                """)
+
+                if not pnl_by_mode_df.empty:
+                    # Calculate cumulative P&L per mode
+                    pnl_by_mode_df['cumulative_pnl'] = pnl_by_mode_df.groupby('trading_mode')['daily_pnl'].cumsum()
+
+                    fig_pnl_mode = px.line(
+                        pnl_by_mode_df,
+                        x='date',
+                        y='cumulative_pnl',
+                        color='trading_mode',
+                        title='P&L Cumulativo per Mode',
+                        labels={'cumulative_pnl': 'P&L ($)', 'date': 'Data', 'trading_mode': 'Mode'},
+                        color_discrete_map={
+                            'MICRO_PAY': '#2196F3',
+                            'MICRO_GAIN': '#FF9800',
+                            'NORMAL': '#4CAF50'
+                        }
+                    )
+                    fig_pnl_mode.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_pnl_mode.update_layout(height=350)
+                    st.plotly_chart(fig_pnl_mode, use_container_width=True)
+                else:
+                    st.info("Dati P&L per mode non disponibili")
+
+            with col_graph8:
+                st.markdown("#### 💸 Impatto Fees sul P&L")
+                fees_impact_df = query_db(f"""
+                    SELECT
+                        trading_mode,
+                        ROUND(SUM(pnl_usd)::numeric, 2) as gross_pnl,
+                        ROUND(SUM(fee_total)::numeric, 2) as total_fees,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(100.0 * SUM(fee_total) / NULLIF(ABS(SUM(pnl_usd)), 0), 1) as fees_pct,
+                        COUNT(*) FILTER (WHERE pnl_usd > 0 AND net_pnl_usd <= 0) as eaten_by_fees
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY trading_mode
+                """)
+
+                if not fees_impact_df.empty:
+                    # Stacked bar chart: Gross P&L vs Fees
+                    fig_fees = go.Figure()
+
+                    fig_fees.add_trace(go.Bar(
+                        x=fees_impact_df['trading_mode'],
+                        y=fees_impact_df['net_pnl'],
+                        name='Net P&L',
+                        marker_color=['#4CAF50' if x >= 0 else '#f44336' for x in fees_impact_df['net_pnl']]
+                    ))
+
+                    fig_fees.add_trace(go.Bar(
+                        x=fees_impact_df['trading_mode'],
+                        y=fees_impact_df['total_fees'],
+                        name='Fees (perdite)',
+                        marker_color='#FF9800'
+                    ))
+
+                    fig_fees.update_layout(
+                        title='Net P&L vs Fees per Mode',
+                        xaxis_title='Trading Mode',
+                        yaxis_title='USD ($)',
+                        barmode='group',
+                        height=350
+                    )
+                    st.plotly_chart(fig_fees, use_container_width=True)
+
+                    # Alert se fees troppo alte
+                    for _, row_fee in fees_impact_df.iterrows():
+                        if row_fee['fees_pct'] and float(row_fee['fees_pct']) > 50:
+                            st.error(f"🚨 **{row_fee['trading_mode']}**: Fees mangiano {row_fee['fees_pct']:.0f}% del P&L lordo!")
+                        if row_fee['eaten_by_fees'] and int(row_fee['eaten_by_fees']) > 0:
+                            st.warning(f"⚠️ **{row_fee['trading_mode']}**: {int(row_fee['eaten_by_fees'])} trade profittevoli azzerati dalle fees")
+                else:
+                    st.info("Dati fees non disponibili")
+
+            # ========================================
+            # ROW 5: Score Correlation + Symbol Comparison
+            # ========================================
+            col_graph9, col_graph10 = st.columns(2)
+
+            with col_graph9:
+                st.markdown("#### 🎯 Correlazione Score vs P&L")
+                score_scatter_df = query_db(f"""
+                    SELECT
+                        ABS(open_score) as score,
+                        net_pnl_usd as pnl,
+                        profitable,
+                        symbol,
+                        trading_mode
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                      AND open_score IS NOT NULL
+                """)
+
+                if not score_scatter_df.empty and len(score_scatter_df) > 2:
+                    fig_scatter = px.scatter(
+                        score_scatter_df,
+                        x='score',
+                        y='pnl',
+                        color='profitable',
+                        symbol='trading_mode',
+                        title='Score di Apertura vs P&L Risultante',
+                        labels={'score': 'Score (valore assoluto)', 'pnl': 'P&L ($)', 'profitable': 'Profittevole'},
+                        color_discrete_map={True: '#4CAF50', False: '#f44336'},
+                        hover_data=['symbol', 'trading_mode']
+                    )
+                    fig_scatter.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_scatter.add_vline(x=15, line_dash="dot", line_color="orange",
+                                         annotation_text="Soglia attuale (15)")
+                    fig_scatter.add_vline(x=20, line_dash="dot", line_color="green",
+                                         annotation_text="Soglia suggerita (20)")
+                    fig_scatter.update_layout(height=400)
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+
+                    # Calcola correlazione
+                    try:
+                        correlation = score_scatter_df['score'].corr(score_scatter_df['pnl'])
+                        if correlation > 0.3:
+                            st.success(f"📈 Correlazione Score/P&L: **{correlation:.2f}** - Score più alto = risultati migliori!")
+                        elif correlation < -0.1:
+                            st.error(f"📉 Correlazione Score/P&L: **{correlation:.2f}** - Score non predice bene i risultati")
+                        else:
+                            st.info(f"📊 Correlazione Score/P&L: **{correlation:.2f}** - Debole correlazione")
+                    except:
+                        pass
+                else:
+                    st.info("Dati score insufficienti - assicurati che open_score sia registrato")
+
+            with col_graph10:
+                st.markdown("#### 🏆 BTC vs ETH vs SOL - Confronto Diretto")
+                symbol_compare_df = query_db(f"""
+                    SELECT
+                        symbol,
+                        COUNT(*) as trades,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') / NULLIF(COUNT(*), 0), 1) as sl_rate,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'TP_HIT') / NULLIF(COUNT(*), 0), 1) as tp_rate,
+                        ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                        ROUND(AVG(net_pnl_usd)::numeric, 3) as avg_pnl,
+                        ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration
+                    FROM trades
+                    WHERE status = 'CLOSED'
+                      AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                    GROUP BY symbol
+                    ORDER BY net_pnl DESC
+                """)
+
+                if not symbol_compare_df.empty:
+                    # Radar chart per confronto multi-dimensionale
+                    fig_radar = go.Figure()
+
+                    categories = ['Win Rate', 'TP Rate', '100-SL Rate', 'Avg P&L (norm)']
+
+                    for _, sym_row in symbol_compare_df.iterrows():
+                        # Normalizza avg_pnl per visualizzazione (scala 0-100)
+                        max_pnl = symbol_compare_df['avg_pnl'].abs().max()
+                        norm_pnl = 50 + (float(sym_row['avg_pnl']) / max_pnl * 50) if max_pnl > 0 else 50
+
+                        values = [
+                            float(sym_row['win_rate']) if sym_row['win_rate'] else 0,
+                            float(sym_row['tp_rate']) if sym_row['tp_rate'] else 0,
+                            100 - (float(sym_row['sl_rate']) if sym_row['sl_rate'] else 0),  # Inverti SL (meno = meglio)
+                            norm_pnl
+                        ]
+
+                        fig_radar.add_trace(go.Scatterpolar(
+                            r=values + [values[0]],  # Chiudi il poligono
+                            theta=categories + [categories[0]],
+                            name=sym_row['symbol'],
+                            fill='toself',
+                            opacity=0.6
+                        ))
+
+                    fig_radar.update_layout(
+                        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                        title='Confronto Multi-Dimensionale per Symbol',
+                        height=400
+                    )
+                    st.plotly_chart(fig_radar, use_container_width=True)
+
+                    # Tabella riassuntiva con colori
+                    st.dataframe(
+                        symbol_compare_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "win_rate": st.column_config.ProgressColumn("Win Rate %", min_value=0, max_value=100),
+                            "sl_rate": st.column_config.ProgressColumn("SL Hit %", min_value=0, max_value=100, format="%.1f%%"),
+                            "net_pnl": st.column_config.NumberColumn("Net P&L", format="$%.2f")
+                        }
+                    )
+                else:
+                    st.info("Dati symbol non disponibili")
+
+            # ========================================
+            # ALERT BOX - Problemi Critici
+            # ========================================
+            st.markdown("---")
+            st.markdown("### 🚨 Alert Automatici")
+
+            alerts = []
+
+            # Check SL hit rate globale
+            global_sl_df = query_db(f"""
+                SELECT
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE close_reason = 'SL_HIT') / NULLIF(COUNT(*), 0), 1) as sl_rate
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+            """)
+
+            if not global_sl_df.empty and global_sl_df['sl_rate'].iloc[0]:
+                sl_rate = float(global_sl_df['sl_rate'].iloc[0])
+                if sl_rate > 50:
+                    alerts.append(("error", f"🛑 SL Hit Rate: **{sl_rate:.0f}%** - Troppo alto! Considera di allargare lo stop loss (INITIAL_STOP_LOSS_PERCENT)"))
+                elif sl_rate > 40:
+                    alerts.append(("warning", f"⚠️ SL Hit Rate: **{sl_rate:.0f}%** - Monitorare attentamente"))
+
+            # Check fees impact globale
+            if not fees_impact_df.empty:
+                total_fees_pct = fees_impact_df['fees_pct'].mean()
+                if total_fees_pct and total_fees_pct > 40:
+                    alerts.append(("error", f"🛑 Fees Impact: **{total_fees_pct:.0f}%** medio - Riduci frequenza trade o aumenta target profit"))
+
+            # Check symbol problematici
+            if not symbol_compare_df.empty:
+                for _, sym in symbol_compare_df.iterrows():
+                    if sym['win_rate'] and float(sym['win_rate']) < 30:
+                        alerts.append(("error", f"🛑 **{sym['symbol']}**: Win rate solo **{sym['win_rate']:.0f}%** - Considera di escluderlo o modificare i parametri"))
+                    if sym['sl_rate'] and float(sym['sl_rate']) > 60:
+                        alerts.append(("warning", f"⚠️ **{sym['symbol']}**: SL Hit **{sym['sl_rate']:.0f}%** - Stop loss troppo stretto per questo asset"))
+
+            # Check score correlation
+            if not score_scatter_df.empty and len(score_scatter_df) > 5:
+                low_score_trades = score_scatter_df[score_scatter_df['score'] < 18]
+                if len(low_score_trades) > 0:
+                    low_score_wr = (low_score_trades['profitable'].sum() / len(low_score_trades)) * 100
+                    if low_score_wr < 40:
+                        alerts.append(("warning", f"⚠️ Trade con score < 18 hanno win rate **{low_score_wr:.0f}%** - Aumenta SCORE_THRESHOLD_OPEN a 20"))
+
+            # Display alerts
+            if alerts:
+                for alert_type, alert_msg in alerts:
+                    if alert_type == "error":
+                        st.error(alert_msg)
+                    elif alert_type == "warning":
+                        st.warning(alert_msg)
+                    else:
+                        st.info(alert_msg)
+            else:
+                st.success("✅ Nessun problema critico rilevato - Sistema nella norma")
+
+            st.markdown("---")
+
+            # Trade details expander
+            st.markdown("### 📋 Dettaglio Eventi Trade")
+            selected_uuid = st.selectbox(
+                "Seleziona Trade",
+                trades_df['trade_uuid'].tolist(),
+                format_func=lambda x: f"{trades_df[trades_df['trade_uuid']==x]['symbol'].values[0]} - {trades_df[trades_df['trade_uuid']==x]['opened_at'].values[0]}"
+            )
+
+            if selected_uuid:
+                events_df = query_db(f"""
+                    SELECT
+                        created_at as timestamp,
+                        event_type,
+                        description,
+                        current_price,
+                        current_pnl_percent as pnl,
+                        triggered_by
+                    FROM trade_events
+                    WHERE trade_uuid = '{selected_uuid}'
+                    ORDER BY created_at ASC
+                """)
+
+                if not events_df.empty:
+                    st.dataframe(events_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Nessun evento registrato per questo trade")
+        else:
+            st.info("Nessun trade trovato con i filtri selezionati")
+
+    except Exception as e:
+        st.warning(f"Trade Journal non ancora inizializzato o errore: {e}")
+        st.info("Esegui `python trade_journal.py` per inizializzare lo schema")
+
+# =====================
+# TAB 9: Profitability Analysis
+# =====================
+with tab9:
+    st.subheader("💰 Analisi Profittabilità")
+    st.markdown("Analisi dettagliata P&L, fees e suggerimenti ottimizzazione")
+
+    try:
+        # Period selector
+        profit_period = st.selectbox(
+            "📅 Periodo Analisi",
+            ["7 Days", "30 Days", "90 Days"],
+            key="profit_period"
+        )
+        period_days = {"7 Days": 7, "30 Days": 30, "90 Days": 90}.get(profit_period, 30)
+
+        # Summary metrics
+        summary_df = query_db(f"""
+            SELECT
+                COUNT(*) as total_trades,
+                COUNT(*) FILTER (WHERE profitable = true) as winning_trades,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                ROUND(SUM(pnl_usd)::numeric, 2) as gross_pnl,
+                ROUND(SUM(fee_total)::numeric, 2) as total_fees,
+                ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                ROUND(100.0 * SUM(fee_total) / NULLIF(ABS(SUM(pnl_usd)), 0), 1) as fees_percent,
+                COUNT(*) FILTER (WHERE pnl_usd > 0 AND net_pnl_usd <= 0) as eaten_by_fees
+            FROM trades
+            WHERE status = 'CLOSED'
+              AND closed_at >= NOW() - INTERVAL '{period_days} days'
+        """)
+
+        if not summary_df.empty and summary_df['total_trades'].iloc[0] > 0:
+            row = summary_df.iloc[0]
+
+            # Main metrics
+            st.markdown("### 📊 Riepilogo")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("P&L Lordo", f"${row['gross_pnl']:.2f}")
+            col2.metric("Fees Totali", f"${row['total_fees']:.2f}",
+                       delta=f"-{row['fees_percent']:.1f}% del lordo" if row['fees_percent'] else None,
+                       delta_color="inverse")
+            col3.metric("P&L Netto", f"${row['net_pnl']:.2f}",
+                       delta_color="normal" if row['net_pnl'] >= 0 else "inverse")
+            col4.metric("Win Rate", f"{row['win_rate']:.1f}%")
+
+            # Fees impact warning
+            if row['eaten_by_fees'] and row['eaten_by_fees'] > 0:
+                st.warning(f"⚠️ {int(row['eaten_by_fees'])} trades erano profittevoli ma le fees hanno azzerato il guadagno!")
+
+            st.markdown("---")
+
+            # Analysis by trading mode
+            st.markdown("### 📈 Per Trading Mode")
+            mode_df = query_db(f"""
+                SELECT
+                    trading_mode,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                    ROUND(SUM(pnl_usd)::numeric, 2) as gross_pnl,
+                    ROUND(SUM(fee_total)::numeric, 2) as fees,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                    ROUND(AVG(duration_seconds / 60.0)::numeric, 1) as avg_duration_min
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                GROUP BY trading_mode
+            """)
+
+            if not mode_df.empty:
+                st.dataframe(mode_df, use_container_width=True, hide_index=True)
+
+            # Analysis by symbol
+            st.markdown("### 💱 Per Symbol")
+            symbol_df = query_db(f"""
+                SELECT
+                    symbol,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                    ROUND(AVG(net_pnl_usd)::numeric, 2) as avg_net_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                GROUP BY symbol
+                ORDER BY net_pnl DESC
+            """)
+
+            if not symbol_df.empty:
+                st.dataframe(symbol_df, use_container_width=True, hide_index=True)
+
+            # Analysis by score range
+            st.markdown("### 🎯 Per Score Range")
+            score_df = query_db(f"""
+                SELECT
+                    CASE
+                        WHEN ABS(open_score) BETWEEN 15 AND 18 THEN '15-18'
+                        WHEN ABS(open_score) BETWEEN 18 AND 22 THEN '18-22'
+                        WHEN ABS(open_score) > 22 THEN '22+'
+                        ELSE '<15'
+                    END as score_range,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                    ROUND(AVG(net_pnl_usd)::numeric, 2) as avg_net_pnl,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as total_net_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                  AND open_score IS NOT NULL
+                GROUP BY score_range
+                ORDER BY score_range
+            """)
+
+            if not score_df.empty:
+                st.dataframe(score_df, use_container_width=True, hide_index=True)
+
+            # P&L Chart over time
+            st.markdown("### 📈 P&L Cumulativo")
+            pnl_chart_df = query_db(f"""
+                SELECT
+                    DATE(closed_at) as date,
+                    SUM(net_pnl_usd) as daily_pnl,
+                    SUM(SUM(net_pnl_usd)) OVER (ORDER BY DATE(closed_at)) as cumulative_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '{period_days} days'
+                GROUP BY DATE(closed_at)
+                ORDER BY date
+            """)
+
+            if not pnl_chart_df.empty:
+                fig = px.line(pnl_chart_df, x='date', y='cumulative_pnl',
+                             title='P&L Netto Cumulativo',
+                             labels={'cumulative_pnl': 'P&L ($)', 'date': 'Data'})
+                fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Suggestions
+            st.markdown("### 💡 Suggerimenti")
+            suggestions = []
+
+            if row['fees_percent'] and float(row['fees_percent']) > 25:
+                suggestions.append(f"⚠️ Le fees sono il {row['fees_percent']:.0f}% del P&L lordo - considera di aumentare il size delle posizioni")
+
+            if row['eaten_by_fees'] and row['eaten_by_fees'] > 2:
+                suggestions.append("⚠️ Diversi trades sono stati mangiati dalle fees - alza il target profit minimo")
+
+            # Check score range performance
+            if not score_df.empty:
+                for _, srow in score_df.iterrows():
+                    if srow['win_rate'] and float(srow['win_rate']) < 45:
+                        suggestions.append(f"📊 Score {srow['score_range']} ha win rate {srow['win_rate']:.0f}% - considera di alzare la soglia")
+
+            if not suggestions:
+                suggestions.append("✅ Il sistema sta performando nella norma")
+
+            for s in suggestions:
+                st.info(s)
+
+            # AI Analysis Section
+            st.markdown("---")
+            st.markdown("### 🤖 Analisi AI Approfondita")
+            st.markdown("Chiedi all'AI di analizzare i tuoi trade e suggerirti miglioramenti specifici")
+
+            col_ai1, col_ai2 = st.columns([1, 3])
+            with col_ai1:
+                ai_period = st.selectbox(
+                    "Periodo analisi",
+                    [7, 14, 30, 60, 90],
+                    index=2,
+                    format_func=lambda x: f"{x} giorni",
+                    key="ai_period"
+                )
+
+            with col_ai2:
+                st.markdown("")  # Spacing
+                analyze_button = st.button("🔍 Avvia Analisi AI", type="primary", use_container_width=True)
+
+            if analyze_button:
+                with st.spinner("🤖 AI sta analizzando i tuoi trade..."):
+                    try:
+                        # Import analyzer
+                        import trade_analyzer as ta
+
+                        # Get AI analysis
+                        analysis = ta.analyze_with_ai(ai_period)
+
+                        # Display in expander
+                        st.markdown("---")
+                        st.markdown("### 📊 Risultato Analisi AI")
+                        st.markdown(analysis)
+
+                    except ImportError:
+                        st.error("❌ Modulo trade_analyzer non trovato. Assicurati che sia installato.")
+                    except Exception as e:
+                        st.error(f"❌ Errore durante l'analisi: {str(e)}")
+
+            # Score Correlation Section
+            st.markdown("---")
+            st.markdown("### 🎯 Correlazione Score / Risultati")
+            st.markdown("Il punteggio di apertura predice i risultati?")
+
+            try:
+                import trade_analyzer as ta
+                score_corr = ta.get_score_correlation_analysis(period_days)
+
+                if score_corr and score_corr.get("by_score_range"):
+                    # Correlation interpretation
+                    corr_data = score_corr.get("correlation", {})
+                    corr_value = corr_data.get("score_vs_pnl", 0)
+                    interpretation = corr_data.get("interpretation", "N/A")
+
+                    col_corr1, col_corr2 = st.columns(2)
+                    col_corr1.metric("Correlazione Score/P&L", f"{corr_value:.3f}")
+                    col_corr2.info(interpretation)
+
+                    # Score range table
+                    st.markdown("**Performance per range di score:**")
+                    score_range_df = pd.DataFrame(score_corr["by_score_range"])
+                    if not score_range_df.empty:
+                        st.dataframe(score_range_df, use_container_width=True, hide_index=True)
+
+                    # By mode and score
+                    if score_corr.get("by_mode_and_score"):
+                        st.markdown("**Per Trading Mode e Score:**")
+                        mode_score_df = pd.DataFrame(score_corr["by_mode_and_score"])
+                        if not mode_score_df.empty:
+                            st.dataframe(mode_score_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Dati insufficienti per l'analisi correlazione")
+
+            except ImportError:
+                st.warning("Modulo trade_analyzer non disponibile")
+            except Exception as e:
+                st.warning(f"Errore analisi correlazione: {e}")
+
+        else:
+            st.info("Nessun dato disponibile per il periodo selezionato")
+
+    except Exception as e:
+        st.warning(f"Analisi non disponibile: {e}")
+        st.info("Esegui `python trade_journal.py` per inizializzare lo schema")
+
+# =====================
+# TAB 10: Controller/Health
+# =====================
+with tab10:
+    st.subheader("🔍 System Controller")
+    st.markdown("Monitoring sistema e verifica corretto funzionamento")
+
+    try:
+        # System Status
+        st.markdown("### 🟢 System Status")
+
+        col_status1, col_status2, col_status3 = st.columns(3)
+
+        # Check last sentinel log
+        last_sentinel = query_db("""
+            SELECT created_at, symbol, action_taken
+            FROM sentinel_logs
+            ORDER BY created_at DESC
+            LIMIT 1
+        """)
+
+        if not last_sentinel.empty:
+            last_check = last_sentinel['created_at'].iloc[0]
+            time_diff = (datetime.now() - last_check.replace(tzinfo=None)).total_seconds()
+            if time_diff < 120:
+                col_status1.metric("Sentinel", "🟢 Active", f"{int(time_diff)}s ago")
+            else:
+                col_status1.metric("Sentinel", "🟡 Delayed", f"{int(time_diff/60)}m ago")
+        else:
+            col_status1.metric("Sentinel", "⚪ No data")
+
+        # Check open positions
+        open_pos = query_db("""
+            SELECT COUNT(DISTINCT symbol) as count
+            FROM position_tracking
+        """)
+        if not open_pos.empty:
+            col_status2.metric("Open Positions", int(open_pos['count'].iloc[0]))
+
+        # Check DB connection
+        db_check = query_db("SELECT 1 as ok")
+        if not db_check.empty:
+            col_status3.metric("Database", "🟢 Connected")
+        else:
+            col_status3.metric("Database", "🔴 Error")
+
+        st.markdown("---")
+
+        # Position Tracking
+        st.markdown("### 📊 Position Tracking")
+        tracking_df = query_db("""
+            SELECT
+                symbol,
+                direction,
+                entry_price,
+                peak_price,
+                trading_mode,
+                opening_score,
+                trailing_active,
+                updated_at
+            FROM position_tracking
+            ORDER BY symbol
+        """)
+
+        if not tracking_df.empty:
+            st.dataframe(tracking_df, use_container_width=True, hide_index=True)
+
+            # Check SL orders for each position
+            st.markdown("### 🛡️ SL Orders Verification")
+            st.info("Verifica manualmente gli ordini SL con il comando:")
+            st.code("""docker exec rizzo_sentinel python -c "
+from hyperliquid_trader import HyperLiquidTrader
+import os
+from dotenv import load_dotenv
+load_dotenv()
+bot = HyperLiquidTrader(os.getenv('PRIVATE_KEY'), os.getenv('WALLET_ADDRESS'), testnet=False)
+orders = bot.info.open_orders(bot.account_address)
+for o in orders:
+    print(f'{o.get(\"coin\")} | Side: {o.get(\"side\")} | Trigger: {o.get(\"triggerPx\", \"N/A\")}')"
+""")
+        else:
+            st.info("Nessuna posizione aperta in tracking")
+
+        st.markdown("---")
+
+        # Recent Anomalies/Events
+        st.markdown("### ⚠️ Eventi Recenti")
+        events_df = query_db("""
+            SELECT
+                created_at,
+                event_type,
+                description,
+                triggered_by
+            FROM trade_events
+            WHERE event_type IN ('ANOMALY_DETECTED', 'SL_TRIGGERED', 'POSITION_CLOSED')
+            ORDER BY created_at DESC
+            LIMIT 20
+        """)
+
+        if not events_df.empty:
+            st.dataframe(events_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nessun evento critico recente")
+
+        # Sentinel Logs
+        st.markdown("### 📜 Sentinel Logs Recenti")
+        sentinel_logs = query_db("""
+            SELECT
+                created_at,
+                symbol,
+                direction,
+                profit_pct,
+                trailing_active,
+                action_taken,
+                action_reason
+            FROM sentinel_logs
+            ORDER BY created_at DESC
+            LIMIT 30
+        """)
+
+        if not sentinel_logs.empty:
+            st.dataframe(sentinel_logs, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Errore Controller: {e}")
+
+# =============================================================================
+# TAB 11: PARAMETER OPTIMIZER
+# =============================================================================
+with tab11:
+    st.subheader("🔧 Parameter Optimizer")
+    st.markdown("""
+    Analizza i trade passati e suggerisce parametri ottimali per massimizzare profittabilità.
+    """)
+
+    # Selezione periodo e filtri
+    col_opt1, col_opt2, col_opt3 = st.columns(3)
+    with col_opt1:
+        opt_period = st.selectbox(
+            "📅 Periodo Analisi",
+            ["7 giorni", "14 giorni", "30 giorni", "Tutti"],
+            index=0,
+            key="opt_period"
+        )
+    with col_opt2:
+        opt_mode = st.selectbox(
+            "🎯 Trading Mode",
+            ["MICRO_GAIN", "MICRO_PAY", "NORMAL", "Tutti"],
+            index=0,
+            key="opt_mode"
+        )
+    with col_opt3:
+        opt_symbol = st.selectbox(
+            "💰 Symbol",
+            ["Tutti"] + ENABLED_SYMBOLS,
+            index=0,
+            key="opt_symbol"
+        )
+
+    # Costruisci filtri SQL
+    period_map_opt = {"7 giorni": 7, "14 giorni": 14, "30 giorni": 30, "Tutti": None}
+    opt_days = period_map_opt[opt_period]
+
+    where_clauses = ["status = 'CLOSED'"]
+    if opt_days:
+        where_clauses.append(f"closed_at > NOW() - INTERVAL '{opt_days} days'")
+    if opt_mode != "Tutti":
+        where_clauses.append(f"trading_mode = '{opt_mode}'")
+    if opt_symbol != "Tutti":
+        where_clauses.append(f"symbol = '{opt_symbol}'")
+
+    where_sql = " AND ".join(where_clauses)
+
+    st.markdown("---")
+
+    # === SEZIONE 1: PANORAMICA TRADE ===
+    st.markdown("### 📊 Panoramica Trade")
+
+    try:
+        # Query panoramica
+        overview_df = query_db(f"""
+            SELECT
+                COUNT(*) as total_trades,
+                COUNT(*) FILTER (WHERE profitable = true) as winning,
+                COUNT(*) FILTER (WHERE profitable = false) as losing,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE profitable = true) / NULLIF(COUNT(*), 0), 1) as win_rate,
+                ROUND(SUM(net_pnl_usd)::numeric, 2) as net_pnl,
+                ROUND(SUM(fee_total)::numeric, 2) as total_fees,
+                ROUND(AVG(duration_seconds/60.0)::numeric, 1) as avg_duration_min
+            FROM trades
+            WHERE {where_sql}
+        """)
+
+        if not overview_df.empty and overview_df['total_trades'].iloc[0] > 0:
+            row = overview_df.iloc[0]
+
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            with col_m1:
+                st.metric("📈 Trade Totali", int(row['total_trades']))
+            with col_m2:
+                win_rate = row['win_rate'] or 0
+                st.metric("🎯 Win Rate", f"{win_rate}%",
+                         delta="OK" if win_rate >= 50 else "Sotto 50%",
+                         delta_color="normal" if win_rate >= 50 else "inverse")
+            with col_m3:
+                net_pnl = row['net_pnl'] or 0
+                st.metric("💰 Net P&L", f"${net_pnl:,.2f}",
+                         delta="Profit" if net_pnl >= 0 else "Loss",
+                         delta_color="normal" if net_pnl >= 0 else "inverse")
+            with col_m4:
+                fees = row['total_fees'] or 0
+                st.metric("💸 Fees Totali", f"${fees:,.2f}")
+
+            # === SEZIONE 2: CLOSE REASON BREAKDOWN ===
+            st.markdown("### 📋 Breakdown per Close Reason")
+
+            close_reason_df = query_db(f"""
+                SELECT
+                    close_reason,
+                    COUNT(*) as count,
+                    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER(), 1) as pct,
+                    ROUND(AVG(net_pnl_usd)::numeric, 3) as avg_net_pnl,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as total_net_pnl,
+                    ROUND(AVG(peak_pnl_percent)::numeric, 2) as avg_peak,
+                    ROUND(AVG(pnl_percent)::numeric, 2) as avg_exit
+                FROM trades
+                WHERE {where_sql}
+                GROUP BY close_reason
+                ORDER BY count DESC
+            """)
+
+            if not close_reason_df.empty:
+                # Colora la riga in base al P&L
+                def color_pnl(val):
+                    if val > 0:
+                        return 'background-color: rgba(0, 255, 0, 0.2)'
+                    elif val < 0:
+                        return 'background-color: rgba(255, 0, 0, 0.2)'
+                    return ''
+
+                st.dataframe(
+                    close_reason_df.style.applymap(color_pnl, subset=['total_net_pnl']),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # Analisi problemi
+                sl_hit = close_reason_df[close_reason_df['close_reason'] == 'SL_HIT']
+                tp_hit = close_reason_df[close_reason_df['close_reason'] == 'TP_HIT']
+
+                if not sl_hit.empty and not tp_hit.empty:
+                    sl_total = sl_hit['total_net_pnl'].iloc[0] or 0
+                    tp_total = tp_hit['total_net_pnl'].iloc[0] or 0
+                    sl_count = sl_hit['count'].iloc[0]
+                    tp_count = tp_hit['count'].iloc[0]
+                    sl_avg = sl_hit['avg_net_pnl'].iloc[0] or 0
+                    tp_avg = tp_hit['avg_net_pnl'].iloc[0] or 0
+
+                    # Calcola R/R ratio effettivo
+                    rr_ratio = abs(tp_avg / sl_avg) if sl_avg != 0 else 0
+                    sl_rate = (sl_count / (sl_count + tp_count)) * 100 if (sl_count + tp_count) > 0 else 0
+
+                    # Mostra sempre l'analisi R/R
+                    st.markdown("#### 📊 Analisi Risk/Reward")
+                    col_rr1, col_rr2, col_rr3 = st.columns(3)
+                    with col_rr1:
+                        st.metric("Avg Win (TP)", f"${tp_avg:.3f}")
+                    with col_rr2:
+                        st.metric("Avg Loss (SL)", f"${sl_avg:.3f}")
+                    with col_rr3:
+                        rr_color = "normal" if rr_ratio >= 1.0 else "inverse"
+                        st.metric("R/R Ratio", f"{rr_ratio:.2f}",
+                                 delta="OK" if rr_ratio >= 1.0 else "Sotto 1!",
+                                 delta_color=rr_color)
+
+                    # Analisi dettagliata
+                    if rr_ratio < 1.0:
+                        breakeven_wr = (1 / (1 + rr_ratio)) * 100 if rr_ratio > 0 else 100
+                        current_wr = (tp_count / (tp_count + sl_count)) * 100
+                        st.warning(f"""
+                        **R/R Ratio {rr_ratio:.2f}** → Per essere profittevole serve Win Rate > **{breakeven_wr:.0f}%**
+
+                        Win Rate attuale: **{current_wr:.1f}%** {'✅' if current_wr > breakeven_wr else '❌'}
+
+                        💡 **Opzioni**:
+                        - Abbassa il Target (più TP_HIT, avg win più basso ma più frequente)
+                        - Allarga lo SL (meno SL_HIT, ma avg loss più alta)
+                        - Step trailing più aggressivi (lock profit prima)
+                        """)
+                    elif sl_total < 0 and abs(sl_total) > tp_total:
+                        st.info(f"""
+                        **Net negativo** nonostante R/R {rr_ratio:.2f} → Troppi SL_HIT ({sl_rate:.0f}%)
+
+                        💡 Considera entry più selettive (score threshold più alto) o SL più largo
+                        """)
+
+            # === SEZIONE 3: DISTRIBUZIONE PEAK P&L ===
+            st.markdown("### 📈 Distribuzione Peak P&L")
+            st.caption("Mostra dove i trade raggiungono il massimo profitto prima di chiudersi")
+
+            peak_dist_df = query_db(f"""
+                WITH peak_buckets AS (
+                    SELECT
+                        CASE
+                            WHEN peak_pnl_percent < 0.5 THEN 1
+                            WHEN peak_pnl_percent < 1.0 THEN 2
+                            WHEN peak_pnl_percent < 1.5 THEN 3
+                            WHEN peak_pnl_percent < 2.0 THEN 4
+                            WHEN peak_pnl_percent < 2.5 THEN 5
+                            WHEN peak_pnl_percent < 3.0 THEN 6
+                            WHEN peak_pnl_percent < 4.0 THEN 7
+                            ELSE 8
+                        END as bucket_order,
+                        CASE
+                            WHEN peak_pnl_percent < 0.5 THEN '< 0.5%'
+                            WHEN peak_pnl_percent < 1.0 THEN '0.5-1%'
+                            WHEN peak_pnl_percent < 1.5 THEN '1-1.5%'
+                            WHEN peak_pnl_percent < 2.0 THEN '1.5-2%'
+                            WHEN peak_pnl_percent < 2.5 THEN '2-2.5%'
+                            WHEN peak_pnl_percent < 3.0 THEN '2.5-3%'
+                            WHEN peak_pnl_percent < 4.0 THEN '3-4%'
+                            ELSE '4%+'
+                        END as peak_range
+                    FROM trades
+                    WHERE {where_sql} AND peak_pnl_percent IS NOT NULL
+                )
+                SELECT
+                    peak_range,
+                    COUNT(*) as trades,
+                    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER(), 1) as pct
+                FROM peak_buckets
+                GROUP BY bucket_order, peak_range
+                ORDER BY bucket_order
+            """)
+
+            if not peak_dist_df.empty:
+                col_peak1, col_peak2 = st.columns([2, 1])
+
+                with col_peak1:
+                    # Grafico a barre
+                    fig_peak = px.bar(
+                        peak_dist_df,
+                        x='peak_range',
+                        y='trades',
+                        text='pct',
+                        title="Distribuzione Peak P&L",
+                        labels={'peak_range': 'Range Peak P&L', 'trades': 'Numero Trade'}
+                    )
+                    fig_peak.update_traces(texttemplate='%{text}%', textposition='outside')
+                    fig_peak.update_layout(height=350)
+                    st.plotly_chart(fig_peak, use_container_width=True)
+
+                with col_peak2:
+                    st.markdown("**📊 Statistiche**")
+
+                    # Calcola target raggiungibilità
+                    target_pct = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '4.0'))
+
+                    # Trova % che raggiunge il target
+                    reaches_target = peak_dist_df[peak_dist_df['peak_range'] == '4%+']['pct'].iloc[0] if '4%+' in peak_dist_df['peak_range'].values else 0
+
+                    # Trova % sotto 1.5%
+                    below_1_5 = peak_dist_df[peak_dist_df['peak_range'].isin(['< 0.5%', '0.5-1%', '1-1.5%'])]['pct'].sum()
+
+                    st.metric("🎯 Target Attuale", f"{target_pct}%")
+                    st.metric("✅ Raggiunge Target", f"{reaches_target}%",
+                             delta="Basso!" if reaches_target < 20 else "OK",
+                             delta_color="inverse" if reaches_target < 20 else "normal")
+                    st.metric("⚠️ Peak < 1.5%", f"{below_1_5}%")
+
+                    if reaches_target < 15:
+                        st.warning(f"Solo il {reaches_target}% dei trade raggiunge il target del {target_pct}%!")
+
+            # === SEZIONE 4: ANALISI PEAK VS EXIT ===
+            st.markdown("### 🔄 Peak vs Exit Analysis")
+
+            peak_exit_df = query_db(f"""
+                SELECT
+                    ROUND(AVG(peak_pnl_percent)::numeric, 2) as avg_peak,
+                    ROUND(AVG(pnl_percent)::numeric, 2) as avg_exit,
+                    ROUND(AVG(peak_pnl_percent - pnl_percent)::numeric, 2) as avg_left_on_table,
+                    COUNT(*) FILTER (WHERE peak_pnl_percent > pnl_percent + 0.3) as could_improve,
+                    COUNT(*) as total
+                FROM trades
+                WHERE {where_sql} AND peak_pnl_percent IS NOT NULL
+            """)
+
+            if not peak_exit_df.empty:
+                row_pe = peak_exit_df.iloc[0]
+
+                col_pe1, col_pe2, col_pe3, col_pe4 = st.columns(4)
+                with col_pe1:
+                    st.metric("📈 Peak Medio", f"{row_pe['avg_peak']}%")
+                with col_pe2:
+                    st.metric("📉 Exit Medio", f"{row_pe['avg_exit']}%")
+                with col_pe3:
+                    left = row_pe['avg_left_on_table'] or 0
+                    st.metric("💸 Lasciato", f"{left}%",
+                             delta="Trailing ok" if left < 0.3 else "Migliorabile",
+                             delta_color="normal" if left < 0.3 else "inverse")
+                with col_pe4:
+                    improve_pct = (row_pe['could_improve'] / row_pe['total'] * 100) if row_pe['total'] > 0 else 0
+                    st.metric("🔧 Migliorabili", f"{improve_pct:.0f}%")
+
+            st.markdown("---")
+
+            # === SEZIONE 5: SIMULATORE TRAILING STEPS ===
+            st.markdown("### ⚡ Simulatore Trailing Steps")
+            st.caption("Confronta diverse configurazioni di trailing sui trade passati")
+
+            # Configurazioni predefinite
+            configs = {
+                "Attuale": os.getenv('MICRO_GAIN_TRAILING_STEPS', '0.4:-1.5,0.75:0.15,1.2:0.5,1.8:1.0'),
+                "Conservativo (Lock veloce)": "0.3:-1.5,0.5:0.05,0.7:0.2,0.9:0.4,1.1:0.6,1.4:0.9,1.8:1.3",
+                "Bilanciato": "0.3:-2.0,0.5:0.0,0.8:0.25,1.0:0.45,1.3:0.7,1.6:1.0,2.0:1.4",
+                "Aggressivo (Max profit)": "0.4:-2.5,0.7:0.0,1.0:0.3,1.4:0.6,1.8:1.0,2.2:1.5,2.8:2.0"
+            }
+
+            def parse_trailing_steps(steps_str):
+                """Parse trailing steps string into list of (trigger, sl_level) tuples"""
+                steps = []
+                for step in steps_str.split(','):
+                    parts = step.strip().split(':')
+                    if len(parts) == 2:
+                        try:
+                            trigger = float(parts[0])
+                            sl_level = float(parts[1])
+                            steps.append((trigger, sl_level))
+                        except ValueError:
+                            continue
+                return sorted(steps, key=lambda x: x[0])
+
+            def simulate_trailing_exit(peak_pnl, steps):
+                """
+                Simula dove sarebbe uscito un trade con determinati trailing steps.
+                Assume che il prezzo raggiunga peak_pnl e poi scenda fino a trigger SL.
+                """
+                if not steps:
+                    return peak_pnl * 0.7  # Default fallback
+
+                # Trova il livello SL più alto raggiunto
+                final_sl = steps[0][1]  # Inizia con lo SL del primo step
+                for trigger, sl_level in steps:
+                    if peak_pnl >= trigger:
+                        final_sl = sl_level
+                    else:
+                        break
+
+                # Se il peak è sopra l'ultimo trigger, usa l'ultimo SL
+                if peak_pnl >= steps[-1][0]:
+                    final_sl = steps[-1][1]
+
+                return max(final_sl, peak_pnl * 0.3)  # Non sotto 30% del peak
+
+            # Prendi i trade per simulazione
+            sim_trades_df = query_db(f"""
+                SELECT
+                    id, symbol, peak_pnl_percent, pnl_percent, net_pnl_usd
+                FROM trades
+                WHERE {where_sql}
+                  AND peak_pnl_percent IS NOT NULL
+                  AND peak_pnl_percent > 0.3
+                ORDER BY closed_at DESC
+                LIMIT 500
+            """)
+
+            if not sim_trades_df.empty and len(sim_trades_df) >= 10:
+                st.info(f"📊 Simulazione su {len(sim_trades_df)} trade con peak > 0.3%")
+
+                results = []
+                for config_name, steps_str in configs.items():
+                    steps = parse_trailing_steps(steps_str)
+
+                    simulated_exits = []
+                    for _, trade in sim_trades_df.iterrows():
+                        peak = trade['peak_pnl_percent']
+                        sim_exit = simulate_trailing_exit(peak, steps)
+                        simulated_exits.append(sim_exit)
+
+                    avg_sim_exit = sum(simulated_exits) / len(simulated_exits)
+                    # Stima win rate: trade con exit > 0 sono vincenti
+                    sim_wins = sum(1 for e in simulated_exits if e > 0)
+                    sim_win_rate = (sim_wins / len(simulated_exits)) * 100
+
+                    results.append({
+                        "Config": config_name,
+                        "Avg Exit Simulato": f"{avg_sim_exit:.2f}%",
+                        "Win Rate Stimato": f"{sim_win_rate:.1f}%",
+                        "Steps": steps_str[:50] + "..." if len(steps_str) > 50 else steps_str
+                    })
+
+                results_df = pd.DataFrame(results)
+                st.dataframe(results_df, use_container_width=True, hide_index=True)
+
+                # Confronto visivo
+                fig_sim = go.Figure()
+                for config_name, steps_str in configs.items():
+                    steps = parse_trailing_steps(steps_str)
+                    if steps:
+                        x_vals = [s[0] for s in steps]
+                        y_vals = [s[1] for s in steps]
+                        fig_sim.add_trace(go.Scatter(
+                            x=x_vals, y=y_vals,
+                            mode='lines+markers',
+                            name=config_name
+                        ))
+
+                fig_sim.update_layout(
+                    title="Confronto Trailing Steps",
+                    xaxis_title="P&L Trigger (%)",
+                    yaxis_title="SL Level (%)",
+                    height=350
+                )
+                st.plotly_chart(fig_sim, use_container_width=True)
+            else:
+                st.warning("Dati insufficienti per simulazione (servono almeno 10 trade con peak > 0.3%)")
+
+            st.markdown("---")
+
+            # === SEZIONE 6: RACCOMANDAZIONI ===
+            st.markdown("### 💡 Raccomandazioni Parametri")
+
+            # Calcola raccomandazioni basate sui dati
+            current_target = float(os.getenv('MICRO_GAIN_TARGET_PERCENT', '4.0'))
+            current_sl = float(os.getenv('MICRO_GAIN_STOP_LOSS_PERCENT', '2.0'))
+
+            # Trova il percentile 75 dei peak
+            p75_df = query_db(f"""
+                SELECT
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY peak_pnl_percent) as p50_peak,
+                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY peak_pnl_percent) as p75_peak,
+                    PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY peak_pnl_percent) as p90_peak
+                FROM trades
+                WHERE {where_sql} AND peak_pnl_percent IS NOT NULL AND peak_pnl_percent > 0
+            """)
+
+            rec_target = current_target
+            rec_sl = current_sl
+            rec_steps = os.getenv('MICRO_GAIN_TRAILING_STEPS', '')
+
+            recommendations = []
+
+            if not p75_df.empty:
+                p50 = p75_df['p50_peak'].iloc[0] or 1.0
+                p75 = p75_df['p75_peak'].iloc[0] or 1.5
+                p90 = p75_df['p90_peak'].iloc[0] or 2.0
+
+                # Raccomandazione Target
+                if current_target > p75 * 1.5:
+                    rec_target = round(p75, 1)
+                    recommendations.append(f"🎯 **Target**: Abbassa da {current_target}% a **{rec_target}%** (il 75% dei trade non supera {p75:.1f}%)")
+
+                # Raccomandazione SL
+                if not sl_hit.empty:
+                    sl_avg_peak = sl_hit['avg_peak'].iloc[0] or 0.5
+                    if sl_avg_peak < 0.5 and current_sl < 2.5:
+                        rec_sl = min(current_sl + 0.5, 3.0)
+                        recommendations.append(f"🛡️ **Stop Loss**: Allarga da {current_sl}% a **{rec_sl}%** (SL_HIT hanno peak medio di solo {sl_avg_peak}%)")
+
+                # Raccomandazione Trailing
+                if not peak_exit_df.empty and row_pe['avg_left_on_table'] and row_pe['avg_left_on_table'] > 0.4:
+                    rec_steps = "0.3:-1.8,0.5:0.0,0.7:0.2,0.9:0.4,1.1:0.6,1.4:0.9,1.8:1.3"
+                    recommendations.append(f"⚡ **Trailing Steps**: Step più aggressivi per non lasciare {row_pe['avg_left_on_table']}% sul tavolo")
+
+            if recommendations:
+                for rec in recommendations:
+                    st.markdown(rec)
+
+                st.markdown("---")
+
+                # Genera .env snippet
+                st.markdown("### 📋 Configurazione Suggerita (.env)")
+
+                env_snippet = f"""# === MICRO_GAIN OTTIMIZZATO (basato su {row['total_trades']} trade) ===
+MICRO_GAIN_TARGET_PERCENT={rec_target}
+MICRO_GAIN_STOP_LOSS_PERCENT={rec_sl}
+MICRO_GAIN_TRAILING_STEPS={rec_steps}
+
+# Note:
+# - Target abbassato per match con peak reali (50% raggiunge {p50:.1f}%, 75% raggiunge {p75:.1f}%)
+# - SL ottimizzato per bilanciare R/R ratio
+# - Trailing steps per profit lock anticipato
+"""
+
+                st.code(env_snippet, language="bash")
+
+                # Bottone copia
+                st.download_button(
+                    label="📥 Scarica .env.optimized",
+                    data=env_snippet,
+                    file_name="env_optimized.txt",
+                    mime="text/plain"
+                )
+            else:
+                st.success("✅ I parametri attuali sembrano già ottimizzati per i dati disponibili!")
+
+        else:
+            st.warning("⚠️ Nessun trade trovato per il periodo/filtri selezionati")
+
+    except Exception as e:
+        st.error(f"Errore nell'analisi: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+
+# Refresh button
+st.markdown("---")
+col_refresh1, col_refresh2 = st.columns([1, 4])
+with col_refresh1:
+    if st.button("🔄 Refresh Data"):
+        st.cache_resource.clear()
+        st.rerun()
+
+with col_refresh2:
+    st.caption("💡 La dashboard si aggiorna automaticamente quando ricarichi la pagina")
+
+# Footer
+st.markdown("---")
+st.caption(f"🤖 Trading Agent Dashboard | Last refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+st.caption("📊 Data source: PostgreSQL | 🔄 Auto-refresh: Reload page")

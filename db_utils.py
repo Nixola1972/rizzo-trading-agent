@@ -46,10 +46,20 @@ def get_connection():
     """Context manager che restituisce una connessione PostgreSQL.
 
     Usa il DSN in DATABASE_URL.
+    Timeout configurabili da .env:
+    - DB_CONNECT_TIMEOUT: timeout connessione in secondi (default 30)
+    - DB_QUERY_TIMEOUT: timeout query in millisecondi (default 60000 = 60s)
     """
 
     config = get_db_config()
-    conn = psycopg2.connect(config.dsn)
+    connect_timeout = int(os.getenv("DB_CONNECT_TIMEOUT", "30"))
+    query_timeout = int(os.getenv("DB_QUERY_TIMEOUT", "60000"))
+
+    conn = psycopg2.connect(
+        config.dsn,
+        connect_timeout=connect_timeout,
+        options=f'-c statement_timeout={query_timeout}'
+    )
     try:
         yield conn
     finally:
@@ -182,6 +192,137 @@ CREATE TABLE IF NOT EXISTS errors (
 
 CREATE INDEX IF NOT EXISTS idx_errors_created_at
     ON errors(created_at);
+
+CREATE TABLE IF NOT EXISTS signal_scores (
+    id                  BIGSERIAL PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    context_id          BIGINT REFERENCES ai_contexts(id) ON DELETE CASCADE,
+    symbol              TEXT NOT NULL,
+    score_bullish       NUMERIC(10, 2) NOT NULL,
+    score_bearish       NUMERIC(10, 2) NOT NULL,
+    net_score           NUMERIC(10, 2) NOT NULL,
+    direction           TEXT NOT NULL,
+    confidence          TEXT,
+    signals             JSONB NOT NULL,
+    thresholds          JSONB,
+    weights_config      JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_scores_created_at
+    ON signal_scores(created_at);
+CREATE INDEX IF NOT EXISTS idx_signal_scores_symbol
+    ON signal_scores(symbol);
+
+CREATE TABLE IF NOT EXISTS position_tracking (
+    id                  BIGSERIAL PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol              TEXT NOT NULL UNIQUE,
+    direction           TEXT NOT NULL,
+    entry_price         NUMERIC(30, 10) NOT NULL,
+    peak_price          NUMERIC(30, 10) NOT NULL,
+    trailing_active     BOOLEAN DEFAULT FALSE,
+    last_checked_price  NUMERIC(30, 10),
+    opening_score       NUMERIC(10, 2),
+    trading_mode        TEXT DEFAULT 'NORMAL',
+    force_accelerate    BOOLEAN DEFAULT FALSE,
+    leverage            NUMERIC(10, 2)
+);
+
+CREATE INDEX IF NOT EXISTS idx_position_tracking_symbol
+    ON position_tracking(symbol);
+
+-- Migration: aggiungi colonne se non esistono (per DB esistenti)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='position_tracking' AND column_name='opening_score') THEN
+        ALTER TABLE position_tracking ADD COLUMN opening_score NUMERIC(10, 2);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='position_tracking' AND column_name='trading_mode') THEN
+        ALTER TABLE position_tracking ADD COLUMN trading_mode TEXT DEFAULT 'NORMAL';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='position_tracking' AND column_name='force_accelerate') THEN
+        ALTER TABLE position_tracking ADD COLUMN force_accelerate BOOLEAN DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='position_tracking' AND column_name='leverage') THEN
+        ALTER TABLE position_tracking ADD COLUMN leverage NUMERIC(10, 2);
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS sentinel_logs (
+    id                  BIGSERIAL PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol              TEXT NOT NULL,
+    direction           TEXT NOT NULL,
+    entry_price         NUMERIC(30, 10) NOT NULL,
+    current_price       NUMERIC(30, 10) NOT NULL,
+    peak_price          NUMERIC(30, 10) NOT NULL,
+    profit_pct          NUMERIC(10, 4),
+    profit_from_peak_pct NUMERIC(10, 4),
+    trailing_active     BOOLEAN DEFAULT FALSE,
+    action_taken        TEXT,
+    action_reason       TEXT,
+    bot_triggered       BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sentinel_logs_created_at
+    ON sentinel_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_sentinel_logs_symbol
+    ON sentinel_logs(symbol);
+
+-- Cache per Fear & Greed Index (evita chiamate API ripetute dal sentinel)
+CREATE TABLE IF NOT EXISTS sentiment_cache (
+    id              BIGSERIAL PRIMARY KEY,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    value           INTEGER NOT NULL,
+    classification  TEXT,
+    source_timestamp BIGINT,
+    raw             JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_sentiment_cache_created_at
+    ON sentiment_cache(created_at);
+
+-- Log completo prompt/risposta AI per analisi
+CREATE TABLE IF NOT EXISTS ai_prompt_logs (
+    id              BIGSERIAL PRIMARY KEY,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol          TEXT NOT NULL,
+    full_prompt     TEXT NOT NULL,
+    ai_raw_response TEXT,
+    parsed_decision JSONB,
+    model_used      TEXT,
+    duration_ms     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_created_at
+    ON ai_prompt_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_symbol
+    ON ai_prompt_logs(symbol);
+
+-- Pending entries for pattern-based entry system (shared between SLOW and FAST)
+CREATE TABLE IF NOT EXISTS pending_entries (
+    id                  BIGSERIAL PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol              TEXT NOT NULL UNIQUE,
+    direction           TEXT NOT NULL,
+    entry_price         NUMERIC(30, 10) NOT NULL,
+    invalidation_price  NUMERIC(30, 10) NOT NULL,
+    stop_loss           NUMERIC(30, 10) NOT NULL,
+    expires_at          TIMESTAMPTZ NOT NULL,
+    trading_mode        TEXT NOT NULL DEFAULT 'MICRO_GAIN',
+    pattern             TEXT NOT NULL DEFAULT 'DOUBLE_BOTTOM',
+    confidence          NUMERIC(5, 2) DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_entries_symbol
+    ON pending_entries(symbol);
+CREATE INDEX IF NOT EXISTS idx_pending_entries_expires
+    ON pending_entries(expires_at);
 """
 
 
@@ -275,6 +416,10 @@ BEGIN
         ALTER COLUMN forecasts DROP NOT NULL;
     END IF;
 END$$;
+
+-- Migration for sentinel_logs bot_triggered column
+ALTER TABLE sentinel_logs
+    ADD COLUMN IF NOT EXISTS bot_triggered BOOLEAN DEFAULT FALSE;
 """
 
 
@@ -362,6 +507,55 @@ def _normalize_for_json(value: Any) -> Any:
     return value
 
 
+def log_ai_prompt(
+    symbol: str,
+    full_prompt: str,
+    ai_raw_response: str = None,
+    parsed_decision: Dict[str, Any] = None,
+    model_used: str = None,
+    duration_ms: int = None,
+) -> int:
+    """Salva il prompt completo e la risposta AI per analisi.
+
+    Parametri:
+    - symbol: simbolo analizzato (BTC, ETH, SOL)
+    - full_prompt: prompt completo inviato all'AI
+    - ai_raw_response: risposta grezza dell'AI
+    - parsed_decision: decisione parsata come dict
+    - model_used: modello AI utilizzato
+    - duration_ms: durata della chiamata in millisecondi
+
+    Restituisce l'ID del log creato.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ai_prompt_logs (
+                    symbol,
+                    full_prompt,
+                    ai_raw_response,
+                    parsed_decision,
+                    model_used,
+                    duration_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    symbol,
+                    full_prompt,
+                    ai_raw_response,
+                    Json(parsed_decision) if parsed_decision else None,
+                    model_used,
+                    duration_ms,
+                ),
+            )
+            log_id = cur.fetchone()[0]
+            conn.commit()
+            return log_id
+
+
 def log_error(
     exc: BaseException,
     *,
@@ -411,6 +605,174 @@ def log_error(
             )
         conn.commit()
 
+
+
+def log_signal_score(
+    symbol: str,
+    score_result: Dict[str, Any],
+    *,
+    context_id: Optional[int] = None,
+    weights_config: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Salva il risultato dello scoring dei segnali nella tabella `signal_scores`.
+
+    Parametri:
+    - symbol: simbolo della criptovaluta (BTC, ETH, SOL)
+    - score_result: dizionario con i risultati dello scoring da signal_scorer.py
+        {
+            'score_bullish': float,
+            'score_bearish': float,
+            'net_score': float,
+            'direction': str (LONG/SHORT/HOLD),
+            'confidence': str (STRONG/NORMAL/WEAK),
+            'signals': list of dicts con dettagli per ogni indicatore,
+            'thresholds': dict con le soglie usate
+        }
+    - context_id: ID del contesto AI (opzionale, per collegare all'operazione)
+    - weights_config: configurazione dei pesi usati (opzionale, per tracciabilità)
+
+    Restituisce l'ID del record creato.
+    """
+
+    score_bullish = score_result.get('score_bullish', 0)
+    score_bearish = score_result.get('score_bearish', 0)
+    net_score = score_result.get('net_score', 0)
+    direction = score_result.get('direction', 'HOLD')
+    confidence = score_result.get('confidence', 'WEAK')
+    signals = score_result.get('signals', [])
+    thresholds = score_result.get('thresholds', {})
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO signal_scores (
+                    context_id,
+                    symbol,
+                    score_bullish,
+                    score_bearish,
+                    net_score,
+                    direction,
+                    confidence,
+                    signals,
+                    thresholds,
+                    weights_config
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    context_id,
+                    symbol,
+                    score_bullish,
+                    score_bearish,
+                    net_score,
+                    direction,
+                    confidence,
+                    Json(_normalize_for_json(signals)),
+                    Json(thresholds) if thresholds else None,
+                    Json(weights_config) if weights_config else None,
+                ),
+            )
+            score_id = cur.fetchone()[0]
+        conn.commit()
+
+    return score_id
+
+
+def get_recent_scores(symbol: str, limit: int = 3, max_age_minutes: int = 10) -> list:
+    """Recupera gli ultimi N scores per un simbolo dalla tabella signal_scores.
+
+    Args:
+        symbol: Simbolo da cercare (BTC, ETH, SOL)
+        limit: Numero massimo di scores da recuperare
+        max_age_minutes: Considera solo scores non più vecchi di N minuti
+
+    Returns:
+        Lista di net_score ordinati dal più vecchio al più recente
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT net_score
+                FROM signal_scores
+                WHERE symbol = %s
+                  AND timestamp >= NOW() - INTERVAL '%s minutes'
+                ORDER BY timestamp DESC
+                LIMIT %s;
+                """,
+                (symbol, max_age_minutes, limit),
+            )
+            rows = cur.fetchall()
+
+    # Inverti per avere ordine cronologico (dal più vecchio al più recente)
+    return [row[0] for row in reversed(rows)]
+
+
+def check_score_confirmation_db(symbol: str, threshold: float, cycles_required: int = 3) -> dict:
+    """
+    Verifica se lo score è stato stabile sopra la soglia per N cicli consecutivi.
+
+    Usa i dati dal database per verificare la conferma, utile per main.py
+    che non ha accesso alla _score_history in memoria del sentinel.
+
+    Args:
+        symbol: Simbolo da verificare
+        threshold: Soglia minima (es. SCORE_THRESHOLD_OPEN)
+        cycles_required: Numero di cicli consecutivi richiesti
+
+    Returns:
+        dict con:
+        - confirmed: True se tutti i cicli sono sopra soglia e stessa direzione
+        - reason: Motivo se non confermato
+        - cycles_above: Quanti cicli sono sopra soglia
+        - direction: "long" o "short" basato sulla direzione consistente
+        - scores: Lista degli score recenti
+    """
+    result = {
+        "confirmed": False,
+        "reason": "",
+        "cycles_above": 0,
+        "direction": None,
+        "scores": []
+    }
+
+    # Recupera scores recenti (max 10 minuti fa, assumendo cicli da 30s = 20 cicli max)
+    scores = get_recent_scores(symbol, limit=cycles_required, max_age_minutes=10)
+    result["scores"] = scores
+
+    if len(scores) == 0:
+        result["reason"] = "No recent scores in DB"
+        return result
+
+    if len(scores) < cycles_required:
+        result["reason"] = f"Need {cycles_required} cycles, have {len(scores)}"
+        result["cycles_above"] = len(scores)
+        return result
+
+    # Verifica che TUTTI siano sopra la soglia
+    all_above_threshold = all(abs(s) >= threshold for s in scores)
+    if not all_above_threshold:
+        below_threshold = [s for s in scores if abs(s) < threshold]
+        result["reason"] = f"Some scores below threshold: {[f'{s:.1f}' for s in below_threshold]}"
+        result["cycles_above"] = sum(1 for s in scores if abs(s) >= threshold)
+        return result
+
+    # Verifica che TUTTI abbiano la stessa direzione
+    all_positive = all(s > 0 for s in scores)
+    all_negative = all(s < 0 for s in scores)
+
+    if not (all_positive or all_negative):
+        result["reason"] = f"Mixed directions in last {cycles_required} cycles"
+        return result
+
+    # Confermato!
+    result["confirmed"] = True
+    result["direction"] = "long" if all_positive else "short"
+    result["cycles_above"] = cycles_required
+
+    return result
 
 
 def log_account_status(account_status: Dict[str, Any]) -> int:
@@ -565,6 +927,10 @@ def log_bot_operation(
             context_id = cur.fetchone()[0]
             if indicators is not None:
                 for indicator in indicators:
+                    # Skip se indicator non è un dizionario
+                    if not isinstance(indicator, dict):
+                        print(f"[db_utils] Skipping non-dict indicator: {type(indicator)}")
+                        continue
                     indicators_norm = _normalize_json_arg(indicator) if indicator is not None else None
 
                     # 2) Dettagli per tipo di input, se presenti
@@ -844,22 +1210,768 @@ def get_latest_account_snapshot() -> Optional[Dict[str, Any]]:
 
 
 
-def get_recent_bot_operations(limit: int = 50) -> List[Dict[str, Any]]:
-    """Restituisce le ultime N operazioni del bot (raw_payload)."""
+def get_recent_bot_operations(limit: int = 50, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Restituisce le ultime N operazioni del bot.
+
+    Args:
+        limit: Numero massimo di operazioni da restituire
+        symbol: Filtra per simbolo specifico (es: 'BTC', 'ETH'). Se None, restituisce tutti.
+
+    Returns:
+        Lista di dizionari con raw_payload e created_at
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if symbol:
+                cur.execute(
+                    """
+                    SELECT raw_payload, created_at
+                    FROM bot_operations
+                    WHERE symbol = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (symbol, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT raw_payload, created_at
+                    FROM bot_operations
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (limit,),
+                )
+            rows = cur.fetchall()
+            return [{'raw_payload': r[0], 'created_at': r[1]} for r in rows]
+
+
+# =====================
+# Position Tracking per Trailing Stop
+# =====================
+
+
+def get_position_tracking(symbol: str) -> Optional[Dict[str, Any]]:
+    """Restituisce il tracking di una posizione per symbol, oppure None se non esiste."""
 
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT raw_payload
-                FROM bot_operations
-                ORDER BY created_at DESC
-                LIMIT %s;
+                SELECT symbol, direction, entry_price, peak_price, trailing_active,
+                       last_checked_price, updated_at, opening_score, trading_mode, created_at, force_accelerate, leverage
+                FROM position_tracking
+                WHERE symbol = %s;
                 """,
-                (limit,),
+                (symbol,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "symbol": row[0],
+                "direction": row[1],
+                "entry_price": float(row[2]),
+                "peak_price": float(row[3]),
+                "trailing_active": row[4],
+                "last_checked_price": float(row[5]) if row[5] else None,
+                "updated_at": row[6],
+                "opening_score": float(row[7]) if row[7] else None,
+                "trading_mode": row[8] or "NORMAL",
+                "created_at": row[9],
+                "force_accelerate": row[10] or False,
+                "leverage": float(row[11]) if row[11] else None,
+            }
+
+
+def upsert_position_tracking(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    current_price: float,
+    trailing_active: bool = False,
+    opening_score: float = None,
+    trading_mode: str = "NORMAL",
+    leverage: float = None,
+) -> Dict[str, Any]:
+    """
+    Crea o aggiorna il tracking di una posizione.
+    Aggiorna peak_price se il prezzo corrente è migliore (più alto per LONG, più basso per SHORT).
+
+    Args:
+        symbol: Simbolo della posizione
+        direction: 'long' o 'short'
+        entry_price: Prezzo di entrata
+        current_price: Prezzo corrente
+        trailing_active: Se il trailing stop è attivo
+        opening_score: Score al momento dell'apertura (per determinare trading_mode)
+        trading_mode: 'MICRO_GAIN' o 'NORMAL'
+        leverage: Leva usata per la posizione (IMPORTANTE per calcoli SL)
+
+    Returns: dict con i dati aggiornati del tracking
+    """
+    # Converti numpy types a Python native types per evitare errore "schema np does not exist"
+    entry_price = float(entry_price) if entry_price is not None else 0.0
+    current_price = float(current_price) if current_price is not None else 0.0
+    opening_score = float(opening_score) if opening_score is not None else None
+    leverage = float(leverage) if leverage is not None else None
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Controlla se esiste già
+            cur.execute(
+                "SELECT peak_price, direction, opening_score, trading_mode, entry_price, leverage FROM position_tracking WHERE symbol = %s",
+                (symbol,),
+            )
+            existing = cur.fetchone()
+
+            if existing:
+                old_peak = float(existing[0])
+                old_direction = existing[1]
+                existing_opening_score = existing[2]
+                existing_trading_mode = existing[3]
+                existing_entry_price = float(existing[4]) if existing[4] else 0
+                existing_leverage = float(existing[5]) if existing[5] else None
+
+                # Se entry_price è significativamente diverso, è una NUOVA posizione
+                is_new_position = abs(entry_price - existing_entry_price) > 1.0
+
+                if is_new_position:
+                    # Nuova posizione: reset tutto
+                    new_peak = current_price
+                    final_opening_score = opening_score
+                    final_trading_mode = trading_mode
+                    final_leverage = leverage  # Use new leverage for new position
+                else:
+                    # Stessa posizione: aggiorna peak, mantieni trading_mode e leverage originali
+                    if direction.lower() == 'long':
+                        new_peak = max(old_peak, current_price)
+                    else:
+                        new_peak = min(old_peak, current_price)
+                    final_opening_score = opening_score if opening_score is not None else existing_opening_score
+                    final_trading_mode = existing_trading_mode or trading_mode
+                    # IMPORTANTE: mantieni la leva originale per calcoli SL consistenti
+                    final_leverage = existing_leverage if existing_leverage else leverage
+
+                # Update con tutti i campi (reset force_accelerate se nuova posizione)
+                reset_accelerate = is_new_position
+                cur.execute(
+                    """
+                    UPDATE position_tracking
+                    SET peak_price = %s,
+                        trailing_active = %s,
+                        last_checked_price = %s,
+                        updated_at = NOW(),
+                        direction = %s,
+                        entry_price = %s,
+                        opening_score = %s,
+                        trading_mode = %s,
+                        force_accelerate = CASE WHEN %s THEN FALSE ELSE force_accelerate END,
+                        leverage = CASE WHEN %s THEN %s ELSE COALESCE(leverage, %s) END
+                    WHERE symbol = %s
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode, force_accelerate, leverage;
+                    """,
+                    (new_peak, trailing_active, current_price, direction, entry_price,
+                     final_opening_score, final_trading_mode, reset_accelerate,
+                     is_new_position, final_leverage, final_leverage, symbol),
+                )
+            else:
+                # Insert nuovo con opening_score, trading_mode, leverage (force_accelerate=FALSE)
+                cur.execute(
+                    """
+                    INSERT INTO position_tracking (symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, opening_score, trading_mode, force_accelerate, leverage)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s)
+                    RETURNING symbol, direction, entry_price, peak_price, trailing_active, opening_score, trading_mode, force_accelerate, leverage;
+                    """,
+                    (symbol, direction, entry_price, current_price, trailing_active, current_price, opening_score, trading_mode, leverage),
+                )
+
+            row = cur.fetchone()
+        conn.commit()
+
+    return {
+        "symbol": row[0],
+        "direction": row[1],
+        "entry_price": float(row[2]),
+        "peak_price": float(row[3]),
+        "trailing_active": row[4],
+        "opening_score": float(row[5]) if row[5] else None,
+        "trading_mode": row[6] or "NORMAL",
+        "force_accelerate": row[7] or False,
+        "leverage": float(row[8]) if row[8] else None,
+    }
+
+
+def delete_position_tracking(symbol: str) -> bool:
+    """Elimina il tracking di una posizione (da chiamare quando si chiude la posizione)."""
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM position_tracking WHERE symbol = %s RETURNING id;",
+                (symbol,),
+            )
+            deleted = cur.fetchone()
+        conn.commit()
+
+    return deleted is not None
+
+
+def update_position_tracking(symbol: str, tracking_data: Dict[str, Any]) -> bool:
+    """
+    Aggiorna campi specifici del tracking di una posizione.
+    Usato principalmente per impostare force_accelerate quando viene rilevato un pattern contrario.
+
+    Args:
+        symbol: Simbolo della posizione
+        tracking_data: Dict con i campi da aggiornare (es. {'force_accelerate': True})
+
+    Returns:
+        True se l'aggiornamento è riuscito, False altrimenti
+    """
+    # Campi aggiornabili
+    allowed_fields = ['force_accelerate', 'trailing_active', 'peak_price', 'last_checked_price']
+
+    # Filtra solo i campi permessi
+    updates = {k: v for k, v in tracking_data.items() if k in allowed_fields}
+
+    if not updates:
+        return False
+
+    # Costruisci la query dinamicamente
+    set_clauses = []
+    values = []
+    for field, value in updates.items():
+        set_clauses.append(f"{field} = %s")
+        values.append(value)
+
+    values.append(symbol)  # Per la WHERE clause
+
+    query = f"""
+        UPDATE position_tracking
+        SET {', '.join(set_clauses)}, updated_at = NOW()
+        WHERE symbol = %s
+        RETURNING id;
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, values)
+            updated = cur.fetchone()
+        conn.commit()
+
+    return updated is not None
+
+
+def get_all_position_trackings() -> List[Dict[str, Any]]:
+    """Restituisce tutti i tracking attivi."""
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, direction, entry_price, peak_price, trailing_active, last_checked_price, updated_at, force_accelerate
+                FROM position_tracking;
+                """
             )
             rows = cur.fetchall()
-            return [r[0] for r in rows]
+
+    return [
+        {
+            "symbol": row[0],
+            "direction": row[1],
+            "entry_price": float(row[2]),
+            "peak_price": float(row[3]),
+            "trailing_active": row[4],
+            "last_checked_price": float(row[5]) if row[5] else None,
+            "updated_at": row[6],
+            "force_accelerate": row[7] or False,
+        }
+        for row in rows
+    ]
+
+
+# ==================== PENDING ENTRIES (Pattern Detection) ====================
+
+def save_pending_entry(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    invalidation_price: float,
+    stop_loss: float,
+    expires_at: str,
+    trading_mode: str = "MICRO_GAIN",
+    pattern: str = "DOUBLE_BOTTOM",
+    confidence: float = 0.0
+) -> bool:
+    """
+    Salva un pending entry nel database.
+    Usato per condividere pending entries tra SLOW e FAST containers.
+    """
+    import json
+    from datetime import datetime
+
+    # Converti numpy types a Python native types
+    entry_price = float(entry_price) if entry_price is not None else 0.0
+    invalidation_price = float(invalidation_price) if invalidation_price is not None else 0.0
+    stop_loss = float(stop_loss) if stop_loss is not None else 0.0
+    confidence = float(confidence) if confidence is not None else 0.0
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Usa UPSERT per aggiornare se esiste già
+                cur.execute(
+                    """
+                    INSERT INTO pending_entries (symbol, direction, entry_price, invalidation_price, stop_loss, expires_at, trading_mode, pattern, confidence, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (symbol) DO UPDATE SET
+                        direction = EXCLUDED.direction,
+                        entry_price = EXCLUDED.entry_price,
+                        invalidation_price = EXCLUDED.invalidation_price,
+                        stop_loss = EXCLUDED.stop_loss,
+                        expires_at = EXCLUDED.expires_at,
+                        trading_mode = EXCLUDED.trading_mode,
+                        pattern = EXCLUDED.pattern,
+                        confidence = EXCLUDED.confidence,
+                        created_at = NOW()
+                    RETURNING id;
+                    """,
+                    (symbol, direction, entry_price, invalidation_price, stop_loss, expires_at, trading_mode, pattern, confidence),
+                )
+                result = cur.fetchone()
+            conn.commit()
+        return result is not None
+    except Exception as e:
+        print(f"⚠️ Error saving pending entry: {e}")
+        return False
+
+
+def get_pending_entry(symbol: str) -> Optional[Dict[str, Any]]:
+    """Recupera un pending entry per simbolo."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT symbol, direction, entry_price, invalidation_price, stop_loss, expires_at, trading_mode, pattern, confidence, created_at
+                    FROM pending_entries
+                    WHERE symbol = %s;
+                    """,
+                    (symbol,),
+                )
+                row = cur.fetchone()
+
+        if row:
+            return {
+                "symbol": row[0],
+                "direction": row[1],
+                "entry_price": float(row[2]),
+                "invalidation_price": float(row[3]),
+                "stop_loss": float(row[4]),
+                "expires_at": row[5],
+                "trading_mode": row[6],
+                "pattern": row[7],
+                "confidence": float(row[8]) if row[8] else 0.0,
+                "created_at": row[9],
+            }
+        return None
+    except Exception as e:
+        print(f"⚠️ Error getting pending entry: {e}")
+        return None
+
+
+def get_all_pending_entries() -> List[Dict[str, Any]]:
+    """Recupera tutti i pending entries attivi."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT symbol, direction, entry_price, invalidation_price, stop_loss, expires_at, trading_mode, pattern, confidence, created_at
+                    FROM pending_entries;
+                    """
+                )
+                rows = cur.fetchall()
+
+        return [
+            {
+                "symbol": row[0],
+                "direction": row[1],
+                "entry_price": float(row[2]),
+                "invalidation_price": float(row[3]),
+                "stop_loss": float(row[4]),
+                "expires_at": row[5],
+                "trading_mode": row[6],
+                "pattern": row[7],
+                "confidence": float(row[8]) if row[8] else 0.0,
+                "created_at": row[9],
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        print(f"⚠️ Error getting all pending entries: {e}")
+        return []
+
+
+def delete_pending_entry(symbol: str) -> bool:
+    """Elimina un pending entry."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM pending_entries WHERE symbol = %s RETURNING id;",
+                    (symbol,),
+                )
+                deleted = cur.fetchone()
+            conn.commit()
+        return deleted is not None
+    except Exception as e:
+        print(f"⚠️ Error deleting pending entry: {e}")
+        return False
+
+
+def cleanup_expired_pending_entries() -> int:
+    """Rimuove pending entries scaduti. Ritorna il numero di entries rimossi."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM pending_entries
+                    WHERE expires_at < NOW()
+                    RETURNING symbol;
+                    """
+                )
+                deleted = cur.fetchall()
+            conn.commit()
+        return len(deleted)
+    except Exception as e:
+        print(f"⚠️ Error cleaning up pending entries: {e}")
+        return 0
+
+
+# ==================== SENTINEL LOGS ====================
+
+def log_sentinel_check(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    current_price: float,
+    peak_price: float,
+    profit_pct: float = None,
+    profit_from_peak_pct: float = None,
+    trailing_active: bool = False,
+    action_taken: str = None,
+    action_reason: str = None,
+    bot_triggered: bool = False,
+) -> int:
+    """Logga un controllo sentinel nel database.
+
+    Parametri:
+    - symbol: simbolo (BTC, ETH, SOL)
+    - direction: direzione posizione (long/short)
+    - entry_price: prezzo di entrata
+    - current_price: prezzo corrente
+    - peak_price: prezzo massimo raggiunto
+    - profit_pct: percentuale di profitto dall'entry
+    - profit_from_peak_pct: percentuale dal peak (negativo = sceso dal peak)
+    - trailing_active: se il trailing stop è attivo
+    - action_taken: azione intrapresa (CLOSE_STOP_LOSS, CLOSE_TRAILING_STOP, CLOSE_TAKE_PROFIT, None)
+    - action_reason: motivo dell'azione
+    - bot_triggered: se il bot principale è stato triggerato per rivalutare
+
+    Restituisce l'ID del record creato.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO sentinel_logs (
+                    symbol, direction, entry_price, current_price, peak_price,
+                    profit_pct, profit_from_peak_pct, trailing_active,
+                    action_taken, action_reason, bot_triggered
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    symbol,
+                    direction,
+                    entry_price,
+                    current_price,
+                    peak_price,
+                    profit_pct,
+                    profit_from_peak_pct,
+                    trailing_active,
+                    action_taken,
+                    action_reason,
+                    bot_triggered,
+                ),
+            )
+            log_id = cur.fetchone()[0]
+        conn.commit()
+
+    return log_id
+
+
+def get_sentinel_logs(symbol: str = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Restituisce gli ultimi log sentinel.
+
+    Parametri:
+    - symbol: filtra per simbolo (opzionale)
+    - limit: numero massimo di record da restituire (default 50)
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if symbol:
+                cur.execute(
+                    """
+                    SELECT id, created_at, symbol, direction, entry_price, current_price,
+                           peak_price, profit_pct, profit_from_peak_pct, trailing_active,
+                           action_taken, action_reason, COALESCE(bot_triggered, FALSE)
+                    FROM sentinel_logs
+                    WHERE symbol = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (symbol, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, created_at, symbol, direction, entry_price, current_price,
+                           peak_price, profit_pct, profit_from_peak_pct, trailing_active,
+                           action_taken, action_reason, COALESCE(bot_triggered, FALSE)
+                    FROM sentinel_logs
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (limit,),
+                )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "created_at": row[1],
+            "symbol": row[2],
+            "direction": row[3],
+            "entry_price": float(row[4]),
+            "current_price": float(row[5]),
+            "peak_price": float(row[6]),
+            "profit_pct": float(row[7]) if row[7] else None,
+            "profit_from_peak_pct": float(row[8]) if row[8] else None,
+            "trailing_active": row[9],
+            "action_taken": row[10],
+            "action_reason": row[11],
+            "bot_triggered": row[12],
+        }
+        for row in rows
+    ]
+
+
+def get_sentinel_status() -> Dict[str, Any]:
+    """Restituisce lo stato del sentinel con statistiche."""
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Ultimo check
+            cur.execute(
+                """
+                SELECT created_at FROM sentinel_logs
+                ORDER BY created_at DESC LIMIT 1;
+                """
+            )
+            last_check_row = cur.fetchone()
+
+            # Conteggio azioni
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) as total_checks,
+                    COUNT(action_taken) as total_actions,
+                    COUNT(CASE WHEN action_taken = 'CLOSE_STOP_LOSS' THEN 1 END) as stop_loss_count,
+                    COUNT(CASE WHEN action_taken = 'CLOSE_TRAILING_STOP' THEN 1 END) as trailing_stop_count,
+                    COUNT(CASE WHEN action_taken = 'CLOSE_TAKE_PROFIT' THEN 1 END) as take_profit_count,
+                    COUNT(CASE WHEN bot_triggered = TRUE THEN 1 END) as bot_triggered_count
+                FROM sentinel_logs
+                WHERE created_at > NOW() - INTERVAL '24 hours';
+                """
+            )
+            stats_row = cur.fetchone()
+
+    return {
+        "last_check": last_check_row[0] if last_check_row else None,
+        "checks_24h": stats_row[0] if stats_row else 0,
+        "actions_24h": stats_row[1] if stats_row else 0,
+        "stop_loss_24h": stats_row[2] if stats_row else 0,
+        "trailing_stop_24h": stats_row[3] if stats_row else 0,
+        "take_profit_24h": stats_row[4] if stats_row else 0,
+        "bot_triggered_24h": stats_row[5] if stats_row else 0,
+    }
+
+
+# ==================== SENTIMENT CACHE ====================
+
+def save_sentiment_cache(
+    value: int,
+    classification: str = None,
+    source_timestamp: int = None,
+    raw: Dict[str, Any] = None,
+) -> int:
+    """Salva il valore Fear & Greed Index nella cache.
+
+    Chiamato da main.py ogni 15 minuti quando recupera il sentiment.
+    Il sentinel leggerà da questa cache invece di chiamare l'API.
+
+    Parametri:
+    - value: valore del Fear & Greed Index (0-100)
+    - classification: classificazione (Extreme Fear, Fear, Neutral, Greed, Extreme Greed)
+    - source_timestamp: timestamp originale del dato
+    - raw: payload completo originale
+
+    Restituisce l'ID del record creato.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO sentiment_cache (value, classification, source_timestamp, raw)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (value, classification, source_timestamp, Json(raw) if raw else None),
+            )
+            cache_id = cur.fetchone()[0]
+        conn.commit()
+
+    return cache_id
+
+
+def get_cached_sentiment(max_age_minutes: int = 60) -> Optional[Dict[str, Any]]:
+    """Restituisce l'ultimo sentiment dalla cache se non troppo vecchio.
+
+    Parametri:
+    - max_age_minutes: età massima in minuti del dato (default 60)
+
+    Restituisce None se non c'è un dato abbastanza recente.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT value, classification, source_timestamp, raw, created_at
+                FROM sentiment_cache
+                WHERE created_at > NOW() - INTERVAL '%s minutes'
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (max_age_minutes,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "valore": row[0],
+        "classificazione": row[1],
+        "timestamp": row[2],
+        "raw": row[3],
+        "cached_at": row[4],
+    }
+
+
+def cleanup_old_sentiment_cache(keep_hours: int = 24) -> int:
+    """Elimina i record di sentiment cache più vecchi di N ore.
+
+    Parametri:
+    - keep_hours: mantieni solo gli ultimi N ore (default 24)
+
+    Restituisce il numero di record eliminati.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM sentiment_cache
+                WHERE created_at < NOW() - INTERVAL '%s hours'
+                RETURNING id;
+                """,
+                (keep_hours,),
+            )
+            deleted = cur.fetchall()
+        conn.commit()
+
+    return len(deleted)
+
+
+def get_sentiment_trend(hours: int = 6) -> Optional[Dict[str, Any]]:
+    """Calcola il trend del sentiment confrontando valori recenti.
+
+    Restituisce:
+    - current_value: valore attuale
+    - previous_value: valore precedente (1-2 ore fa)
+    - change: differenza (current - previous)
+    - trend: 'increasing', 'decreasing', o 'stable'
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Prendi ultimi 2 valori sentiment con almeno 30 minuti di distanza
+            cur.execute(
+                """
+                SELECT value, created_at
+                FROM sentiment_cache
+                WHERE created_at > NOW() - INTERVAL '%s hours'
+                ORDER BY created_at DESC
+                LIMIT 5;
+                """,
+                (hours,),
+            )
+            rows = cur.fetchall()
+
+    if len(rows) < 2:
+        return None
+
+    current = rows[0]
+    # Cerca il primo valore con almeno 30 minuti di differenza
+    previous = None
+    for row in rows[1:]:
+        time_diff = (current[1] - row[1]).total_seconds() / 60
+        if time_diff >= 30:
+            previous = row
+            break
+
+    if not previous:
+        previous = rows[-1]  # Usa l'ultimo disponibile
+
+    current_value = current[0]
+    previous_value = previous[0]
+    change = current_value - previous_value
+
+    if change > 3:
+        trend = "increasing"
+    elif change < -3:
+        trend = "decreasing"
+    else:
+        trend = "stable"
+
+    return {
+        "current_value": current_value,
+        "previous_value": previous_value,
+        "change": change,
+        "trend": trend
+    }
 
 
 if __name__ == "__main__":
