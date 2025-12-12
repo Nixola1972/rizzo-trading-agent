@@ -514,12 +514,23 @@ def create_pending_entry(
     return success
 
 
-def remove_pending_entry(symbol: str, reason: str):
-    """Remove a pending entry from database and log the reason."""
+def remove_pending_entry(symbol: str, reason: str, apply_cooldown: bool = False):
+    """Remove a pending entry from database and log the reason.
+
+    Args:
+        symbol: Symbol to remove
+        reason: Reason for removal (logged)
+        apply_cooldown: If True, apply cooldown to prevent immediate re-entry
+    """
     import db_utils
 
     if db_utils.delete_pending_entry(symbol):
         log(f"   🗑️ {symbol}: Pending entry removed - {reason}")
+
+        # Apply cooldown if pattern was broken/invalidated to avoid immediate re-analysis
+        if apply_cooldown:
+            set_cooldown(symbol)
+            log(f"   ⏳ Cooldown impostato per {symbol} (evita ri-analisi immediata)")
 
 
 def check_pending_entries(exchange, info, existing_symbols: list = None) -> list:
@@ -643,7 +654,9 @@ def check_pending_entries(exchange, info, existing_symbols: list = None) -> list
 
     # Remove processed entries from database
     for symbol, reason in symbols_to_remove:
-        remove_pending_entry(symbol, reason)
+        # Apply cooldown when pattern is broken to avoid immediate re-analysis
+        should_cooldown = "Pattern broken" in reason or "EXPIRED" in reason
+        remove_pending_entry(symbol, reason, apply_cooldown=should_cooldown)
 
     return triggered
 
