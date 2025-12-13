@@ -768,7 +768,7 @@ docker build -t rizzo-arena -f Dockerfile.arena .
 docker run -d \
   --name rizzo-arena \
   --env-file .env \
-  -p 5055:5050 \
+  -p 5055:5055 \
   rizzo-arena
 
 # View logs
@@ -777,7 +777,7 @@ docker logs -f rizzo-arena
 # Rebuild after updates
 docker stop rizzo-arena && docker rm rizzo-arena
 docker build -t rizzo-arena -f Dockerfile.arena .
-docker run -d --name rizzo-arena --env-file .env -p 5055:5050 rizzo-arena
+docker run -d --name rizzo-arena --env-file .env -p 5055:5055 rizzo-arena
 ```
 
 ### Files Reference (Arena)
