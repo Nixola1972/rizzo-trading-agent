@@ -1,0 +1,167 @@
+{
+  "version": "1.0",
+  "description": "Arena variant configurations - Edit this file to customize variants",
+  "variants": [
+    {
+      "id": "V1_BASELINE",
+      "name": "Baseline",
+      "description": "Current production configuration for comparison",
+      "enabled": true,
+      "operation_mode": "SCORE_TRIGGERED",
+      "ai_models": ["deepseek/deepseek-chat"],
+      "trading_params": {
+        "position_size_usd": 50.0,
+        "leverage": 3,
+        "stop_loss_pct": 3.0,
+        "take_profit_pct": 6.0,
+        "trailing_enabled": true,
+        "trailing_steps": "2.5:0.0,5.0:2.0,7.5:4.0",
+        "score_threshold_open": 15.0,
+        "double_check_ai_enabled": true,
+        "trading_style": "moderate",
+        "smart_sl_enabled": false
+      },
+      "indicator_config": {
+        "ema_short_period": 9,
+        "ema_medium_period": 21,
+        "ema_long_period": 50,
+        "rsi_period": 14,
+        "macd_fast": 12,
+        "macd_slow": 26,
+        "macd_signal": 9,
+        "weight_macd": 25.0,
+        "weight_rsi": 15.0,
+        "weight_ema_alignment": 20.0,
+        "weight_adx_trend": 15.0,
+        "weight_double_bottom": 12.0,
+        "weight_double_top": 12.0
+      },
+      "pattern_detection_enabled": true,
+      "pattern_timeframe": "1h",
+      "pattern_min_confidence": 0.60,
+      "symbols": ["BTC", "ETH", "SOL"]
+    },
+    {
+      "id": "V2_MULTI_AI",
+      "name": "Multi-AI Battle",
+      "description": "Same config, different AI models compete",
+      "enabled": true,
+      "operation_mode": "SCORE_TRIGGERED",
+      "ai_models": [
+        "deepseek/deepseek-chat",
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3-haiku",
+        "qwen/qwen-2.5-72b-instruct"
+      ],
+      "trading_params": {
+        "position_size_usd": 50.0,
+        "leverage": 3,
+        "stop_loss_pct": 3.0,
+        "take_profit_pct": 6.0,
+        "trailing_enabled": true,
+        "trailing_steps": "2.5:0.0,5.0:2.0,7.5:4.0",
+        "score_threshold_open": 15.0,
+        "double_check_ai_enabled": true,
+        "trading_style": "moderate",
+        "smart_sl_enabled": false
+      },
+      "indicator_config": {},
+      "pattern_detection_enabled": true,
+      "symbols": ["BTC", "ETH", "SOL"]
+    },
+    {
+      "id": "V3_SMART_EXIT",
+      "name": "Smart Exit",
+      "description": "AI-controlled stop loss with extension capability",
+      "enabled": true,
+      "operation_mode": "SCORE_TRIGGERED",
+      "ai_models": ["deepseek/deepseek-chat"],
+      "trading_params": {
+        "position_size_usd": 50.0,
+        "leverage": 3,
+        "stop_loss_pct": 3.5,
+        "take_profit_pct": 7.0,
+        "trailing_enabled": true,
+        "trailing_steps": "3.0:0.0,6.0:2.5,9.0:5.0",
+        "score_threshold_open": 15.0,
+        "double_check_ai_enabled": true,
+        "trading_style": "moderate",
+        "smart_sl_enabled": true,
+        "smart_sl_extension_pct": 1.0,
+        "smart_sl_max_extensions": 2
+      },
+      "indicator_config": {},
+      "pattern_detection_enabled": true,
+      "symbols": ["BTC", "ETH", "SOL"]
+    },
+    {
+      "id": "V4_INDICATOR_TEST",
+      "name": "Indicator Optimization",
+      "description": "Testing different indicator weights and periods",
+      "enabled": true,
+      "operation_mode": "SCORE_TRIGGERED",
+      "ai_models": ["deepseek/deepseek-chat"],
+      "trading_params": {
+        "position_size_usd": 50.0,
+        "leverage": 3,
+        "stop_loss_pct": 3.0,
+        "take_profit_pct": 6.0,
+        "trailing_enabled": true,
+        "trailing_steps": "2.5:0.0,5.0:2.0,7.5:4.0",
+        "score_threshold_open": 12.0,
+        "double_check_ai_enabled": true,
+        "trading_style": "moderate",
+        "smart_sl_enabled": false
+      },
+      "indicator_config": {
+        "ema_short_period": 7,
+        "ema_medium_period": 14,
+        "ema_long_period": 40,
+        "rsi_period": 10,
+        "macd_fast": 8,
+        "macd_slow": 21,
+        "macd_signal": 7,
+        "weight_macd": 30.0,
+        "weight_rsi": 10.0,
+        "weight_ema_alignment": 25.0,
+        "weight_adx_trend": 20.0,
+        "weight_double_bottom": 15.0,
+        "weight_double_top": 15.0,
+        "macd_threshold_strong": 0.15,
+        "adx_min_trend": 18.0
+      },
+      "pattern_detection_enabled": true,
+      "symbols": ["BTC", "ETH", "SOL"]
+    },
+    {
+      "id": "V5_AI_FREE",
+      "name": "AI Independent",
+      "description": "AI decides every 15 min without score filter",
+      "enabled": true,
+      "operation_mode": "AI_INDEPENDENT",
+      "ai_models": [
+        "deepseek/deepseek-chat",
+        "openai/gpt-4o-mini"
+      ],
+      "trading_params": {
+        "position_size_usd": 50.0,
+        "leverage": 3,
+        "stop_loss_pct": 4.0,
+        "take_profit_pct": 8.0,
+        "trailing_enabled": true,
+        "trailing_steps": "3.0:0.0,6.0:2.5,9.0:5.0",
+        "score_threshold_open": 0.0,
+        "double_check_ai_enabled": false,
+        "trading_style": "moderate",
+        "smart_sl_enabled": true,
+        "smart_sl_extension_pct": 1.5,
+        "smart_sl_max_extensions": 3
+      },
+      "indicator_config": {},
+      "ai_check_interval_minutes": 15,
+      "ai_independent_timeframe": "4h",
+      "pattern_detection_enabled": true,
+      "symbols": ["BTC", "ETH", "SOL"]
+    }
+  ]
+}
