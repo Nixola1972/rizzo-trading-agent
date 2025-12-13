@@ -418,6 +418,7 @@ DASHBOARD_HTML = """
                             <th>Symbol</th>
                             <th>AI Model</th>
                             <th>Direction</th>
+                            <th>Leva</th>
                             <th>Entry</th>
                             <th>Current</th>
                             <th>P&L %</th>
@@ -436,6 +437,7 @@ DASHBOARD_HTML = """
                                     {{ pos.direction }}
                                 </span>
                             </td>
+                            <td>{{ pos.leverage }}x</td>
                             <td>${{ "%.2f"|format(pos.entry_price) }}</td>
                             <td>${{ "%.2f"|format(pos.current_price) }}</td>
                             <td class="{{ 'pnl-positive' if pos.pnl_pct >= 0 else 'pnl-negative' }}">
@@ -451,7 +453,7 @@ DASHBOARD_HTML = """
                         </tr>
                         {% endfor %}
                         {% if not positions %}
-                        <tr><td colspan="9" style="text-align: center; color: #666;">No open positions</td></tr>
+                        <tr><td colspan="10" style="text-align: center; color: #666;">No open positions</td></tr>
                         {% endif %}
                     </tbody>
                 </table>
@@ -794,6 +796,7 @@ def get_positions_data() -> List[Dict[str, Any]]:
             "symbol": p.symbol,
             "ai_model": ai_model,
             "direction": p.direction.value,
+            "leverage": p.leverage,
             "entry_price": p.entry_price,
             "current_price": p.current_price,
             "pnl_pct": p.current_pnl_pct,
@@ -821,7 +824,7 @@ def get_recent_trades_data() -> List[Dict[str, Any]]:
 
 
 def get_ai_chart_data() -> Dict[str, Any]:
-    """Get chart data for AI battle."""
+    """Get chart data for AI battle including unrealized P&L."""
     colors = ['#00d4ff', '#00ff88', '#ff4444', '#ffaa00', '#aa44ff', '#44ffaa']
     datasets = []
     labels = ["Start"]
@@ -839,7 +842,15 @@ def get_ai_chart_data() -> Dict[str, Any]:
                     cumulative += t.pnl_usd
                     equity.append(cumulative)
                     if t.exit_time and len(labels) < len(equity):
-                        labels.append(t.exit_time.strftime("%m/%d"))
+                        labels.append(t.exit_time.strftime("%m/%d %H:%M"))
+
+                # Add unrealized P&L from open positions
+                open_positions = db.get_positions_for_sub_variant(sv.id)
+                unrealized_pnl = sum(p.current_pnl_usd for p in open_positions)
+                if unrealized_pnl != 0 or open_positions:
+                    equity.append(cumulative + unrealized_pnl)
+                    if len(labels) < len(equity):
+                        labels.append("Now")
 
                 # Pad labels
                 while len(labels) < len(equity):
@@ -858,7 +869,7 @@ def get_ai_chart_data() -> Dict[str, Any]:
 
 
 def get_strategy_chart_data() -> Dict[str, Any]:
-    """Get chart data for strategy comparison."""
+    """Get chart data for strategy comparison including unrealized P&L."""
     colors = ['#00d4ff', '#00ff88', '#ff4444', '#ffaa00', '#aa44ff']
     datasets = []
     labels = ["Start"]
@@ -876,7 +887,15 @@ def get_strategy_chart_data() -> Dict[str, Any]:
             cumulative += t.pnl_usd
             equity.append(cumulative)
             if t.exit_time and len(labels) < len(equity):
-                labels.append(t.exit_time.strftime("%m/%d"))
+                labels.append(t.exit_time.strftime("%m/%d %H:%M"))
+
+        # Add unrealized P&L from open positions
+        open_positions = db.get_positions_for_variant(v.id)
+        unrealized_pnl = sum(p.current_pnl_usd for p in open_positions)
+        if unrealized_pnl != 0 or open_positions:
+            equity.append(cumulative + unrealized_pnl)
+            if len(labels) < len(equity):
+                labels.append("Now")
 
         while len(labels) < len(equity):
             labels.append("")

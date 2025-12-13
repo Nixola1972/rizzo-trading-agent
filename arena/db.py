@@ -626,6 +626,21 @@ class ArenaDB:
 
             return positions
 
+    def get_positions_for_variant(self, variant_id: str) -> List[SimulatedPosition]:
+        """Get all open positions for a variant (across all sub-variants)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM arena_positions WHERE sub_variant_id LIKE ?",
+                (f"{variant_id}_%",)
+            )
+
+            positions = []
+            for row in cursor.fetchall():
+                positions.append(self._row_to_position(row))
+
+            return positions
+
     def get_position(self, position_id: str) -> Optional[SimulatedPosition]:
         """Get a position by ID."""
         with self._get_connection() as conn:
