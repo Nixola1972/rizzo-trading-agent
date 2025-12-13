@@ -36,7 +36,7 @@ def get_default_variants() -> List[Dict[str, Any]]:
             "description": "Current production configuration for comparison",
             "enabled": True,
             "operation_mode": "SCORE_TRIGGERED",
-            "ai_models": ["deepseek/deepseek-chat"],
+            "ai_models": ["deepseek/deepseek-v3.2-speciale"],
             "trading_params": {
                 "position_size_usd": 50.0,
                 "leverage": 3,
@@ -67,7 +67,7 @@ def get_default_variants() -> List[Dict[str, Any]]:
             "enabled": True,
             "operation_mode": "SCORE_TRIGGERED",
             "ai_models": [
-                "deepseek/deepseek-chat",
+                "deepseek/deepseek-v3.2-speciale",
                 "x-ai/grok-code-fast-1",
                 "anthropic/claude-haiku-4.5",
                 "openai/gpt-oss-120b",
@@ -96,7 +96,7 @@ def get_default_variants() -> List[Dict[str, Any]]:
             "description": "AI-controlled stop loss with extension capability",
             "enabled": True,
             "operation_mode": "SCORE_TRIGGERED",
-            "ai_models": ["deepseek/deepseek-chat"],
+            "ai_models": ["deepseek/deepseek-v3.2-speciale"],
             "trading_params": {
                 "position_size_usd": 50.0,
                 "leverage": 3,
@@ -121,7 +121,7 @@ def get_default_variants() -> List[Dict[str, Any]]:
             "description": "Testing different indicator weights and periods",
             "enabled": True,
             "operation_mode": "SCORE_TRIGGERED",
-            "ai_models": ["deepseek/deepseek-chat"],
+            "ai_models": ["deepseek/deepseek-v3.2-speciale"],
             "trading_params": {
                 "position_size_usd": 50.0,
                 "leverage": 3,
@@ -159,7 +159,7 @@ def get_default_variants() -> List[Dict[str, Any]]:
             "enabled": True,
             "operation_mode": "AI_INDEPENDENT",
             "ai_models": [
-                "deepseek/deepseek-chat",
+                "deepseek/deepseek-v3.2-speciale",
                 "qwen/qwen3-235b-a22b:free",
             ],
             "trading_params": {
