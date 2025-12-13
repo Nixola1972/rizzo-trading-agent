@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  arena:
+    build:
+      context: .
+      dockerfile: Dockerfile.arena
+    container_name: rizzo-arena
+    restart: unless-stopped
+    ports:
+      - "5050:5050"  # Dashboard web
+    volumes:
+      - ./data:/app/data  # Persist database
+      - ./arena/variants.json:/app/arena/variants.json  # Config
+    environment:
+      # === ARENA MASTER SWITCH ===
+      - ARENA_ENABLED=true
+
+      # === STARTING CAPITAL (for equity simulation) ===
+      - ARENA_STARTING_CAPITAL=100
+
+      # === LOOP INTERVALS ===
+      - ARENA_LOOP_INTERVAL=60
+      - ARENA_FAST_LOOP_INTERVAL=5
+
+      # === AI CONFIGURATION ===
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+
+      # === DASHBOARD ===
+      - ARENA_DASHBOARD_ENABLED=true
+      - ARENA_DASHBOARD_PORT=5050
+
+      # === OPTIONAL: Disable specific variants ===
+      # - ARENA_DISABLED_VARIANTS=V5_AI_FREE
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# To run:
+#   1. Copy .env.arena.example to .env and set OPENROUTER_API_KEY
+#   2. docker-compose -f docker-compose.arena.yml up -d
+#   3. Open http://localhost:5050 for dashboard
