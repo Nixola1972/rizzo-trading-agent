@@ -607,4 +607,193 @@ PATTERN_SL_ATR_MULTIPLIER=1.5           # SL = entry - (1.5 × ATR)
 
 ---
 
+## Arena Trading Simulation System
+
+### Overview
+
+Arena è un sistema di simulazione che permette di testare diverse strategie e modelli AI **senza rischiare capitale reale**. Usa dati di mercato reali da HyperLiquid ma esegue trade solo in simulazione.
+
+### Architettura
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         ARENA SYSTEM ARCHITECTURE                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                  │
+│   │   Variant   │     │   Variant   │     │   Variant   │                  │
+│   │ V1_BASELINE │     │ V2_MULTI_AI │     │  V5_AI_FREE │                  │
+│   └──────┬──────┘     └──────┬──────┘     └──────┬──────┘                  │
+│          │                   │                   │                          │
+│          │           ┌───────┴───────┐           │                          │
+│          │           │ Sub-Variants  │           │                          │
+│          │           │ (one per AI)  │           │                          │
+│          │           ├───────────────┤           │                          │
+│          │           │ DeepSeek V3   │           │                          │
+│          │           │ Grok          │           │                          │
+│          │           │ Claude Haiku  │           │                          │
+│          │           │ GPT-oss-120b  │           │                          │
+│          │           │ Qwen3-Max     │           │                          │
+│          │           │ Qwen3-Free    │           │                          │
+│          │           └───────────────┘           │                          │
+│          │                   │                   │                          │
+│          └───────────────────┼───────────────────┘                          │
+│                              │                                              │
+│                              ▼                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                      SIMULATOR ENGINE                                │   │
+│   │  ├─ SLOW LOOP (60s): Check entry signals                            │   │
+│   │  └─ FAST LOOP (5s): Monitor positions, SL/TP                        │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                              │                                              │
+│                              ▼                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                      WEB DASHBOARD                                   │   │
+│   │  ├─ Tab 1: AI Battle (equity curves, leaderboard)                   │   │
+│   │  ├─ Tab 2: Strategies (variant comparison)                          │   │
+│   │  └─ Tab 3: Positions (live P&L, manual close)                       │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Interactive Dashboard Features
+
+La dashboard web (porta 5050/5055) offre controlli interattivi in tempo reale:
+
+#### Tab 1: AI Battle
+- **Equity Curve**: Grafico comparativo delle performance di ogni AI model
+- **Leaderboard**: Classifica AI per P&L totale
+- **Toggle AI Models**: Attiva/disattiva singoli modelli AI dalla dashboard
+
+#### Tab 2: Strategies
+- **Strategy Comparison**: Grafico delle equity curve per variant
+- **Performance Table**: Trades, Win Rate, P&L per ogni strategia
+- **Toggle Variants**: Attiva/disattiva intere strategie
+
+#### Tab 3: Positions
+- **Live Positions**: Tutte le posizioni aperte con P&L real-time
+- **Close Button**: Chiudi manualmente qualsiasi posizione
+- **Recent Trades**: Storico delle ultime operazioni chiuse
+
+#### Control Bar
+- **Pause/Resume**: Ferma o riprendi la simulazione
+- **Status Indicator**: LED che mostra stato (verde=running, giallo=paused)
+
+### API Endpoints
+
+```
+POST /api/simulation/toggle     # Pause/Resume simulazione
+POST /api/variant/<id>/toggle   # Toggle variant on/off
+POST /api/model/<id>/toggle     # Toggle AI model on/off
+POST /api/position/<id>/close   # Chiudi posizione manualmente
+GET  /api/stats                 # Statistiche generali
+GET  /api/leaderboard           # Classifica AI
+GET  /api/costs                 # Statistiche chiamate API
+```
+
+### API Call Tracking
+
+Il sistema traccia automaticamente:
+- **api_calls**: Numero totale chiamate API per ogni AI model
+- **api_errors**: Numero errori API (timeout, rate limit, etc.)
+
+Visibile nella dashboard sotto ogni AI model card.
+
+### Database Schema (arena/db.py)
+
+```sql
+-- Sub-variants with controls and tracking
+CREATE TABLE arena_sub_variants (
+    id TEXT PRIMARY KEY,
+    variant_id TEXT NOT NULL,
+    ai_model TEXT NOT NULL,
+    ai_model_name TEXT,
+    enabled INTEGER DEFAULT 1,        -- Toggle from dashboard
+    total_trades INTEGER DEFAULT 0,
+    winning_trades INTEGER DEFAULT 0,
+    total_pnl_usd REAL DEFAULT 0.0,
+    api_calls INTEGER DEFAULT 0,      -- API call tracking
+    api_errors INTEGER DEFAULT 0,     -- Error tracking
+    ...
+);
+```
+
+### Modelli AI Configurati (V2_MULTI_AI Battle)
+
+| AI Model | Provider | Note |
+|----------|----------|------|
+| `deepseek/deepseek-v3.2-speciale` | DeepSeek | Principale |
+| `x-ai/grok-code-fast-1` | xAI | Grok veloce |
+| `anthropic/claude-haiku-4.5` | Anthropic | Claude economico |
+| `openai/gpt-oss-120b` | OpenAI | GPT open source |
+| `qwen/qwen3-max` | Alibaba | Qwen premium |
+| `qwen/qwen3-235b-a22b:free` | Alibaba | Qwen gratuito |
+
+### Environment Variables (.env)
+
+```bash
+# ═══════════════════════════════════════════════════════════════════════════
+# ARENA - Trading Simulation System
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Master switch
+ARENA_ENABLED=true
+
+# Starting capital for equity tracking
+ARENA_STARTING_CAPITAL=100
+
+# Dashboard
+ARENA_DASHBOARD_ENABLED=true
+ARENA_DASHBOARD_PORT=5050
+
+# Simulation intervals
+ARENA_LOOP_INTERVAL=60        # Slow loop (entry signals)
+ARENA_FAST_LOOP_INTERVAL=5    # Fast loop (position monitoring)
+
+# AI API
+OPENROUTER_API_KEY=sk-or-xxxxxxxxxxxxxxxxxxxxx
+
+# Optional: disable specific variants
+# ARENA_DISABLED_VARIANTS=V5_AI_FREE,V4_INDICATOR_TEST
+```
+
+### Docker Deployment
+
+```bash
+# Build
+docker build -t rizzo-arena -f Dockerfile.arena .
+
+# Run
+docker run -d \
+  --name rizzo-arena \
+  --env-file .env \
+  -p 5055:5050 \
+  rizzo-arena
+
+# View logs
+docker logs -f rizzo-arena
+
+# Rebuild after updates
+docker stop rizzo-arena && docker rm rizzo-arena
+docker build -t rizzo-arena -f Dockerfile.arena .
+docker run -d --name rizzo-arena --env-file .env -p 5055:5050 rizzo-arena
+```
+
+### Files Reference (Arena)
+
+| File | Purpose |
+|------|---------|
+| `arena/main.py` | Entry point, avvia simulator e dashboard |
+| `arena/simulator.py` | Engine simulazione (loop, trading logic) |
+| `arena/dashboard.py` | Web dashboard Flask con controlli interattivi |
+| `arena/db.py` | Database SQLite per trades, positions, stats |
+| `arena/models.py` | Dataclass: Variant, SubVariant, Position, Trade |
+| `arena/ai_manager.py` | Wrapper OpenRouter API con tracking |
+| `arena/config_loader.py` | Carica variants da JSON |
+| `arena/variants.json` | Configurazione varianti e AI models |
+| `Dockerfile.arena` | Docker image per deployment |
+
+---
+
 *Last updated: December 2025*
