@@ -77,6 +77,11 @@ class ArenaSimulator:
         # Last AI check times (for AI_INDEPENDENT mode)
         self._last_ai_check: Dict[str, datetime] = {}
 
+        # Equity snapshot settings
+        self.snapshot_interval = int(os.environ.get("ARENA_SNAPSHOT_INTERVAL", 300))  # 5 min default
+        self._last_snapshot_time = datetime.min
+        self.starting_capital = float(os.environ.get("ARENA_STARTING_CAPITAL", 100))
+
     def _load_variants(self) -> None:
         """Load variants from database."""
         self.variants = load_variants(self.db)
@@ -151,6 +156,12 @@ class ArenaSimulator:
                 if now - last_slow_loop >= slow_loop_interval:
                     self._slow_loop()
                     last_slow_loop = now
+
+                # Equity snapshots - record every snapshot_interval
+                snapshot_interval_td = timedelta(seconds=self.snapshot_interval)
+                if now - self._last_snapshot_time >= snapshot_interval_td:
+                    self._record_equity_snapshots()
+                    self._last_snapshot_time = now
 
                 # Sleep until next fast loop
                 self._stop_event.wait(self.fast_loop_interval)
@@ -640,3 +651,48 @@ class ArenaSimulator:
             }
             for p in positions
         ]
+
+    def _record_equity_snapshots(self) -> None:
+        """Record equity snapshots for all sub-variants."""
+        try:
+            # Get all sub-variants from all variants
+            for variant in self.variants:
+                for sub_variant in variant.sub_variants:
+                    try:
+                        # Get realized P&L from closed trades
+                        sv_db = self.db.get_sub_variant(sub_variant.id)
+                        realized_pnl = sv_db.total_pnl_usd if sv_db else 0.0
+
+                        # Get unrealized P&L from open positions
+                        positions = self.db.get_positions_for_sub_variant(sub_variant.id)
+                        unrealized_pnl = sum(p.current_pnl_usd for p in positions)
+                        open_positions = len(positions)
+
+                        # Save snapshot
+                        self.db.save_equity_snapshot(
+                            sub_variant_id=sub_variant.id,
+                            realized_pnl_usd=realized_pnl,
+                            unrealized_pnl_usd=unrealized_pnl,
+                            open_positions=open_positions,
+                            starting_capital=self.starting_capital,
+                        )
+
+                    except Exception as e:
+                        logger.warning(f"Error recording snapshot for {sub_variant.id}: {e}")
+
+            logger.debug("Equity snapshots recorded")
+
+            # Cleanup old snapshots periodically (every 24h worth of snapshots)
+            # 288 snapshots per day at 5-min intervals
+            if hasattr(self, '_snapshot_count'):
+                self._snapshot_count += 1
+                if self._snapshot_count >= 288:
+                    deleted = self.db.cleanup_old_snapshots(days=7)
+                    if deleted > 0:
+                        logger.info(f"Cleaned up {deleted} old equity snapshots")
+                    self._snapshot_count = 0
+            else:
+                self._snapshot_count = 0
+
+        except Exception as e:
+            logger.error(f"Error recording equity snapshots: {e}")

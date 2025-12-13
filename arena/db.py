@@ -175,7 +175,25 @@ class ArenaDB:
                 )
             """)
 
+            # Equity snapshots table (for chart history)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS arena_equity_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sub_variant_id TEXT NOT NULL,
+                    timestamp TIMESTAMP NOT NULL,
+                    realized_pnl_usd REAL DEFAULT 0.0,
+                    unrealized_pnl_usd REAL DEFAULT 0.0,
+                    total_equity_usd REAL DEFAULT 0.0,
+                    open_positions INTEGER DEFAULT 0,
+                    FOREIGN KEY (sub_variant_id) REFERENCES arena_sub_variants(id)
+                )
+            """)
+
             # Create indexes
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_equity_snapshots_sub_variant
+                ON arena_equity_snapshots(sub_variant_id, timestamp)
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_trades_sub_variant
                 ON arena_trades(sub_variant_id)
@@ -964,7 +982,111 @@ class ArenaDB:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM arena_trades")
             cursor.execute("DELETE FROM arena_positions")
+            cursor.execute("DELETE FROM arena_equity_snapshots")
             cursor.execute("DELETE FROM arena_sub_variants")
             cursor.execute("DELETE FROM arena_variants")
             conn.commit()
             return True
+
+    # ==================== Equity Snapshots ====================
+
+    def save_equity_snapshot(
+        self,
+        sub_variant_id: str,
+        realized_pnl_usd: float,
+        unrealized_pnl_usd: float,
+        open_positions: int,
+        starting_capital: float = 100.0
+    ) -> bool:
+        """Save an equity snapshot for a sub-variant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            total_equity = starting_capital + realized_pnl_usd + unrealized_pnl_usd
+
+            cursor.execute("""
+                INSERT INTO arena_equity_snapshots (
+                    sub_variant_id, timestamp, realized_pnl_usd,
+                    unrealized_pnl_usd, total_equity_usd, open_positions
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                sub_variant_id,
+                datetime.now().isoformat(),
+                realized_pnl_usd,
+                unrealized_pnl_usd,
+                total_equity,
+                open_positions,
+            ))
+
+            conn.commit()
+            return True
+
+    def get_equity_snapshots(
+        self,
+        sub_variant_id: str,
+        hours: int = 24,
+        limit: int = 288  # 5 min intervals * 24 hours
+    ) -> List[Dict[str, Any]]:
+        """Get equity snapshots for a sub-variant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT timestamp, realized_pnl_usd, unrealized_pnl_usd,
+                       total_equity_usd, open_positions
+                FROM arena_equity_snapshots
+                WHERE sub_variant_id = ?
+                AND timestamp >= datetime('now', ? || ' hours')
+                ORDER BY timestamp ASC
+                LIMIT ?
+            """, (sub_variant_id, f"-{hours}", limit))
+
+            return [
+                {
+                    "timestamp": row["timestamp"],
+                    "realized_pnl": row["realized_pnl_usd"],
+                    "unrealized_pnl": row["unrealized_pnl_usd"],
+                    "total_equity": row["total_equity_usd"],
+                    "open_positions": row["open_positions"],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def get_all_equity_snapshots(
+        self,
+        hours: int = 24
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Get equity snapshots for all sub-variants."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT sub_variant_id, timestamp, realized_pnl_usd,
+                       unrealized_pnl_usd, total_equity_usd, open_positions
+                FROM arena_equity_snapshots
+                WHERE timestamp >= datetime('now', ? || ' hours')
+                ORDER BY sub_variant_id, timestamp ASC
+            """, (f"-{hours}",))
+
+            results: Dict[str, List[Dict[str, Any]]] = {}
+            for row in cursor.fetchall():
+                sv_id = row["sub_variant_id"]
+                if sv_id not in results:
+                    results[sv_id] = []
+                results[sv_id].append({
+                    "timestamp": row["timestamp"],
+                    "realized_pnl": row["realized_pnl_usd"],
+                    "unrealized_pnl": row["unrealized_pnl_usd"],
+                    "total_equity": row["total_equity_usd"],
+                    "open_positions": row["open_positions"],
+                })
+
+            return results
+
+    def cleanup_old_snapshots(self, days: int = 7) -> int:
+        """Delete equity snapshots older than specified days."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM arena_equity_snapshots
+                WHERE timestamp < datetime('now', ? || ' days')
+            """, (f"-{days}",))
+            conn.commit()
+            return cursor.rowcount

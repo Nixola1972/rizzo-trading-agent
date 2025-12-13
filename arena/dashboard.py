@@ -824,35 +824,54 @@ def get_recent_trades_data() -> List[Dict[str, Any]]:
 
 
 def get_ai_chart_data() -> Dict[str, Any]:
-    """Get chart data for AI battle including unrealized P&L."""
+    """Get chart data for AI battle using equity snapshots (5-min intervals)."""
     colors = ['#00d4ff', '#00ff88', '#ff4444', '#ffaa00', '#aa44ff', '#44ffaa']
     datasets = []
-    labels = ["Start"]
+    labels = []
+
+    # Get all snapshots for the last 24 hours
+    all_snapshots = db.get_all_equity_snapshots(hours=24)
 
     for v in load_variants(db):
         if v.id == "V2_MULTI_AI":
             for i, sv in enumerate(v.sub_variants):
-                trades = db.get_trades_for_sub_variant(sv.id, limit=1000)
-                trades.sort(key=lambda t: t.exit_time or datetime.min)
+                snapshots = all_snapshots.get(sv.id, [])
 
-                equity = [STARTING_CAPITAL]
-                cumulative = STARTING_CAPITAL
+                if snapshots:
+                    # Use snapshot history for chart
+                    equity = []
+                    for snap in snapshots:
+                        equity.append(snap["total_equity"])
+                        # Build labels from timestamps
+                        if len(labels) < len(equity):
+                            try:
+                                ts = datetime.fromisoformat(snap["timestamp"])
+                                labels.append(ts.strftime("%H:%M"))
+                            except Exception:
+                                labels.append("")
+                else:
+                    # Fallback to trade-based if no snapshots yet
+                    trades = db.get_trades_for_sub_variant(sv.id, limit=1000)
+                    trades.sort(key=lambda t: t.exit_time or datetime.min)
 
-                for t in trades:
-                    cumulative += t.pnl_usd
-                    equity.append(cumulative)
-                    if t.exit_time and len(labels) < len(equity):
-                        labels.append(t.exit_time.strftime("%m/%d %H:%M"))
+                    equity = [STARTING_CAPITAL]
+                    cumulative = STARTING_CAPITAL
 
-                # Add unrealized P&L from open positions
-                open_positions = db.get_positions_for_sub_variant(sv.id)
-                unrealized_pnl = sum(p.current_pnl_usd for p in open_positions)
-                if unrealized_pnl != 0 or open_positions:
-                    equity.append(cumulative + unrealized_pnl)
-                    if len(labels) < len(equity):
-                        labels.append("Now")
+                    for t in trades:
+                        cumulative += t.pnl_usd
+                        equity.append(cumulative)
+                        if t.exit_time and len(labels) < len(equity):
+                            labels.append(t.exit_time.strftime("%H:%M"))
 
-                # Pad labels
+                    # Add current unrealized P&L
+                    open_positions = db.get_positions_for_sub_variant(sv.id)
+                    unrealized_pnl = sum(p.current_pnl_usd for p in open_positions)
+                    if unrealized_pnl != 0 or open_positions:
+                        equity.append(cumulative + unrealized_pnl)
+                        if len(labels) < len(equity):
+                            labels.append("Now")
+
+                # Ensure labels list is long enough
                 while len(labels) < len(equity):
                     labels.append("")
 
@@ -863,39 +882,73 @@ def get_ai_chart_data() -> Dict[str, Any]:
                     "borderColor": color,
                     "backgroundColor": "transparent",
                     "tension": 0.4,
+                    "pointRadius": 0,  # Hide points for cleaner look
                 })
+
+    # Add "Start" label if no data
+    if not labels:
+        labels = ["Start"]
 
     return {"labels": labels, "datasets": datasets}
 
 
 def get_strategy_chart_data() -> Dict[str, Any]:
-    """Get chart data for strategy comparison including unrealized P&L."""
+    """Get chart data for strategy comparison using equity snapshots."""
     colors = ['#00d4ff', '#00ff88', '#ff4444', '#ffaa00', '#aa44ff']
     datasets = []
-    labels = ["Start"]
+    labels = []
+
+    # Get all snapshots for the last 24 hours
+    all_snapshots = db.get_all_equity_snapshots(hours=24)
 
     variants = load_variants(db)
 
     for i, v in enumerate(variants):
-        trades = db.get_trades_for_variant(v.id, limit=1000)
-        trades.sort(key=lambda t: t.exit_time or datetime.min)
+        # Aggregate snapshots for all sub-variants in this variant
+        variant_equity = {}  # timestamp -> total_equity
 
-        equity = [STARTING_CAPITAL]
-        cumulative = STARTING_CAPITAL
+        for sv in v.sub_variants:
+            snapshots = all_snapshots.get(sv.id, [])
+            for snap in snapshots:
+                ts = snap["timestamp"]
+                if ts not in variant_equity:
+                    variant_equity[ts] = STARTING_CAPITAL
+                # Add P&L from this sub-variant
+                variant_equity[ts] = variant_equity.get(ts, STARTING_CAPITAL) + (snap["total_equity"] - STARTING_CAPITAL)
 
-        for t in trades:
-            cumulative += t.pnl_usd
-            equity.append(cumulative)
-            if t.exit_time and len(labels) < len(equity):
-                labels.append(t.exit_time.strftime("%m/%d %H:%M"))
+        if variant_equity:
+            # Sort by timestamp and build equity curve
+            sorted_ts = sorted(variant_equity.keys())
+            equity = []
+            for ts in sorted_ts:
+                equity.append(variant_equity[ts])
+                if len(labels) < len(equity):
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        labels.append(dt.strftime("%H:%M"))
+                    except Exception:
+                        labels.append("")
+        else:
+            # Fallback to trade-based if no snapshots yet
+            trades = db.get_trades_for_variant(v.id, limit=1000)
+            trades.sort(key=lambda t: t.exit_time or datetime.min)
 
-        # Add unrealized P&L from open positions
-        open_positions = db.get_positions_for_variant(v.id)
-        unrealized_pnl = sum(p.current_pnl_usd for p in open_positions)
-        if unrealized_pnl != 0 or open_positions:
-            equity.append(cumulative + unrealized_pnl)
-            if len(labels) < len(equity):
-                labels.append("Now")
+            equity = [STARTING_CAPITAL]
+            cumulative = STARTING_CAPITAL
+
+            for t in trades:
+                cumulative += t.pnl_usd
+                equity.append(cumulative)
+                if t.exit_time and len(labels) < len(equity):
+                    labels.append(t.exit_time.strftime("%H:%M"))
+
+            # Add unrealized P&L from open positions
+            open_positions = db.get_positions_for_variant(v.id)
+            unrealized_pnl = sum(p.current_pnl_usd for p in open_positions)
+            if unrealized_pnl != 0 or open_positions:
+                equity.append(cumulative + unrealized_pnl)
+                if len(labels) < len(equity):
+                    labels.append("Now")
 
         while len(labels) < len(equity):
             labels.append("")
@@ -907,7 +960,12 @@ def get_strategy_chart_data() -> Dict[str, Any]:
             "borderColor": color,
             "backgroundColor": "transparent",
             "tension": 0.4,
+            "pointRadius": 0,  # Hide points for cleaner look
         })
+
+    # Add "Start" label if no data
+    if not labels:
+        labels = ["Start"]
 
     return {"labels": labels, "datasets": datasets}
 
