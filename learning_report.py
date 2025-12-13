@@ -328,6 +328,93 @@ def get_hourly_performance(days: int) -> List[Dict]:
                     "total_pnl": float(r[3] or 0)} for r in cur.fetchall()]
 
 
+def get_last_24h_stats() -> Dict:
+    """Statistiche delle ultime 24 ore."""
+    with db_utils.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN profitable = true THEN 1 END) as wins,
+                    COUNT(CASE WHEN profitable = false THEN 1 END) as losses,
+                    ROUND(100.0 * COUNT(CASE WHEN profitable = true THEN 1 END) /
+                          NULLIF(COUNT(*), 0), 2) as win_rate,
+                    ROUND(SUM(net_pnl_usd)::numeric, 2) as total_pnl,
+                    ROUND(AVG(net_pnl_usd)::numeric, 4) as avg_pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                  AND closed_at >= NOW() - INTERVAL '24 hours'
+            """)
+            row = cur.fetchone()
+            return {
+                "total": row[0] or 0,
+                "wins": row[1] or 0,
+                "losses": row[2] or 0,
+                "win_rate": float(row[3] or 0),
+                "total_pnl": float(row[4] or 0),
+                "avg_pnl": float(row[5] or 0)
+            }
+
+
+def get_last_n_trades(n: int = 10) -> List[Dict]:
+    """Ultimi N trade con dettagli."""
+    with db_utils.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    symbol,
+                    direction,
+                    ROUND(pnl_percent::numeric, 2) as pnl_pct,
+                    ROUND(net_pnl_usd::numeric, 2) as pnl_usd,
+                    ROUND(peak_pnl_percent::numeric, 2) as peak_pct,
+                    close_reason,
+                    ROUND(open_score::numeric, 1) as score,
+                    ROUND(duration_seconds / 60.0) as duration_min,
+                    profitable,
+                    closed_at
+                FROM trades
+                WHERE status = 'CLOSED'
+                ORDER BY closed_at DESC
+                LIMIT %s
+            """, (n,))
+            trades = []
+            for r in cur.fetchall():
+                trades.append({
+                    "symbol": r[0],
+                    "direction": r[1],
+                    "pnl_pct": float(r[2] or 0),
+                    "pnl_usd": float(r[3] or 0),
+                    "peak_pct": float(r[4] or 0),
+                    "close_reason": r[5],
+                    "score": float(r[6] or 0),
+                    "duration_min": int(r[7] or 0),
+                    "profitable": r[8],
+                    "closed_at": r[9].strftime("%Y-%m-%d %H:%M") if r[9] else "N/A"
+                })
+            return trades
+
+
+def get_last_n_trades_summary(n: int = 10) -> Dict:
+    """Statistiche riassuntive degli ultimi N trade."""
+    trades = get_last_n_trades(n)
+    if not trades:
+        return {"total": 0, "wins": 0, "losses": 0, "win_rate": 0, "total_pnl": 0}
+
+    wins = sum(1 for t in trades if t["profitable"])
+    losses = len(trades) - wins
+    total_pnl = sum(t["pnl_usd"] for t in trades)
+    win_rate = (wins / len(trades)) * 100 if trades else 0
+
+    return {
+        "total": len(trades),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 1),
+        "total_pnl": round(total_pnl, 2),
+        "trades": trades
+    }
+
+
 def get_current_env_params() -> Dict:
     """Legge i parametri attuali dal .env."""
     return {
@@ -681,6 +768,38 @@ def print_report(report: LearningReport):
     if report.prev_period_win_rate is not None:
         change_emoji = "" if report.win_rate_change >= 0 else ""
         print(f"   vs Periodo Precedente: {change_emoji} {report.win_rate_change:+.1f}% WR")
+
+    # === ULTIME 24 ORE ===
+    try:
+        stats_24h = get_last_24h_stats()
+        print(f"""
+   ULTIME 24 ORE
+   {"─" * 50}
+   Trade:    {stats_24h['total']}
+   Vincenti: {stats_24h['wins']} | Perdenti: {stats_24h['losses']}
+   Win Rate: {stats_24h['win_rate']}%
+   P&L:      ${stats_24h['total_pnl']:.2f}
+""")
+    except Exception as e:
+        print(f"   ⚠️ Errore stats 24h: {e}")
+
+    # === ULTIMI 10 TRADE ===
+    try:
+        last_trades = get_last_n_trades_summary(10)
+        if last_trades['total'] > 0:
+            print(f"""   ULTIMI 10 TRADE
+   {"─" * 50}
+   Win Rate: {last_trades['win_rate']}% ({last_trades['wins']}W / {last_trades['losses']}L)
+   P&L:      ${last_trades['total_pnl']:.2f}
+""")
+            print("   | Symbol | Dir   | P&L%   | P&L$   | Peak%  | Reason       | Score | Min |")
+            print("   |" + "-" * 76 + "|")
+            for t in last_trades['trades']:
+                emoji = "✅" if t['profitable'] else "❌"
+                print(f"   | {emoji} {t['symbol']:4} | {t['direction']:5} | {t['pnl_pct']:+5.2f}% | ${t['pnl_usd']:+6.2f} | {t['peak_pct']:+5.2f}% | {t['close_reason'][:12]:12} | {t['score']:5.1f} | {t['duration_min']:3} |")
+            print()
+    except Exception as e:
+        print(f"   ⚠️ Errore ultimi trade: {e}")
 
     # Patterns
     if report.patterns:
