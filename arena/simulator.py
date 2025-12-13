@@ -524,43 +524,51 @@ class ArenaSimulator:
             return {}
 
     def _get_market_data(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
-        """Get full market data for symbols."""
-        # This would integrate with the existing indicators module
-        # For now, return placeholder data
-
+        """Get full market data for symbols using CryptoTechnicalAnalysisHL."""
         try:
             import sys
             sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-            from hyperliquid.info import Info
-            from hyperliquid.utils import constants
-            import indicators
+            from indicators import CryptoTechnicalAnalysisHL
 
-            info = Info(constants.MAINNET_API_URL)
-            all_mids = info.all_mids()
+            # Use mainnet for real prices
+            analyzer = CryptoTechnicalAnalysisHL(testnet=False)
 
             market_data = {}
             for symbol in symbols:
                 try:
-                    price = float(all_mids.get(symbol, 0))
+                    # Get complete analysis from indicators module
+                    analysis = analyzer.get_complete_analysis(symbol)
+                    current = analysis.get("current", {})
 
-                    # Get indicators
-                    ind = indicators.get_indicators(symbol)
+                    # Determine EMA trend
+                    ema_trend = "neutral"
+                    ema_alignment = analysis.get("ema_alignment", "NEUTRAL")
+                    if ema_alignment == "GOLDEN_CROSS":
+                        ema_trend = "bullish"
+                    elif ema_alignment == "DEATH_CROSS":
+                        ema_trend = "bearish"
 
                     market_data[symbol] = {
-                        "price": price,
-                        "macd": ind.get("macd", 0),
-                        "rsi": ind.get("rsi", 50),
-                        "adx": ind.get("adx", 0),
-                        "ema9": ind.get("ema9", price),
-                        "ema21": ind.get("ema21", price),
-                        "atr": ind.get("atr", 0),
-                        "ema_trend": ind.get("ema_trend", "neutral"),
-                        "volume_ratio": ind.get("volume_ratio", 1.0),
-                        "double_bottom": ind.get("double_bottom", {}).get("detected", False),
-                        "double_bottom_conf": ind.get("double_bottom", {}).get("confidence", 0),
-                        "double_top": ind.get("double_top", {}).get("detected", False),
-                        "double_top_conf": ind.get("double_top", {}).get("confidence", 0),
+                        "price": current.get("price", 0),
+                        "macd": current.get("macd", 0),
+                        "rsi": current.get("rsi_14", 50),
+                        "adx": current.get("adx", 0),
+                        "ema20": current.get("ema20", 0),
+                        "ema50": current.get("ema50", 0),
+                        "ema_trend": ema_trend,
+                        "funding_rate": analysis.get("derivatives", {}).get("funding_rate", 0),
+                        "open_interest": analysis.get("derivatives", {}).get("open_interest_latest", 0),
+                        # Bollinger
+                        "bb_position": analysis.get("bollinger", {}).get("position", "MIDDLE"),
+                        "bb_squeeze": analysis.get("bollinger", {}).get("squeeze", False),
+                        # OBV
+                        "obv_trend": analysis.get("obv", {}).get("trend", "neutral"),
+                        # Pattern detection (placeholder)
+                        "double_bottom": False,
+                        "double_bottom_conf": 0,
+                        "double_top": False,
+                        "double_top_conf": 0,
                     }
 
                 except Exception as e:

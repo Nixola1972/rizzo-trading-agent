@@ -68,9 +68,11 @@ def get_default_variants() -> List[Dict[str, Any]]:
             "operation_mode": "SCORE_TRIGGERED",
             "ai_models": [
                 "deepseek/deepseek-chat",
-                "openai/gpt-4o-mini",
-                "anthropic/claude-3-haiku",
-                "qwen/qwen-2.5-72b-instruct",
+                "x-ai/grok-code-fast-1",
+                "anthropic/claude-haiku-4.5",
+                "openai/gpt-oss-120b",
+                "qwen/qwen3-max",
+                "qwen/qwen3-235b-a22b:free",
             ],
             "trading_params": {
                 "position_size_usd": 50.0,
@@ -158,7 +160,7 @@ def get_default_variants() -> List[Dict[str, Any]]:
             "operation_mode": "AI_INDEPENDENT",
             "ai_models": [
                 "deepseek/deepseek-chat",
-                "openai/gpt-4o-mini",
+                "qwen/qwen3-235b-a22b:free",
             ],
             "trading_params": {
                 "position_size_usd": 50.0,
