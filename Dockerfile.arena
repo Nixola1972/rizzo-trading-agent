@@ -8,7 +8,10 @@ RUN pip install --no-cache-dir \
     flask \
     requests \
     python-dotenv \
-    hyperliquid-python-sdk
+    hyperliquid-python-sdk \
+    pandas \
+    numpy \
+    ta
 
 # Copy application
 COPY . .
@@ -17,7 +20,7 @@ COPY . .
 RUN mkdir -p /app/data
 
 # Expose dashboard port
-EXPOSE 5050
+EXPOSE 5055
 
 # Default command: run Arena with dashboard
 CMD ["python", "-m", "arena.main"]

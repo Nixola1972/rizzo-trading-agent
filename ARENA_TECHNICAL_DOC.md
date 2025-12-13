@@ -1,30 +1,65 @@
 # ARENA - Trading Simulation System
 
-## Technical Documentation v1.0
+## Technical Documentation v2.0
 
 **Created:** 2025-12-13
 **Last Updated:** 2025-12-13
-**Status:** In Development
+**Status:** ✅ DEPLOYED AND RUNNING
+
+---
+
+## IMPORTANT: AI Development Context
+
+> **Se sei un AI che deve modificare questo progetto, leggi questa sezione!**
+
+### Quick Reference for AI Developers
+
+```
+ARENA è un sistema di SIMULAZIONE che:
+- NON esegue trade reali
+- Usa prezzi reali da HyperLiquid
+- Testa multiple configurazioni (varianti) in parallelo
+- Ogni variante può avere più modelli AI (sub-varianti)
+- Dashboard web su porta 5055
+- Database SQLite in data/arena.db
+```
+
+### File Principali da Modificare
+
+| Obiettivo | File |
+|-----------|------|
+| Aggiungere/modificare varianti | `arena/variants.json` |
+| Logica simulazione | `arena/simulator.py` |
+| Chiamate AI | `arena/ai_manager.py` |
+| Smart SL | `arena/smart_sl.py` |
+| Dashboard web | `arena/dashboard.py` |
+| Metriche/statistiche | `arena/metrics.py` |
+| Database | `arena/db.py` |
+| Modelli dati | `arena/models.py` |
+
+### Dipendenze Docker
+
+```dockerfile
+# Dockerfile.arena richiede:
+flask, requests, python-dotenv, hyperliquid-python-sdk, pandas, numpy, ta
+```
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#1-overview)
-2. [Architecture](#2-architecture)
-3. [Variants System](#3-variants-system)
-4. [Sub-Variants (AI Models)](#4-sub-variants-ai-models)
-5. [Parameters Reference](#5-parameters-reference)
-6. [Indicator Configuration](#6-indicator-configuration)
-7. [Pattern Detection](#7-pattern-detection)
-8. [AI Independent Mode](#8-ai-independent-mode)
-9. [Smart SL System](#9-smart-sl-system)
-10. [Database Schema](#10-database-schema)
-11. [File Structure](#11-file-structure)
-12. [Configuration Examples](#12-configuration-examples)
-13. [API & Models](#13-api--models)
-14. [Metrics & Leaderboard](#14-metrics--leaderboard)
-15. [Deployment](#15-deployment)
+2. [Current Configuration](#2-current-configuration)
+3. [Architecture](#3-architecture)
+4. [File Structure](#4-file-structure)
+5. [Variants System](#5-variants-system)
+6. [AI Models Configuration](#6-ai-models-configuration)
+7. [Database Schema](#7-database-schema)
+8. [Dashboard](#8-dashboard)
+9. [Docker Deployment](#9-docker-deployment)
+10. [Environment Variables](#10-environment-variables)
+11. [API Reference](#11-api-reference)
+12. [Troubleshooting](#12-troubleshooting)
 
 ---
 
@@ -32,966 +67,743 @@
 
 ### What is Arena?
 
-Arena is a **simulation system** that runs in parallel with the real trading bot. It allows testing multiple configurations (variants) simultaneously without risking real money.
+Arena è un **sistema di simulazione** che gira in parallelo al bot di trading reale. Permette di testare multiple configurazioni (varianti) simultaneamente senza rischiare soldi veri.
 
-### Key Concepts
+### Key Features
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              ARENA CONCEPT                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   PRODUCTION (Real Money)              ARENA (Simulation)                   │
-│   ───────────────────────              ──────────────────                   │
-│                                                                             │
-│   ┌─────────────────────┐              ┌─────────────────────┐              │
-│   │   Current Bot       │              │   Variant 1 + AI A  │              │
-│   │   (sentinel.py)     │              │   Variant 1 + AI B  │              │
-│   │                     │              │   Variant 2 + AI A  │              │
-│   │   Real trades       │              │   Variant 3 + AI A  │              │
-│   │   Real P&L          │              │   ...               │              │
-│   └─────────────────────┘              └─────────────────────┘              │
-│            │                                      │                         │
-│            │                                      ▼                         │
-│            │                           ┌─────────────────────┐              │
-│            │                           │   LEADERBOARD       │              │
-│            │                           │   Compare all       │              │
-│            │                           │   Find winners      │              │
-│            │                           └─────────────────────┘              │
-│            │                                      │                         │
-│            │◄─────── PROMOTE WINNER ──────────────┘                         │
-│                     (manual decision)                                       │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+- **Zero Risk**: Simulazione pura, nessun trade reale
+- **Real Data**: Usa prezzi live da HyperLiquid
+- **Multi-AI**: Confronta diversi modelli AI sulla stessa strategia
+- **Web Dashboard**: Visualizza equity curve, leaderboard, posizioni
+- **Auto-tracking**: Database SQLite con tutti i trade simulati
 
-### Benefits
-
-| Aspect | Benefit |
-|--------|---------|
-| **Zero Risk** | Simulation doesn't use real money |
-| **Real Data** | Uses live prices, not historical backtest |
-| **Fair Comparison** | All variants see the same data |
-| **No Overfitting** | Tests on FUTURE data, not past |
-| **You Decide** | Promotion to production requires your approval |
-
----
-
-## 2. Architecture
-
-### System Components
+### System Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           SYSTEM ARCHITECTURE                               │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                   │
-│  │  HyperLiquid│     │  Indicators │     │  OpenRouter │                   │
-│  │  (prices)   │     │  (MACD,RSI) │     │  (AI API)   │                   │
-│  └──────┬──────┘     └──────┬──────┘     └──────┬──────┘                   │
-│         │                   │                   │                          │
-│         └───────────────────┼───────────────────┘                          │
-│                             │                                               │
-│                             ▼                                               │
-│              ┌──────────────────────────────┐                              │
-│              │       ARENA SIMULATOR        │                              │
-│              │  ┌────────────────────────┐  │                              │
-│              │  │   Market Data Feed     │  │                              │
-│              │  └───────────┬────────────┘  │                              │
-│              │              │               │                              │
-│              │              ▼               │                              │
-│              │  ┌────────────────────────┐  │                              │
-│              │  │   For each SubVariant: │  │                              │
-│              │  │   - Evaluate entry     │  │                              │
-│              │  │   - Manage positions   │  │                              │
-│              │  │   - Calculate P&L      │  │                              │
-│              │  │   - Apply trailing     │  │                              │
-│              │  │   - Call AI if needed  │  │                              │
-│              │  └───────────┬────────────┘  │                              │
-│              │              │               │                              │
-│              │              ▼               │                              │
-│              │  ┌────────────────────────┐  │                              │
-│              │  │   Save to Database     │  │                              │
-│              │  └────────────────────────┘  │                              │
-│              └──────────────────────────────┘                              │
-│                             │                                               │
-│                             ▼                                               │
-│              ┌──────────────────────────────┐                              │
-│              │         PostgreSQL           │                              │
-│              │  - arena_variants            │                              │
-│              │  - arena_sub_variants        │                              │
-│              │  - simulated_positions       │                              │
-│              │  - simulated_trades          │                              │
-│              └──────────────────────────────┘                              │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Data Flow
-
-```
-Every 30 seconds (SCORE_TRIGGERED mode):
-1. Fetch prices for BTC, ETH, SOL
-2. Calculate indicators (MACD, RSI, EMA, etc.)
-3. Calculate score using configured weights
-4. For each sub-variant:
-   a. Has open position? → Manage (trailing, SL check, close if hit)
-   b. No position? → Evaluate entry based on variant's parameters
-5. Save all changes to database
-6. Every hour: generate leaderboard report
-
-Every 15 minutes (AI_INDEPENDENT mode):
-1. Fetch all market data
-2. Pass everything to AI without score filtering
-3. AI decides freely: OPEN/HOLD
-4. Execute AI decision in simulation
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           ARENA FLOW                                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   HyperLiquid API ──► Prezzi BTC/ETH/SOL                                │
+│         │                                                                │
+│         ▼                                                                │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │                    ARENA SIMULATOR                               │   │
+│   │                                                                  │   │
+│   │   Per ogni Variante:                                             │   │
+│   │     Per ogni Sub-Variante (AI model):                            │   │
+│   │       - Calcola score con indicatori                             │   │
+│   │       - Se score > threshold → chiedi conferma AI                │   │
+│   │       - Se AI approva → apri posizione simulata                  │   │
+│   │       - Monitora SL/TP/Trailing                                  │   │
+│   │       - Salva trade in database                                  │   │
+│   └─────────────────────────────────────────────────────────────────┘   │
+│         │                                                                │
+│         ▼                                                                │
+│   SQLite DB (data/arena.db) ──► Dashboard Web (:5055)                   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Variants System
+## 2. Current Configuration
 
-### What is a Variant?
+### Active AI Models (Competitors)
 
-A **Variant** is a configuration set that defines:
-- Trading parameters (SL, TP, trailing, thresholds)
-- Indicator configuration (periods, weights, thresholds)
-- Operating mode (SCORE_TRIGGERED or AI_INDEPENDENT)
-- List of AI models to use (creates sub-variants)
+| Modello | Provider | Costo | Note |
+|---------|----------|-------|------|
+| `deepseek/deepseek-chat` | DeepSeek | $$ | **PRINCIPALE** - V3 |
+| `x-ai/grok-code-fast-1` | xAI | $$ | Grok ottimizzato per codice |
+| `anthropic/claude-haiku-4.5` | Anthropic | $ | Claude veloce |
+| `openai/gpt-oss-120b` | OpenAI | $$$ | GPT grande |
+| `qwen/qwen3-max` | Alibaba | $$ | Qwen top |
+| `qwen/qwen3-235b-a22b:free` | Alibaba | FREE | Qwen gratuito |
 
-### Variant Structure
+### Active Variants
+
+| ID | Nome | Modalità | AI Models | Descrizione |
+|----|------|----------|-----------|-------------|
+| V1_BASELINE | Baseline DeepSeek V3 | SCORE_TRIGGERED | 1 | Config produzione riferimento |
+| V2_MULTI_AI | Battle: 6 AI a Confronto | SCORE_TRIGGERED | 6 | Tutti i modelli competono |
+| V3_SMART_EXIT | Smart Exit con DeepSeek | SCORE_TRIGGERED | 1 | SL controllato da AI |
+| V4_INDICATOR_TEST | Indicatori Ottimizzati | SCORE_TRIGGERED | 1 | Pesi/periodi diversi |
+| V5_AI_FREE | AI Libero (ogni 15min) | AI_INDEPENDENT | 2 | AI decide senza filtri |
+
+### Total Sub-Variants: 11
+
+```
+V1: 1 sub-variant (DeepSeek)
+V2: 6 sub-variants (DeepSeek, Grok, Claude, GPT, Qwen-Max, Qwen-Free)
+V3: 1 sub-variant (DeepSeek)
+V4: 1 sub-variant (DeepSeek)
+V5: 2 sub-variants (DeepSeek, Qwen-Free)
+```
+
+---
+
+## 3. Architecture
+
+### Components Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         ARENA ARCHITECTURE                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  External Services                                                       │
+│  ─────────────────                                                       │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                   │
+│  │ HyperLiquid  │  │  OpenRouter  │  │   Browser    │                   │
+│  │   (prices)   │  │  (AI API)    │  │  (dashboard) │                   │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘                   │
+│         │                 │                 │                            │
+│         ▼                 ▼                 ▼                            │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │                      ARENA CONTAINER                             │    │
+│  │                                                                  │    │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │    │
+│  │  │ main.py     │  │ simulator   │  │ dashboard   │              │    │
+│  │  │ (entry)     │──│ .py         │  │ .py (Flask) │◄─── :5055    │    │
+│  │  └─────────────┘  └──────┬──────┘  └──────┬──────┘              │    │
+│  │                          │                │                      │    │
+│  │                          ▼                ▼                      │    │
+│  │                   ┌─────────────────────────────┐                │    │
+│  │                   │        db.py                │                │    │
+│  │                   │   (SQLite operations)       │                │    │
+│  │                   └──────────┬──────────────────┘                │    │
+│  │                              │                                   │    │
+│  │                              ▼                                   │    │
+│  │                   ┌─────────────────────────────┐                │    │
+│  │                   │    data/arena.db            │                │    │
+│  │                   │  - arena_variants           │                │    │
+│  │                   │  - arena_sub_variants       │                │    │
+│  │                   │  - arena_positions          │                │    │
+│  │                   │  - arena_trades             │                │    │
+│  │                   └─────────────────────────────┘                │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Loop Structure
 
 ```python
-Variant:
-├── id: int
-├── name: str                    # "Conservative", "Aggressive", etc.
-├── description: str
-├── mode: str                    # "SCORE_TRIGGERED" | "AI_INDEPENDENT"
-├── interval_minutes: int        # For AI_INDEPENDENT mode (default: 15)
-│
-├── parameters: {                # Trading parameters
-│   ├── MICRO_GAIN_STOP_LOSS_PERCENT
-│   ├── MICRO_GAIN_TRAILING_STEPS
-│   ├── SCORE_THRESHOLD_HOLD
-│   ├── ... (see section 5)
-│   }
-│
-├── indicator_config: {          # Indicator configuration
-│   ├── periods: { RSI, MACD_FAST, MACD_SLOW, ... }
-│   ├── weights: { WEIGHT_MACD, WEIGHT_RSI, ... }
-│   ├── thresholds: { ADX_WEAK, RSI_OVERSOLD, ... }
-│   }
-│
-├── smart_sl_config: {           # Smart SL configuration
-│   ├── enabled: bool
-│   ├── trigger_zone: float
-│   ├── max_sl_extension: float
-│   └── require_ai_confirmation: bool
-│   }
-│
-└── ai_models: [                 # List of AI models (creates sub-variants)
-    "deepseek/deepseek-chat",
-    "openai/gpt-4-turbo",
-    ...
-    ]
-```
+# Slow Loop (ogni 60 secondi) - ENTRY CHECK
+for variant in enabled_variants:
+    for sub_variant in variant.sub_variants:
+        if variant.mode == "SCORE_TRIGGERED":
+            score = calculate_score(market_data)
+            if score > threshold:
+                ai_approved = call_ai(sub_variant.ai_model, market_data)
+                if ai_approved:
+                    open_simulated_position()
+        elif variant.mode == "AI_INDEPENDENT":
+            if time_since_last_check >= 15_minutes:
+                decision = ask_ai_freely(sub_variant.ai_model, market_data)
+                execute_decision(decision)
 
-### The 5 Initial Variants
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           5 INITIAL VARIANTS                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  1. BASELINE                                                                │
-│     ├─ Mode: SCORE_TRIGGERED                                               │
-│     ├─ Parameters: From current .env                                       │
-│     ├─ Indicators: Current configuration                                   │
-│     ├─ Smart SL: NO                                                        │
-│     ├─ AI Models: [DeepSeek]                                               │
-│     └─ Purpose: Reference to beat                                          │
-│                                                                             │
-│  2. MULTI_AI                                                                │
-│     ├─ Mode: SCORE_TRIGGERED                                               │
-│     ├─ Parameters: Same as Baseline                                        │
-│     ├─ Indicators: Same as Baseline                                        │
-│     ├─ Smart SL: NO                                                        │
-│     ├─ AI Models: [DeepSeek, GPT-4, Claude, Qwen]                          │
-│     └─ Purpose: Compare AI models with same parameters                     │
-│                                                                             │
-│  3. SMART_EXIT                                                              │
-│     ├─ Mode: SCORE_TRIGGERED                                               │
-│     ├─ Parameters: AI decides SL dynamically                               │
-│     ├─ Indicators: Standard                                                │
-│     ├─ Smart SL: YES (AI can extend SL if sees reversal)                  │
-│     ├─ AI Models: [DeepSeek, GPT-4]                                        │
-│     └─ Purpose: Test intelligent stop loss management                      │
-│                                                                             │
-│  4. INDICATOR_TEST                                                          │
-│     ├─ Mode: SCORE_TRIGGERED                                               │
-│     ├─ Parameters: Variable (SL, trailing also tested)                     │
-│     ├─ Indicators: Different periods and weights                           │
-│     │   ├─ Version A: Fast (RSI 7, MACD 8/17/9)                            │
-│     │   ├─ Version B: Standard (RSI 14, MACD 12/26/9)                      │
-│     │   └─ Version C: Slow (RSI 21, MACD 12/26/9)                          │
-│     ├─ Smart SL: NO                                                        │
-│     ├─ AI Models: [DeepSeek]                                               │
-│     └─ Purpose: Find optimal indicator configuration                       │
-│                                                                             │
-│  5. AI_FREE                                                                 │
-│     ├─ Mode: AI_INDEPENDENT (no score threshold!)                          │
-│     ├─ Interval: 15 minutes                                                │
-│     ├─ Parameters: SL=4% (only for position management)                    │
-│     ├─ Indicators: All passed to AI without filtering                      │
-│     ├─ Smart SL: YES                                                       │
-│     ├─ AI Models: [DeepSeek, GPT-4]                                        │
-│     ├─ Timeframe: LONGER (4h candles for trend context)                    │
-│     └─ Purpose: Let AI decide everything freely                            │
-│                                                                             │
-│  TOTAL SUB-VARIANTS: 1 + 4 + 2 + 3 + 2 = 12                                │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+# Fast Loop (ogni 5 secondi) - POSITION MANAGEMENT
+for position in open_positions:
+    update_pnl(position, current_price)
+    check_take_profit(position)
+    check_stop_loss(position)
+    apply_trailing_stop(position)
+    if smart_sl_enabled:
+        check_smart_sl_extension(position)
 ```
 
 ---
 
-## 4. Sub-Variants (AI Models)
-
-### What is a Sub-Variant?
-
-When a Variant has multiple AI models configured, it creates **Sub-Variants**:
-
-```
-Variant "MULTI_AI" with ai_models: [DeepSeek, GPT-4, Claude]
-    │
-    ├─ Sub-Variant: MULTI_AI_DeepSeek
-    │   └─ Uses DeepSeek for all AI decisions
-    │
-    ├─ Sub-Variant: MULTI_AI_GPT4
-    │   └─ Uses GPT-4 for all AI decisions
-    │
-    └─ Sub-Variant: MULTI_AI_Claude
-        └─ Uses Claude for all AI decisions
-
-Each sub-variant:
-- Has SAME parameters (from parent Variant)
-- Has SAME indicator config (from parent Variant)
-- Has DIFFERENT AI model
-- Has SEPARATE tracking (trades, P&L, metrics, API cost)
-```
-
-### Sub-Variant Structure
-
-```python
-SubVariant:
-├── id: int
-├── variant_id: int              # FK to parent Variant
-├── ai_model: str                # "deepseek/deepseek-chat"
-├── full_name: str               # "MULTI_AI_DeepSeek"
-│
-├── # Tracking (separate per sub-variant)
-├── total_trades: int
-├── total_pnl_usd: float
-├── win_rate: float
-├── sharpe_ratio: float
-├── max_drawdown_usd: float
-├── api_calls_count: int
-└── api_cost_usd: float
-```
-
----
-
-## 5. Parameters Reference
-
-### Trading Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `MICRO_GAIN_STOP_LOSS_PERCENT` | float | 3.5 | Initial stop loss % |
-| `MICRO_GAIN_TARGET_PERCENT` | float | 4.0 | Take profit % |
-| `MICRO_GAIN_TRAILING_STEPS` | string | "0.5:-5.0,1.0:-4.0,..." | Trailing SL steps |
-| `MICRO_GAIN_LEVERAGE` | float | 5 | Position leverage |
-| `MICRO_GAIN_COOLDOWN_SECONDS` | int | 300 | Cooldown after close |
-| `SCORE_THRESHOLD_HOLD` | float | 15 | Min score for MICRO_GAIN |
-| `SCORE_THRESHOLD_OPEN` | float | 20 | Min score for NORMAL mode |
-| `SCORE_CONFIRMATION_CYCLES` | int | 3 | Cycles to confirm score |
-
-### Trailing Steps Format
-
-```
-Format: "PNL_THRESHOLD:SL_LEVEL,PNL_THRESHOLD:SL_LEVEL,..."
-
-Example: "0.5:-5.0,1.0:-4.0,1.5:-2.5,2.0:-1.0,2.5:0.0,3.0:0.5,4.0:1.5"
-
-Meaning:
-- At +0.5% P&L → SL moves to -5.0%
-- At +1.0% P&L → SL moves to -4.0%
-- At +1.5% P&L → SL moves to -2.5%
-- At +2.0% P&L → SL moves to -1.0%
-- At +2.5% P&L → SL moves to 0.0% (breakeven)
-- At +3.0% P&L → SL moves to +0.5%
-- At +4.0% P&L → SL moves to +1.5%
-```
-
-### ATR Dynamic Steps
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `ATR_DYNAMIC_STEPS_ENABLED` | bool | true | Scale steps based on ATR |
-| `ATR_BASE_PERCENT` | float | 1.5 | Base ATR for scaling |
-| `ATR_STEP_MULTIPLIER_MIN` | float | 0.5 | Min multiplier (0.8 recommended) |
-| `ATR_STEP_MULTIPLIER_MAX` | float | 2.5 | Max multiplier |
-
----
-
-## 6. Indicator Configuration
-
-### Indicator Periods
-
-| Parameter | Default | Description | Test Values |
-|-----------|---------|-------------|-------------|
-| `RSI_PERIOD` | 14 | RSI calculation period | 7, 14, 21 |
-| `MACD_FAST` | 12 | MACD fast EMA | 8, 12 |
-| `MACD_SLOW` | 26 | MACD slow EMA | 17, 26 |
-| `MACD_SIGNAL` | 9 | MACD signal line | 5, 9 |
-| `EMA_SHORT` | 9 | Short EMA period | 5, 9 |
-| `EMA_MEDIUM` | 20 | Medium EMA period | 12, 20 |
-| `EMA_LONG` | 50 | Long EMA period | 26, 50 |
-| `ADX_PERIOD` | 14 | ADX period | 14 |
-| `ATR_PERIOD` | 14 | ATR period | 14 |
-| `BB_PERIOD` | 20 | Bollinger Bands period | 20 |
-| `BB_STD` | 2.0 | Bollinger Bands std dev | 2.0 |
-
-### Score Weights (V1 - Legacy)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `WEIGHT_RSI_OVERBOUGHT` | 15.0 | Weight for overbought RSI |
-| `WEIGHT_RSI_OVERSOLD` | 15.0 | Weight for oversold RSI |
-| `WEIGHT_TREND_BULLISH` | 10.0 | Weight for bullish trend |
-| `WEIGHT_TREND_BEARISH` | 10.0 | Weight for bearish trend |
-| `WEIGHT_MACD_POSITIVE` | 5.0 | Weight for positive MACD |
-| `WEIGHT_MACD_NEGATIVE` | 5.0 | Weight for negative MACD |
-| `WEIGHT_VOLUME_BULLISH` | 4.0 | Weight for bullish volume |
-| `WEIGHT_VOLUME_BEARISH` | 4.0 | Weight for bearish volume |
-| `WEIGHT_FEAR_GREED_GREED` | 8.0 | Weight for greed sentiment |
-| `WEIGHT_FEAR_GREED_FEAR` | 8.0 | Weight for fear sentiment |
-| `WEIGHT_FORECAST_POSITIVE` | 6.0 | Weight for positive forecast |
-| `WEIGHT_FORECAST_NEGATIVE` | 6.0 | Weight for negative forecast |
-
-### Score Weights (V2 - Smart Score)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `WEIGHT_BOLLINGER` | 8.0 | Weight for Bollinger Bands position |
-| `WEIGHT_OBV_TREND` | 6.0 | Weight for OBV trend |
-| `WEIGHT_MACD_HISTOGRAM` | 5.0 | Weight for MACD histogram |
-| `WEIGHT_EMA_ALIGNMENT` | 7.0 | Weight for EMA alignment |
-| `WEIGHT_RSI_MOMENTUM` | 6.0 | Weight for RSI momentum zones |
-| `WEIGHT_DOUBLE_BOTTOM` | 10.0 | Weight for Double Bottom pattern |
-| `WEIGHT_DOUBLE_TOP` | 10.0 | Weight for Double Top pattern |
-
-### Indicator Thresholds
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `RSI_OVERBOUGHT_THRESHOLD` | 70 | RSI overbought level |
-| `RSI_OVERSOLD_THRESHOLD` | 30 | RSI oversold level |
-| `ADX_WEAK_THRESHOLD` | 20 | ADX below = ranging market |
-| `ADX_STRONG_THRESHOLD` | 25 | ADX above = strong trend |
-| `BB_SQUEEZE_THRESHOLD` | 2.0 | Bandwidth < 2% = squeeze |
-| `FEAR_GREED_FEAR_THRESHOLD` | 30 | Below = fear sentiment |
-| `FEAR_GREED_GREED_THRESHOLD` | 60 | Above = greed sentiment |
-| `VOLUME_RATIO_BULLISH_THRESHOLD` | 1.5 | Bid/Ask > 1.5 = bullish |
-| `VOLUME_RATIO_BEARISH_THRESHOLD` | 0.67 | Bid/Ask < 0.67 = bearish |
-
----
-
-## 7. Pattern Detection
-
-### Double Bottom / Double Top Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `PATTERN_DETECTION_ENABLED` | true | Enable pattern detection |
-| `PATTERN_DETECTION_TIMEFRAME` | 1h | Candle timeframe |
-| `PATTERN_LOOKBACK_CANDLES` | 100 | Candles to analyze |
-| `PATTERN_CACHE_SECONDS` | 300 | Cache duration |
-| `PATTERN_PRICE_TOLERANCE_PCT` | 2.0 | Price tolerance between lows/highs |
-| `PATTERN_MIN_DISTANCE_CANDLES` | 10 | Min distance between pivots |
-| `PATTERN_RSI_DIVERGENCE_MIN` | 5 | Min RSI divergence |
-| `PATTERN_MIN_CONFIDENCE` | 0.60 | Min confidence to consider |
-
-### Pattern Entry System
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `PATTERN_ENTRY_SYSTEM` | FAST_LOOP | IMMEDIATE or FAST_LOOP |
-| `PATTERN_ENTRY_EXPIRY_MINUTES` | 120 | Pending entry expiration |
-| `PATTERN_ENTRY_CONFIRM_VOLUME` | true | Require volume confirmation |
-| `PATTERN_ENTRY_VOLUME_MULTIPLIER` | 1.5 | Volume > 1.5x average |
-
-### Contrary Pattern Action
-
-| Parameter | Default | Options |
-|-----------|---------|---------|
-| `PATTERN_CONTRA_ACTION` | ACCELERATE | CLOSE, ACCELERATE, REDUCE_50, ALERT_ONLY |
-| `PATTERN_CONTRA_MIN_CONFIDENCE` | 0.70 | Min confidence to trigger |
-
----
-
-## 8. AI Independent Mode
-
-### How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        AI INDEPENDENT MODE                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  DIFFERENCE FROM SCORE_TRIGGERED:                                           │
-│                                                                             │
-│  SCORE_TRIGGERED (standard):                                                │
-│  ───────────────────────────                                                │
-│  1. Calculate score with indicators                                         │
-│  2. Score > threshold? → Call AI for confirmation                          │
-│  3. AI confirms → Open trade                                                │
-│                                                                             │
-│  AI sees opportunities ONLY if score is high enough.                       │
-│                                                                             │
-│                                                                             │
-│  AI_INDEPENDENT (free):                                                     │
-│  ──────────────────────                                                     │
-│  1. Every 15 minutes, ALWAYS                                               │
-│  2. Collect ALL data (price, indicators, sentiment, patterns)              │
-│  3. Pass EVERYTHING to AI without filters                                  │
-│  4. AI decides freely: OPEN/HOLD/CLOSE                                     │
-│                                                                             │
-│  AI sees EVERYTHING and decides without constraints.                       │
-│  Can find opportunities that score doesn't capture.                        │
-│                                                                             │
-│  LONGER TIMEFRAME:                                                          │
-│  Because it runs every 15 min, AI_FREE uses:                               │
-│  - 4h candles for trend context (not just 15m)                             │
-│  - Longer-term patterns                                                     │
-│  - Multi-timeframe analysis                                                 │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### AI Independent Prompt Template
-
-```
-You are a fully autonomous trading AI.
-Analyze this data and decide if you want to open a position.
-
-MARKET DATA (Current):
-- BTC: $97,500 | MACD: +0.15 | RSI: 58 | ADX: 32
-- ETH: $3,200 | MACD: -0.08 | RSI: 45 | ADX: 22
-- SOL: $132 | MACD: +0.25 | RSI: 62 | ADX: 38
-
-LONGER TERM CONTEXT (4h candles):
-- BTC trend: BULLISH (above EMA50)
-- ETH trend: NEUTRAL (consolidating)
-- SOL trend: BULLISH (strong momentum)
-
-PATTERNS DETECTED:
-- SOL: Double Bottom (85% confidence)
-
-SENTIMENT:
-- Fear & Greed: 42 (Fear)
-- Funding Rate BTC: +0.01%
-- Whale Activity: neutral
-
-CURRENT POSITIONS: None
-
-DECIDE:
-- Do you want to open a position?
-- Which asset? Long or Short?
-- If no, why?
-
-Respond in JSON:
-{"action": "OPEN|HOLD", "symbol": "BTC|ETH|SOL", "direction": "long|short",
- "confidence": 0-100, "reason": "..."}
-```
-
----
-
-## 9. Smart SL System
-
-### How Smart SL Works
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           SMART SL SYSTEM                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  SCENARIO:                                                                  │
-│  ─────────                                                                  │
-│  Position: LONG BTC @ $97,000                                              │
-│  Current SL: -3% ($94,090)                                                 │
-│  Price drops to $94,200 (almost SL)                                        │
-│                                                                             │
-│  CLASSIC SYSTEM:                                                            │
-│  "SL almost hit, prepare to close"                                         │
-│                                                                             │
-│  SMART SL SYSTEM:                                                           │
-│  1. Detect we're in "danger zone" (P&L close to SL)                        │
-│  2. Analyze current indicators:                                             │
-│     - MACD turning positive                                                │
-│     - RSI was oversold, now bouncing                                       │
-│     - Volume increasing                                                     │
-│  3. Ask AI: "Should I close or hold?"                                      │
-│  4. AI: "I see imminent reversal, HOLD"                                    │
-│  5. DECISION:                                                               │
-│     - Extend SL temporarily (e.g., -3% → -4.5%)                            │
-│     - Continue monitoring                                                   │
-│     - If price recovers: SL saved us from premature exit                   │
-│     - If price drops more: Close at extended SL                            │
-│                                                                             │
-│  SAFETY LIMITS:                                                             │
-│  - SL cannot go beyond max (e.g., -6%)                                     │
-│  - Can "save" position only 1-2 times                                      │
-│  - If AI doesn't respond in 5s → close anyway                              │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Smart SL Configuration
-
-```python
-smart_sl_config: {
-    "enabled": True,
-    "trigger_zone": 1.0,           # Activate when P&L < SL + 1%
-    "max_sl_extension": 2.0,       # Max SL extension (e.g., -3% → -5%)
-    "max_saves": 2,                # Max times can "save"
-    "require_ai_confirmation": True,
-    "ai_timeout_seconds": 10,      # If AI slow → close
-    "min_indicators_for_hold": 2,  # Min bullish indicators to hold
-}
-```
-
----
-
-## 10. Database Schema
-
-### Tables
-
-```sql
--- Main variants table
-CREATE TABLE arena_variants (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    mode VARCHAR(20) NOT NULL DEFAULT 'SCORE_TRIGGERED',  -- SCORE_TRIGGERED | AI_INDEPENDENT
-    interval_minutes INTEGER DEFAULT 15,                   -- For AI_INDEPENDENT
-
-    parameters JSONB NOT NULL,           -- Trading params (SL, TP, trailing, etc.)
-    indicator_config JSONB,              -- Indicator periods, weights, thresholds
-    smart_sl_config JSONB,               -- Smart SL configuration
-    ai_models JSONB NOT NULL,            -- Array of AI model names
-
-    is_active BOOLEAN DEFAULT true,
-    is_baseline BOOLEAN DEFAULT false,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-);
-
--- Sub-variants (one per AI model per variant)
-CREATE TABLE arena_sub_variants (
-    id SERIAL PRIMARY KEY,
-    variant_id INTEGER REFERENCES arena_variants(id),
-    ai_model VARCHAR(100) NOT NULL,      -- "deepseek/deepseek-chat"
-    full_name VARCHAR(150) NOT NULL,     -- "MULTI_AI_DeepSeek"
-
-    -- Tracking
-    total_trades INTEGER DEFAULT 0,
-    winning_trades INTEGER DEFAULT 0,
-    total_pnl_usd DECIMAL(12,4) DEFAULT 0,
-    win_rate DECIMAL(5,2) DEFAULT 0,
-    sharpe_ratio DECIMAL(6,4) DEFAULT 0,
-    max_drawdown_usd DECIMAL(12,4) DEFAULT 0,
-    profit_factor DECIMAL(6,4) DEFAULT 0,
-
-    -- API tracking
-    api_calls_count INTEGER DEFAULT 0,
-    api_cost_usd DECIMAL(10,4) DEFAULT 0,
-
-    is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP DEFAULT NOW(),
-
-    UNIQUE(variant_id, ai_model)
-);
-
--- Open simulated positions
-CREATE TABLE simulated_positions (
-    id SERIAL PRIMARY KEY,
-    sub_variant_id INTEGER REFERENCES arena_sub_variants(id),
-    symbol VARCHAR(10) NOT NULL,
-    direction VARCHAR(10) NOT NULL,
-
-    entry_price DECIMAL(20,8) NOT NULL,
-    entry_score DECIMAL(10,4),
-    current_sl_percent DECIMAL(6,4) NOT NULL,
-    peak_pnl_percent DECIMAL(10,4) DEFAULT 0,
-    sl_saves_used INTEGER DEFAULT 0,      -- For Smart SL
-
-    opened_at TIMESTAMP DEFAULT NOW(),
-
-    UNIQUE(sub_variant_id, symbol)
-);
-
--- Closed simulated trades
-CREATE TABLE simulated_trades (
-    id SERIAL PRIMARY KEY,
-    sub_variant_id INTEGER REFERENCES arena_sub_variants(id),
-
-    symbol VARCHAR(10) NOT NULL,
-    direction VARCHAR(10) NOT NULL,
-
-    entry_price DECIMAL(20,8) NOT NULL,
-    exit_price DECIMAL(20,8) NOT NULL,
-    entry_score DECIMAL(10,4),
-
-    pnl_percent DECIMAL(10,4) NOT NULL,
-    pnl_usd DECIMAL(12,4) NOT NULL,
-    peak_pnl_percent DECIMAL(10,4),
-
-    close_reason VARCHAR(50) NOT NULL,    -- SL_HIT, TP_HIT, TRAILING, AI_DECISION, SMART_SL
-
-    opened_at TIMESTAMP NOT NULL,
-    closed_at TIMESTAMP DEFAULT NOW(),
-    duration_seconds INTEGER,
-
-    profitable BOOLEAN NOT NULL,
-
-    -- For analysis
-    indicator_snapshot JSONB,             -- Indicators at entry
-    ai_reasoning TEXT                     -- AI's reasoning (if applicable)
-);
-
--- Indexes for performance
-CREATE INDEX idx_simulated_trades_sub_variant ON simulated_trades(sub_variant_id);
-CREATE INDEX idx_simulated_trades_closed_at ON simulated_trades(closed_at);
-CREATE INDEX idx_simulated_positions_sub_variant ON simulated_positions(sub_variant_id);
-```
-
----
-
-## 11. File Structure
+## 4. File Structure
 
 ```
 rizzo-trading-agent/
 │
-├── sentinel.py                    # Production bot (unchanged)
-├── indicators.py                  # Indicators (shared)
-├── signal_scorer.py               # Score calculation (shared)
-├── db_utils.py                    # Existing DB utils (extend)
+├── arena/                          # ═══ ARENA PACKAGE ═══
+│   │
+│   ├── __init__.py                 # Package exports
+│   │
+│   ├── models.py                   # Data classes
+│   │   ├── Variant                 # Configurazione variante
+│   │   ├── SubVariant              # Sub-variante per AI model
+│   │   ├── SimulatedPosition       # Posizione aperta simulata
+│   │   ├── SimulatedTrade          # Trade chiuso simulato
+│   │   ├── TradingParams           # Parametri trading
+│   │   ├── IndicatorConfig         # Config indicatori
+│   │   └── Enums (OperationMode, TradeDirection, TradeStatus)
+│   │
+│   ├── db.py                       # Database operations (SQLite)
+│   │   ├── ArenaDB class
+│   │   ├── _init_db()              # Auto-create tables
+│   │   ├── save/get variants
+│   │   ├── save/get positions
+│   │   ├── save/get trades
+│   │   └── get_leaderboard()
+│   │
+│   ├── config_loader.py            # Load/save variants
+│   │   ├── load_variants()         # From DB or create defaults
+│   │   ├── load_variants_from_file() # From variants.json
+│   │   └── get_default_variants()  # 5 default variants
+│   │
+│   ├── simulator.py                # ═══ CORE ENGINE ═══
+│   │   ├── ArenaSimulator class
+│   │   ├── start() / stop()        # Control loop
+│   │   ├── _slow_loop()            # Entry evaluation (60s)
+│   │   ├── _fast_loop()            # Position monitor (5s)
+│   │   ├── _process_variant()      # Per-variant logic
+│   │   ├── _open_position()        # Create simulated position
+│   │   ├── _close_position()       # Close and record trade
+│   │   ├── _calculate_score()      # Score with indicator weights
+│   │   ├── _get_prices()           # From HyperLiquid
+│   │   └── _get_market_data()      # Full indicators
+│   │
+│   ├── ai_manager.py               # AI API calls
+│   │   ├── AIManager class
+│   │   ├── validate_trade()        # DOUBLE_CHECK style
+│   │   ├── get_independent_decision() # AI_FREE mode
+│   │   ├── check_smart_sl_extension() # Smart SL
+│   │   ├── _call_ai()              # OpenRouter API call
+│   │   └── _rate_limit()           # Per-model rate limiting
+│   │
+│   ├── smart_sl.py                 # Smart Stop Loss
+│   │   ├── SmartSLManager class
+│   │   ├── check_and_extend_sl()   # Main logic
+│   │   ├── _is_near_sl()           # Proximity check
+│   │   └── TrailingSLManager       # Trailing stop logic
+│   │
+│   ├── metrics.py                  # Performance calculations
+│   │   ├── calculate_metrics()     # Win rate, Sharpe, etc.
+│   │   ├── calculate_sharpe_ratio()
+│   │   ├── calculate_max_drawdown()
+│   │   ├── get_leaderboard()
+│   │   └── compare_variants()
+│   │
+│   ├── reporter.py                 # Report generation
+│   │   ├── ArenaReporter class
+│   │   ├── print_leaderboard()
+│   │   ├── print_full_report()
+│   │   └── generate_json_report()
+│   │
+│   ├── dashboard.py                # Flask web dashboard
+│   │   ├── Flask app
+│   │   ├── / route (main page)
+│   │   ├── /api/stats
+│   │   ├── /api/equity
+│   │   ├── /api/leaderboard
+│   │   ├── get_equity_chart_data() # For Chart.js
+│   │   └── DASHBOARD_HTML template
+│   │
+│   ├── main.py                     # Entry point for Docker
+│   │   └── Starts simulator + dashboard together
+│   │
+│   ├── cli.py                      # Command line interface
+│   │   ├── arena init
+│   │   ├── arena status
+│   │   ├── arena report
+│   │   ├── arena leaderboard
+│   │   └── arena variants list/enable/disable
+│   │
+│   ├── variants.json               # ═══ VARIANT CONFIG ═══
+│   │   └── 5 varianti con modelli AI configurati
+│   │
+│   └── .env.arena.example          # Environment template
 │
-├── arena/                         # ═══ NEW: Arena package ═══
-│   │
-│   ├── __init__.py
-│   │
-│   ├── config.py                  # Arena configuration
-│   │   └─ Intervals, limits, defaults
-│   │
-│   ├── models.py                  # Data classes
-│   │   ├─ Variant
-│   │   ├─ SubVariant
-│   │   ├─ SimulatedPosition
-│   │   ├─ SimulatedTrade
-│   │   └─ VariantMetrics
-│   │
-│   ├── db.py                      # Arena database operations
-│   │   ├─ create_tables()
-│   │   ├─ CRUD for variants/sub-variants
-│   │   ├─ CRUD for positions/trades
-│   │   └─ Metrics aggregation queries
-│   │
-│   ├── variant_manager.py         # Variant management
-│   │   ├─ create_variant()
-│   │   ├─ create_sub_variants()
-│   │   ├─ create_baseline_from_env()
-│   │   └─ activate/deactivate variants
-│   │
-│   ├── indicator_calculator.py    # Custom indicator calculation
-│   │   └─ calculate_with_config()  # Uses variant's indicator_config
-│   │
-│   ├── score_calculator.py        # Custom score calculation
-│   │   └─ calculate_with_weights() # Uses variant's weights
-│   │
-│   ├── simulator.py               # ═══ CORE: Simulation engine ═══
-│   │   ├─ class ArenaSimulator
-│   │   │   ├─ run_cycle()
-│   │   │   ├─ process_score_triggered()
-│   │   │   ├─ process_ai_independent()
-│   │   │   ├─ evaluate_entry()
-│   │   │   ├─ manage_position()
-│   │   │   ├─ calculate_trailing()
-│   │   │   ├─ check_smart_sl()
-│   │   │   └─ close_position()
-│   │
-│   ├── ai_manager.py              # AI model management
-│   │   ├─ call_ai()               # Call specific model
-│   │   ├─ rate_limit()            # Respect limits
-│   │   └─ track_cost()            # Track API costs
-│   │
-│   ├── smart_sl.py                # Smart SL logic
-│   │   ├─ should_extend_sl()
-│   │   ├─ get_ai_decision()
-│   │   └─ calculate_new_sl()
-│   │
-│   ├── metrics.py                 # Metrics calculation
-│   │   ├─ calculate_win_rate()
-│   │   ├─ calculate_sharpe_ratio()
-│   │   ├─ calculate_profit_factor()
-│   │   └─ calculate_max_drawdown()
-│   │
-│   └── report.py                  # Reporting
-│       ├─ generate_leaderboard()
-│       ├─ compare_ai_models()
-│       ├─ compare_indicators()
-│       └─ send_telegram_report()
+├── Dockerfile.arena                # Docker image for Arena
+├── docker-compose.arena.yml        # Docker Compose config
+├── run_arena.py                    # Standalone runner script
 │
-├── arena_main.py                  # Arena entry point
-│   └─ Main loop, argument parsing
+├── data/                           # Data directory (gitignored)
+│   └── arena.db                    # SQLite database
 │
-├── arena_cli.py                   # CLI commands
-│   ├─ arena setup                 # Initial setup
-│   ├─ arena create-variant        # Create variant
-│   ├─ arena list                  # List variants
-│   ├─ arena report                # Generate report
-│   └─ arena promote               # Promote winner
-│
-├── ARENA_TECHNICAL_DOC.md         # This document
-│
-└── docker-compose.arena.yml       # Docker for Arena
+└── ARENA_TECHNICAL_DOC.md          # This document
 ```
 
 ---
 
-## 12. Configuration Examples
+## 5. Variants System
 
-### Variant: BASELINE
-
-```json
-{
-  "name": "BASELINE",
-  "description": "Current production configuration",
-  "mode": "SCORE_TRIGGERED",
-  "parameters": {
-    "MICRO_GAIN_STOP_LOSS_PERCENT": 3.5,
-    "MICRO_GAIN_TARGET_PERCENT": 4.0,
-    "MICRO_GAIN_TRAILING_STEPS": "0.5:-5.0,1.0:-4.0,1.5:-2.5,2.0:-1.0,2.5:0.0,3.0:0.5",
-    "MICRO_GAIN_LEVERAGE": 5,
-    "SCORE_THRESHOLD_HOLD": 15
-  },
-  "indicator_config": {
-    "periods": {
-      "RSI": 14,
-      "MACD_FAST": 12,
-      "MACD_SLOW": 26,
-      "MACD_SIGNAL": 9
-    },
-    "weights": {
-      "WEIGHT_MACD_POSITIVE": 5.0,
-      "WEIGHT_RSI_OVERSOLD": 15.0,
-      "WEIGHT_BOLLINGER": 8.0,
-      "WEIGHT_OBV_TREND": 6.0,
-      "WEIGHT_DOUBLE_BOTTOM": 10.0
-    },
-    "thresholds": {
-      "ADX_WEAK_THRESHOLD": 20.0,
-      "RSI_OVERSOLD_THRESHOLD": 30.0
-    }
-  },
-  "smart_sl_config": {
-    "enabled": false
-  },
-  "ai_models": ["deepseek/deepseek-chat"]
-}
-```
-
-### Variant: AI_FREE
+### Variant Structure (variants.json)
 
 ```json
 {
-  "name": "AI_FREE",
-  "description": "AI decides everything, no score threshold",
-  "mode": "AI_INDEPENDENT",
-  "interval_minutes": 15,
-  "parameters": {
-    "MICRO_GAIN_STOP_LOSS_PERCENT": 4.0,
-    "MICRO_GAIN_LEVERAGE": 5
+  "id": "V2_MULTI_AI",
+  "name": "Battle: 6 AI a Confronto",
+  "description": "DeepSeek V3 vs Grok vs Claude vs GPT vs Qwen",
+  "enabled": true,
+  "operation_mode": "SCORE_TRIGGERED",  // or "AI_INDEPENDENT"
+
+  "ai_models": [
+    "deepseek/deepseek-chat",
+    "x-ai/grok-code-fast-1",
+    "anthropic/claude-haiku-4.5",
+    "openai/gpt-oss-120b",
+    "qwen/qwen3-max",
+    "qwen/qwen3-235b-a22b:free"
+  ],
+
+  "trading_params": {
+    "position_size_usd": 50.0,
+    "leverage": 3,
+    "stop_loss_pct": 3.0,
+    "take_profit_pct": 6.0,
+    "trailing_enabled": true,
+    "trailing_steps": "2.5:0.0,5.0:2.0,7.5:4.0",
+    "score_threshold_open": 15.0,
+    "double_check_ai_enabled": true,
+    "trading_style": "moderate",
+    "smart_sl_enabled": false,
+    "smart_sl_extension_pct": 1.0,
+    "smart_sl_max_extensions": 2
   },
+
   "indicator_config": {
-    "periods": {
-      "RSI": 14,
-      "MACD_FAST": 12,
-      "MACD_SLOW": 26
-    },
-    "longer_timeframe": "4h"
+    "ema_short_period": 9,
+    "ema_medium_period": 21,
+    "weight_macd": 25.0,
+    "weight_rsi": 15.0,
+    "macd_threshold_strong": 0.20,
+    "adx_min_trend": 20.0
   },
-  "smart_sl_config": {
-    "enabled": true,
-    "trigger_zone": 1.0,
-    "max_sl_extension": 2.0,
-    "max_saves": 2,
-    "require_ai_confirmation": true
-  },
-  "ai_models": ["deepseek/deepseek-chat", "openai/gpt-4-turbo"]
+
+  "pattern_detection_enabled": true,
+  "symbols": ["BTC", "ETH", "SOL"],
+
+  // Solo per AI_INDEPENDENT mode:
+  "ai_check_interval_minutes": 15,
+  "ai_independent_timeframe": "4h"
 }
 ```
+
+### Operation Modes
+
+| Mode | Description | When AI is Called |
+|------|-------------|-------------------|
+| `SCORE_TRIGGERED` | Standard - score must exceed threshold | Solo se score > threshold |
+| `AI_INDEPENDENT` | AI decides freely every N minutes | Ogni 15 minuti, sempre |
+
+### Trading Parameters Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `position_size_usd` | float | 50.0 | Size posizione in USD |
+| `leverage` | int | 3 | Leva |
+| `stop_loss_pct` | float | 3.0 | Stop loss % |
+| `take_profit_pct` | float | 6.0 | Take profit % |
+| `trailing_enabled` | bool | true | Trailing stop attivo |
+| `trailing_steps` | string | "2.5:0.0,..." | Steps formato "PNL:SL_LEVEL" |
+| `score_threshold_open` | float | 15.0 | Score minimo per entry |
+| `double_check_ai_enabled` | bool | true | Conferma AI prima di entry |
+| `trading_style` | string | "moderate" | aggressive/moderate/conservative |
+| `smart_sl_enabled` | bool | false | AI può estendere SL |
+| `smart_sl_extension_pct` | float | 1.0 | Estensione SL % |
+| `smart_sl_max_extensions` | int | 2 | Max estensioni |
+
+### Indicator Config Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `ema_short_period` | int | 9 | EMA veloce |
+| `ema_medium_period` | int | 21 | EMA media |
+| `ema_long_period` | int | 50 | EMA lenta |
+| `rsi_period` | int | 14 | Periodo RSI |
+| `macd_fast` | int | 12 | MACD fast |
+| `macd_slow` | int | 26 | MACD slow |
+| `macd_signal` | int | 9 | MACD signal |
+| `weight_macd` | float | 25.0 | Peso MACD nel score |
+| `weight_rsi` | float | 15.0 | Peso RSI |
+| `weight_ema_alignment` | float | 20.0 | Peso allineamento EMA |
+| `weight_adx_trend` | float | 15.0 | Peso ADX |
+| `weight_double_bottom` | float | 12.0 | Peso pattern W |
+| `weight_double_top` | float | 12.0 | Peso pattern M |
 
 ---
 
-## 13. API & Models
+## 6. AI Models Configuration
 
-### OpenRouter Configuration
+### OpenRouter Setup
 
-All AI models are accessed through **OpenRouter** with a single API key.
+Arena usa **OpenRouter** come gateway per tutti i modelli AI. Una sola API key per tutti.
 
 ```env
-# .env configuration
-OPENROUTER_API_KEY=sk-or-v1-xxx
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-
-# Available models (configure per variant)
-ARENA_AI_MODELS=deepseek/deepseek-chat,openai/gpt-4-turbo,anthropic/claude-3-sonnet,qwen/qwen-72b-chat
-
-# AI_FREE specific model (if you want different)
-AI_FREE_MODEL=openai/gpt-4-turbo
+OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxx
 ```
 
-### Model Comparison
-
-| Model | Cost/1K tokens | Speed | Quality | Best For |
-|-------|---------------|-------|---------|----------|
-| deepseek/deepseek-chat | $0.001 | Fast | Good | High volume |
-| openai/gpt-4-turbo | $0.01 | Medium | Excellent | Complex decisions |
-| anthropic/claude-3-sonnet | $0.003 | Fast | Very Good | Balanced |
-| qwen/qwen-72b-chat | $0.0008 | Fast | Good | Budget testing |
-
-### API Cost Management
+### Available Models (OpenRouter)
 
 ```python
-# Rate limiting per sub-variant
-MAX_API_CALLS_PER_HOUR = 20
+# Modelli configurati in variants.json
+MODELS = [
+    "deepseek/deepseek-chat",      # DeepSeek V3 - veloce, economico
+    "x-ai/grok-code-fast-1",       # Grok - xAI
+    "anthropic/claude-haiku-4.5",  # Claude Haiku - veloce
+    "openai/gpt-oss-120b",         # GPT grande
+    "qwen/qwen3-max",              # Qwen top tier
+    "qwen/qwen3-235b-a22b:free",   # Qwen gratuito
+]
+```
 
-# Cost tracking
-# Each AI call logs: model, tokens_used, cost_usd
-# Aggregated per sub-variant for comparison
+### AI Prompts
+
+**SCORE_TRIGGERED validation prompt:**
+```
+ARENA SIMULATION - Trade Validation
+Style: MODERATE
+
+PROPOSED TRADE:
+- Symbol: BTC
+- Direction: LONG
+- Score: 18.5
+
+MARKET DATA:
+- Price: $97,500
+- MACD: 0.25
+- RSI: 55
+- ADX: 28
+- EMA Trend: bullish
+
+Respond with JSON:
+{"operation": "open" or "hold", "direction": "LONG" or "SHORT",
+ "confidence": 0.0-1.0, "reason": "brief reason"}
+```
+
+**AI_INDEPENDENT prompt:**
+```
+ARENA SIMULATION - AI Free Decision
+Timeframe: 4h
+
+SYMBOL: BTC
+
+MARKET DATA:
+- Price: $97,500
+- MACD: 0.25
+- RSI: 55
+- ADX: 28
+
+You have FULL CONTROL. Decide:
+{"action": "open/close/hold", "direction": "LONG/SHORT",
+ "confidence": 0.0-1.0, "reason": "analysis"}
 ```
 
 ---
 
-## 14. Metrics & Leaderboard
+## 7. Database Schema
 
-### Metrics Calculated
+### Tables (SQLite - auto-created)
 
-| Metric | Formula | Meaning |
-|--------|---------|---------|
-| **Win Rate** | wins / total_trades × 100 | % profitable trades |
-| **Profit Factor** | sum(wins) / sum(losses) | Profitability ratio |
-| **Sharpe Ratio** | (avg_return - risk_free) / std_dev | Risk-adjusted return |
-| **Max Drawdown** | max peak-to-trough decline | Worst losing streak |
-| **Avg Trade P&L** | total_pnl / total_trades | Average per trade |
-| **Profit Left on Table** | avg(peak - exit) | How much left behind |
-| **P&L per API Cost** | total_pnl / api_cost | Cost efficiency |
+```sql
+-- arena_variants: Configurazioni varianti
+CREATE TABLE arena_variants (
+    id TEXT PRIMARY KEY,              -- "V1_BASELINE"
+    name TEXT NOT NULL,
+    description TEXT,
+    enabled INTEGER DEFAULT 1,
+    operation_mode TEXT DEFAULT 'SCORE_TRIGGERED',
+    trading_params TEXT,              -- JSON
+    indicator_config TEXT,            -- JSON
+    ai_models TEXT,                   -- JSON array
+    pattern_detection_enabled INTEGER DEFAULT 1,
+    symbols TEXT DEFAULT '["BTC","ETH","SOL"]',
+    total_trades INTEGER DEFAULT 0,
+    total_pnl_usd REAL DEFAULT 0.0,
+    created_at TIMESTAMP
+);
 
-### Leaderboard Example
+-- arena_sub_variants: Una per AI model per variant
+CREATE TABLE arena_sub_variants (
+    id TEXT PRIMARY KEY,              -- "V2_MULTI_AI_deepseek-chat"
+    variant_id TEXT NOT NULL,
+    ai_model TEXT NOT NULL,           -- "deepseek/deepseek-chat"
+    ai_model_name TEXT,
+    total_trades INTEGER DEFAULT 0,
+    winning_trades INTEGER DEFAULT 0,
+    losing_trades INTEGER DEFAULT 0,
+    total_pnl_usd REAL DEFAULT 0.0,
+    total_pnl_pct REAL DEFAULT 0.0,
+    max_drawdown_pct REAL DEFAULT 0.0,
+    sharpe_ratio REAL DEFAULT 0.0,
+    last_trade_at TIMESTAMP
+);
 
-```
-╔════════════════════════════════════════════════════════════════════════════════╗
-║                              ARENA LEADERBOARD                                 ║
-╠════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                ║
-║  BY SUB-VARIANT (Performance):                                                 ║
-║  ──────────────────────────────────────────────────────────────────────────── ║
-║  #  │ Sub-Variant          │ Mode     │ Trades │ WR   │ P&L     │ Sharpe     ║
-║  ───┼──────────────────────┼──────────┼────────┼──────┼─────────┼──────────  ║
-║  1  │ AI_FREE_GPT4         │ AI_INDEP │   45   │ 52%  │ +$24.50 │ 1.82       ║
-║  2  │ SMART_EXIT_GPT4      │ SCORE    │   38   │ 50%  │ +$19.20 │ 1.68       ║
-║  3  │ MULTI_AI_GPT4        │ SCORE    │   58   │ 48%  │ +$15.80 │ 1.48       ║
-║  4  │ BASELINE_DeepSeek    │ SCORE    │   62   │ 42%  │ +$8.60  │ 1.22       ║
-║                                                                                ║
-║  BY AI MODEL (Aggregated):                                                     ║
-║  ──────────────────────────────────────────────────────────────────────────── ║
-║  Model      │ Sub-Var │ Trades │ Avg WR │ Total P&L │ API Cost │ P&L/Cost    ║
-║  ───────────┼─────────┼────────┼────────┼───────────┼──────────┼───────────  ║
-║  GPT-4      │    4    │  180   │  51%   │  +$62.50  │  $38.00  │  1.64       ║
-║  DeepSeek   │    4    │  195   │  43%   │  +$35.20  │  $6.00   │  5.87 ⭐    ║
-║                                                                                ║
-║  BY INDICATOR CONFIG:                                                          ║
-║  ──────────────────────────────────────────────────────────────────────────── ║
-║  Config          │ RSI  │ MACD     │ Avg WR │ Sharpe │ Note                   ║
-║  ────────────────┼──────┼──────────┼────────┼────────┼──────────────────────  ║
-║  Fast            │  7   │ 8/17/9   │  44%   │  1.28  │ More trades            ║
-║  Standard        │ 14   │ 12/26/9  │  45%   │  1.35  │ Balanced               ║
-║  Conservative    │ 21   │ 12/26/9  │  52%   │  1.55  │ Fewer but precise      ║
-║                                                                                ║
-╚════════════════════════════════════════════════════════════════════════════════╝
+-- arena_positions: Posizioni aperte
+CREATE TABLE arena_positions (
+    id TEXT PRIMARY KEY,
+    sub_variant_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    direction TEXT NOT NULL,          -- "LONG" or "SHORT"
+    entry_price REAL NOT NULL,
+    entry_time TIMESTAMP NOT NULL,
+    position_size_usd REAL,
+    leverage INTEGER,
+    stop_loss_price REAL,
+    take_profit_price REAL,
+    current_sl_level REAL,
+    smart_sl_extensions INTEGER DEFAULT 0,
+    current_pnl_pct REAL,
+    peak_pnl_pct REAL
+);
+
+-- arena_trades: Trade chiusi
+CREATE TABLE arena_trades (
+    id TEXT PRIMARY KEY,
+    sub_variant_id TEXT NOT NULL,
+    variant_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    entry_price REAL,
+    exit_price REAL,
+    entry_time TIMESTAMP,
+    exit_time TIMESTAMP,
+    exit_reason TEXT,                 -- "CLOSED_TP", "CLOSED_SL", etc.
+    pnl_pct REAL,
+    pnl_usd REAL,
+    duration_minutes INTEGER,
+    ai_model TEXT
+);
 ```
 
 ---
 
-## 15. Deployment
+## 8. Dashboard
 
-### Docker Configuration
+### Access
 
-```yaml
-# docker-compose.arena.yml
-version: '3.8'
-
-services:
-  rizzo_arena:
-    build: .
-    image: rizzo-arena:latest
-    container_name: rizzo_arena
-    entrypoint: python arena_main.py --loop
-    env_file:
-      - .env
-    environment:
-      - ARENA_MODE=true
-      - PYTHONUNBUFFERED=1
-    networks:
-      - unified-memory-stack_memory-net
-    restart: unless-stopped
-    depends_on:
-      - memory_postgres
+```
+http://YOUR-VPS-IP:5055
 ```
 
-### Commands
+### Features
+
+- **Stats Cards**: Equity, Return %, Trades, Win Rate, Posizioni aperte
+- **Equity Chart**: Grafico equity curve con Chart.js
+- **Leaderboard**: Classifica sub-varianti per P&L
+- **Open Positions**: Tabella posizioni aperte
+- **Variants Performance**: Confronto varianti
+
+### Auto-refresh
+
+La dashboard si aggiorna automaticamente ogni 30 secondi.
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Dashboard HTML |
+| `/api/stats` | GET | JSON statistiche |
+| `/api/equity` | GET | JSON dati equity chart |
+| `/api/leaderboard` | GET | JSON leaderboard |
+
+---
+
+## 9. Docker Deployment
+
+### Quick Start
 
 ```bash
-# Setup Arena (first time)
-python arena_cli.py setup
+# Sul VPS
+cd ~/trading-bots/rizzo-trading-agent
 
-# Create baseline from current config
-python arena_cli.py create-baseline
+# Pull ultimo codice
+git pull
 
-# Create a new variant
-python arena_cli.py create-variant \
-  --name "CONSERVATIVE" \
-  --param MICRO_GAIN_STOP_LOSS_PERCENT=5.0 \
-  --param SCORE_THRESHOLD_HOLD=20 \
-  --ai-model deepseek/deepseek-chat \
-  --ai-model openai/gpt-4-turbo
+# Build e avvia
+docker build -t rizzo-arena -f Dockerfile.arena .
 
-# List all variants
-python arena_cli.py list
+docker run -d \
+  --name rizzo-arena \
+  --restart unless-stopped \
+  -p 5055:5055 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/arena/variants.json:/app/arena/variants.json:ro \
+  -e ARENA_ENABLED=true \
+  -e ARENA_STARTING_CAPITAL=100 \
+  -e ARENA_DASHBOARD_PORT=5055 \
+  -e OPENROUTER_API_KEY=sk-or-v1-YOUR_KEY \
+  rizzo-arena
+```
 
-# Run Arena
-docker run -d --name rizzo_arena ...
-# or
-python arena_main.py --loop
+### Commands Reference
 
-# Generate report
-python arena_cli.py report
+```bash
+# Vedere log
+docker logs -f rizzo-arena
 
-# Promote winner to production
-python arena_cli.py promote --sub-variant-id 5
+# Riavviare (dopo modifiche a variants.json)
+docker restart rizzo-arena
+
+# Fermare
+docker stop rizzo-arena
+
+# Rimuovere
+docker rm -f rizzo-arena
+
+# Rebuild completo
+docker rm -f rizzo-arena && \
+docker build -t rizzo-arena -f Dockerfile.arena . && \
+docker run -d ... (come sopra)
+```
+
+### Dockerfile.arena
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    flask \
+    requests \
+    python-dotenv \
+    hyperliquid-python-sdk \
+    pandas \
+    numpy \
+    ta
+
+COPY . .
+
+RUN mkdir -p /app/data
+
+EXPOSE 5055
+
+CMD ["python", "-m", "arena.main"]
+```
+
+---
+
+## 10. Environment Variables
+
+### Required
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `OPENROUTER_API_KEY` | `sk-or-v1-xxx` | API key OpenRouter |
+
+### Optional
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ARENA_ENABLED` | `true` | Master switch |
+| `ARENA_STARTING_CAPITAL` | `100` | Capitale iniziale simulato |
+| `ARENA_DASHBOARD_ENABLED` | `true` | Abilita dashboard |
+| `ARENA_DASHBOARD_PORT` | `5055` | Porta dashboard |
+| `ARENA_LOOP_INTERVAL` | `60` | Slow loop (secondi) |
+| `ARENA_FAST_LOOP_INTERVAL` | `5` | Fast loop (secondi) |
+| `ARENA_LOG_LEVEL` | `INFO` | Log level |
+| `ARENA_DISABLED_VARIANTS` | `` | Varianti da disabilitare (comma-separated) |
+
+---
+
+## 11. API Reference
+
+### AIManager Methods
+
+```python
+# Validazione trade (SCORE_TRIGGERED mode)
+ai_manager.validate_trade(
+    variant: Variant,
+    sub_variant: SubVariant,
+    symbol: str,
+    direction: TradeDirection,
+    market_data: Dict,
+    score_data: Dict
+) -> Tuple[bool, Optional[TradeDirection], str, float]
+# Returns: (approved, override_direction, reason, confidence)
+
+# Decisione libera (AI_INDEPENDENT mode)
+ai_manager.get_independent_decision(
+    variant: Variant,
+    sub_variant: SubVariant,
+    symbol: str,
+    market_data: Dict,
+    has_position: bool,
+    current_direction: Optional[TradeDirection]
+) -> Tuple[str, Optional[TradeDirection], str, float]
+# Returns: (action, direction, reason, confidence)
+# action: "open", "close", "hold"
+
+# Smart SL check
+ai_manager.check_smart_sl_extension(
+    variant: Variant,
+    sub_variant: SubVariant,
+    symbol: str,
+    direction: TradeDirection,
+    current_pnl_pct: float,
+    market_data: Dict,
+    extensions_used: int
+) -> Tuple[bool, str, float]
+# Returns: (should_extend, reason, confidence)
+```
+
+### ArenaDB Methods
+
+```python
+db = ArenaDB()
+
+# Variants
+db.save_variant(variant)
+db.get_variant(variant_id) -> Optional[Variant]
+db.get_all_variants(enabled_only=True) -> List[Variant]
+
+# Sub-variants
+db.save_sub_variant(sub_variant)
+db.get_sub_variant(sub_variant_id) -> Optional[SubVariant]
+db.update_sub_variant_stats(sub_variant_id, trade)
+
+# Positions
+db.save_position(position)
+db.get_position(position_id) -> Optional[SimulatedPosition]
+db.get_position_by_symbol(sub_variant_id, symbol) -> Optional[SimulatedPosition]
+db.get_all_open_positions() -> List[SimulatedPosition]
+db.delete_position(position_id)
+
+# Trades
+db.save_trade(trade)
+db.get_trades_for_sub_variant(sub_variant_id, limit=100) -> List[SimulatedTrade]
+db.get_recent_trades(hours=24, limit=100) -> List[SimulatedTrade]
+db.get_trade_stats(...) -> Dict
+
+# Leaderboard
+db.get_leaderboard(limit=20) -> List[Dict]
+```
+
+---
+
+## 12. Troubleshooting
+
+### Common Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `No module named 'ta'` | Missing dependency | Rebuild Docker con `ta` in pip install |
+| `No module named 'pandas'` | Missing dependency | Rebuild Docker con `pandas numpy` |
+| `Could not get market data` | Network/API error | Check HyperLiquid connectivity |
+| `Port 5050 already allocated` | Port in use | Usa porta diversa (5055) |
+| `database is locked` | Concurrent access | Riavvia container |
+
+### Rebuild Container
+
+```bash
+docker rm -f rizzo-arena
+docker build --no-cache -t rizzo-arena -f Dockerfile.arena .
+docker run -d ... (come sopra)
+```
+
+### Check Logs
+
+```bash
+# Ultimi 100 log
+docker logs --tail 100 rizzo-arena
+
+# Follow in tempo reale
+docker logs -f rizzo-arena
+```
+
+### Reset Database
+
+```bash
+# Rimuove tutti i dati Arena
+rm data/arena.db
+docker restart rizzo-arena
 ```
 
 ---
@@ -1000,24 +812,40 @@ python arena_cli.py promote --sub-variant-id 5
 
 | Date | Version | Changes |
 |------|---------|---------|
-| 2025-12-13 | 1.0 | Initial document creation |
+| 2025-12-13 | 1.0 | Initial document |
+| 2025-12-13 | 2.0 | Complete rewrite with deployment info, current config, AI dev context |
 
 ---
 
-## Next Steps
+## Quick Reference Card
 
-1. [ ] Create arena/ package structure
-2. [ ] Implement database schema
-3. [ ] Implement models.py
-4. [ ] Implement db.py
-5. [ ] Implement simulator.py (core)
-6. [ ] Implement AI manager
-7. [ ] Implement Smart SL
-8. [ ] Implement metrics and reporting
-9. [ ] Create CLI
-10. [ ] Docker configuration
-11. [ ] Testing
-12. [ ] Deployment
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                     ARENA QUICK REFERENCE                        ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                   ║
+║  Dashboard:     http://YOUR-IP:5055                              ║
+║  Database:      data/arena.db (SQLite)                           ║
+║  Config:        arena/variants.json                              ║
+║                                                                   ║
+║  Start:         docker run -d --name rizzo-arena ...             ║
+║  Stop:          docker stop rizzo-arena                          ║
+║  Logs:          docker logs -f rizzo-arena                       ║
+║  Restart:       docker restart rizzo-arena                       ║
+║                                                                   ║
+║  Modify AI models:    Edit arena/variants.json → restart         ║
+║  Disable variant:     Set "enabled": false → restart             ║
+║  Reset data:          rm data/arena.db → restart                 ║
+║                                                                   ║
+║  11 Sub-Variants competing:                                      ║
+║  - V1: DeepSeek V3 (baseline)                                    ║
+║  - V2: 6 AI models battle                                        ║
+║  - V3: Smart SL with DeepSeek                                    ║
+║  - V4: Optimized indicators                                      ║
+║  - V5: AI Free mode (DeepSeek + Qwen)                           ║
+║                                                                   ║
+╚══════════════════════════════════════════════════════════════════╝
+```
 
 ---
 
