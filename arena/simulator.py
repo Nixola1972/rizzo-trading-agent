@@ -381,11 +381,11 @@ class ArenaSimulator:
         has_position = existing_position is not None
         current_direction = existing_position.direction if existing_position else None
 
-        action, direction, reason, confidence = self.ai_manager.get_independent_decision(
+        action, direction, reason, confidence, leverage = self.ai_manager.get_independent_decision(
             variant, sub_variant, symbol, market_data, has_position, current_direction
         )
 
-        logger.info(f"[ARENA] {sub_variant.id} {symbol}: AI decision = {action} ({reason[:50]})")
+        logger.info(f"[ARENA] {sub_variant.id} {symbol}: AI decision = {action} leva={leverage}x ({reason[:50]})")
 
         if action == "open" and direction and not has_position:
             self._open_position(
@@ -393,6 +393,7 @@ class ArenaSimulator:
                 market_data.get("price", 0),
                 0.0,  # No score in AI Independent mode
                 "ai_independent",
+                leverage_override=leverage,  # AI chooses leverage!
             )
         elif action == "close" and has_position:
             self._close_position(existing_position, variant, TradeStatus.CLOSED_AI)
@@ -406,17 +407,21 @@ class ArenaSimulator:
         price: float,
         score: float,
         reason: str,
+        leverage_override: Optional[int] = None,
     ) -> None:
         """Open a new simulated position."""
         params = variant.trading_params
 
-        # Calculate SL/TP prices
+        # Use AI-chosen leverage if provided, otherwise use variant default
+        leverage = leverage_override if leverage_override else params.leverage
+
+        # Calculate SL/TP prices with chosen leverage
         if direction == TradeDirection.LONG:
-            sl_price = price * (1 - params.stop_loss_pct / 100 / params.leverage)
-            tp_price = price * (1 + params.take_profit_pct / 100 / params.leverage)
+            sl_price = price * (1 - params.stop_loss_pct / 100 / leverage)
+            tp_price = price * (1 + params.take_profit_pct / 100 / leverage)
         else:
-            sl_price = price * (1 + params.stop_loss_pct / 100 / params.leverage)
-            tp_price = price * (1 - params.take_profit_pct / 100 / params.leverage)
+            sl_price = price * (1 + params.stop_loss_pct / 100 / leverage)
+            tp_price = price * (1 - params.take_profit_pct / 100 / leverage)
 
         position = SimulatedPosition(
             id=str(uuid.uuid4()),
@@ -426,7 +431,7 @@ class ArenaSimulator:
             entry_price=price,
             entry_time=datetime.now(),
             position_size_usd=params.position_size_usd,
-            leverage=params.leverage,
+            leverage=leverage,
             stop_loss_price=sl_price,
             take_profit_price=tp_price,
             current_sl_level=0.0,
@@ -439,7 +444,7 @@ class ArenaSimulator:
 
         logger.info(
             f"[ARENA] OPEN {sub_variant.id} {symbol} {direction.value} @ ${price:.2f} "
-            f"(SL: ${sl_price:.2f}, TP: ${tp_price:.2f})"
+            f"leva={leverage}x (SL: ${sl_price:.2f}, TP: ${tp_price:.2f})"
         )
 
     def _close_position(

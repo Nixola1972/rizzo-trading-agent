@@ -415,6 +415,7 @@ DASHBOARD_HTML = """
                 <table>
                     <thead>
                         <tr>
+                            <th>Strategy</th>
                             <th>Symbol</th>
                             <th>AI Model</th>
                             <th>Direction</th>
@@ -430,6 +431,7 @@ DASHBOARD_HTML = """
                     <tbody>
                         {% for pos in positions %}
                         <tr>
+                            <td><small>{{ pos.variant }}</small></td>
                             <td><strong>{{ pos.symbol }}</strong></td>
                             <td>{{ pos.ai_model }}</td>
                             <td>
@@ -453,7 +455,7 @@ DASHBOARD_HTML = """
                         </tr>
                         {% endfor %}
                         {% if not positions %}
-                        <tr><td colspan="10" style="text-align: center; color: #666;">No open positions</td></tr>
+                        <tr><td colspan="11" style="text-align: center; color: #666;">No open positions</td></tr>
                         {% endif %}
                     </tbody>
                 </table>
@@ -785,6 +787,11 @@ def get_positions_data() -> List[Dict[str, Any]]:
         sv = db.get_sub_variant(p.sub_variant_id)
         ai_model = sv.ai_model_name if sv else "Unknown"
 
+        # Get variant name from sub_variant_id (format: VARIANT_ID_ai-model)
+        variant_id = sv.variant_id if sv else p.sub_variant_id.split("_")[0]
+        variant = db.get_variant(variant_id)
+        variant_name = variant.name if variant else variant_id
+
         duration_mins = int((datetime.now() - p.entry_time).total_seconds() / 60)
         if duration_mins < 60:
             duration = f"{duration_mins}m"
@@ -794,6 +801,7 @@ def get_positions_data() -> List[Dict[str, Any]]:
         positions.append({
             "id": p.id,
             "symbol": p.symbol,
+            "variant": variant_name,
             "ai_model": ai_model,
             "direction": p.direction.value,
             "leverage": p.leverage,

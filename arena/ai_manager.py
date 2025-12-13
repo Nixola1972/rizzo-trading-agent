@@ -119,16 +119,17 @@ class AIManager:
         market_data: Dict[str, Any],
         has_position: bool,
         current_position_direction: Optional[TradeDirection] = None,
-    ) -> Tuple[str, Optional[TradeDirection], str, float]:
+    ) -> Tuple[str, Optional[TradeDirection], str, float, int]:
         """
         Get AI decision for independent mode.
 
         Returns:
-            Tuple of (action, direction, reason, confidence)
+            Tuple of (action, direction, reason, confidence, leverage)
             action: "open", "close", "hold"
+            leverage: 1-max_leverage (only used for "open")
         """
         if not self.api_key:
-            return "hold", None, "No API key", 0.0
+            return "hold", None, "No API key", 0.0, 1
 
         self._rate_limit(sub_variant.ai_model)
 
@@ -136,22 +137,24 @@ class AIManager:
             symbol, market_data, has_position, current_position_direction, variant
         )
 
+        max_leverage = variant.trading_params.leverage
+
         try:
             response = self._call_ai(sub_variant.ai_model, prompt)
 
             if not response:
                 self._track_api_call(sub_variant.id, error=True)
-                return "hold", None, "AI call failed", 0.0
+                return "hold", None, "AI call failed", 0.0, 1
 
             # Track successful API call
             self._track_api_call(sub_variant.id, error=False)
 
-            return self._parse_independent_response(response)
+            return self._parse_independent_response(response, max_leverage)
 
         except Exception as e:
             logger.error(f"AI independent decision error: {e}")
             self._track_api_call(sub_variant.id, error=True)
-            return "hold", None, f"Error: {str(e)[:50]}", 0.0
+            return "hold", None, f"Error: {str(e)[:50]}", 0.0, 1
 
     def check_smart_sl_extension(
         self,
@@ -372,6 +375,8 @@ CURRENT POSITION:
 - P&L: {market_data.get('current_pnl_pct', 0):.2f}%
 """
 
+        max_leverage = variant.trading_params.leverage  # This is now max_leverage
+
         return f"""ARENA SIMULATION - AI Free Decision
 Interval: Every {variant.ai_check_interval_minutes} minutes
 Timeframe: {variant.ai_independent_timeframe}
@@ -384,14 +389,20 @@ MARKET DATA:
 - RSI: {market_data.get('rsi', 50):.1f}
 - ADX: {market_data.get('adx', 0):.1f}
 - Trend: {market_data.get('trend', 'neutral')}
+- Volatility (ATR): {market_data.get('atr', 0):.2f}
 
 You have FULL CONTROL. Decide:
-- "open" + direction: Open new position
+- "open" + direction + leverage: Open new position
 - "close": Close current position (if any)
 - "hold": Do nothing
 
+LEVERAGE: Choose 1-{max_leverage}x based on:
+- High confidence + strong trend → higher leverage (up to {max_leverage}x)
+- Uncertain conditions → lower leverage (1-2x)
+- High volatility → lower leverage for safety
+
 Respond with JSON:
-{{"action": "open/close/hold", "direction": "LONG/SHORT" (if open), "confidence": 0.0-1.0, "reason": "brief analysis"}}"""
+{{"action": "open/close/hold", "direction": "LONG/SHORT" (if open), "leverage": 1-{max_leverage} (if open), "confidence": 0.0-1.0, "reason": "brief analysis"}}"""
 
     def _build_smart_sl_prompt(
         self,
@@ -450,11 +461,13 @@ Respond with JSON:
     def _parse_independent_response(
         self,
         response: Dict[str, Any],
-    ) -> Tuple[str, Optional[TradeDirection], str, float]:
+        max_leverage: int = 10,
+    ) -> Tuple[str, Optional[TradeDirection], str, float, int]:
         """Parse AI independent decision response."""
         action = response.get("action", response.get("operation", "hold")).lower()
 
         direction = None
+        leverage = 1
         if action == "open":
             dir_str = response.get("direction", "").upper()
             if dir_str in ["LONG", "SHORT"]:
@@ -462,10 +475,17 @@ Respond with JSON:
             else:
                 action = "hold"  # Can't open without direction
 
+            # Parse leverage from AI response
+            try:
+                ai_leverage = int(response.get("leverage", 3))
+                leverage = max(1, min(ai_leverage, max_leverage))  # Clamp to 1-max_leverage
+            except (ValueError, TypeError):
+                leverage = 3  # Default fallback
+
         reason = response.get("reason", "No reason provided")
         confidence = float(response.get("confidence", 0.5))
 
-        return action, direction, reason, confidence
+        return action, direction, reason, confidence, leverage
 
     def _parse_smart_sl_response(
         self,
