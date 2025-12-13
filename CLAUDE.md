@@ -780,6 +780,84 @@ docker build -t rizzo-arena -f Dockerfile.arena .
 docker run -d --name rizzo-arena --env-file .env -p 5055:5055 rizzo-arena
 ```
 
+### Analytics Engine
+
+Il sistema Arena include un motore di analisi automatico che:
+
+1. **Analizza i dati ogni ora** (configurabile via `ARENA_ANALYTICS_INTERVAL`)
+2. **Genera raccomandazioni** per migliorare il modello di produzione
+3. **Mostra i risultati** nella tab "🎯 Analytics" della dashboard
+
+#### Come funziona
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      ANALYTICS ENGINE FLOW                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Every 1 hour (ARENA_ANALYTICS_INTERVAL):                                  │
+│                                                                             │
+│   1. COLLECT: Get all trades from last 24h                                  │
+│   2. ANALYZE: Calculate per-AI-model statistics                             │
+│   3. OPTIMIZE: Find optimal parameters (SL, leverage, etc.)                 │
+│   4. RECOMMEND: Generate actionable recommendations                         │
+│   5. DISPLAY: Show in dashboard "Analytics" tab                             │
+│                                                                             │
+│   Recommendations Types:                                                    │
+│   ├─ 🔴 HIGH: Immediate action (disable losing AI, change SL)               │
+│   ├─ 🟡 MEDIUM: Consider applying (parameter tweaks)                        │
+│   └─ 🟢 LOW: Nice to have (minor optimizations)                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Cosa analizza
+
+| Metric | Descrizione |
+|--------|-------------|
+| **AI Rankings** | Classifica AI per P&L, win rate, profit factor |
+| **Stop Loss** | Trova lo SL% ottimale basato sui trade storici |
+| **Leverage** | Analizza quale leva produce i migliori risultati |
+| **Best Variant** | Identifica la strategia più performante |
+
+#### API Endpoints
+
+```
+GET  /api/analytics        # Ottieni analytics correnti
+POST /api/analytics/run    # Forza esecuzione analisi
+```
+
+#### Environment Variables
+
+```bash
+# Analytics settings
+ARENA_ANALYTICS_INTERVAL=3600    # Secondi tra analisi (default: 1 ora)
+```
+
+#### Esempio Output nei Log
+
+```
+📊 Running Arena Analytics...
+============================================================
+🎯 ARENA ANALYTICS - HIGH PRIORITY RECOMMENDATIONS
+============================================================
+  📌 Usa deepseek-v3.2-speciale come modello principale
+     deepseek-v3.2-speciale ha il miglior P&L ($15.42)
+     con win rate 68.0% su 25 trade.
+     ➡️  Cambia: deepseek/deepseek-v3.2-speciale → deepseek/deepseek-v3.2-speciale
+
+  📌 Disabilita gpt-oss-120b
+     gpt-oss-120b sta perdendo $12.35 con win rate 35.0%.
+     ➡️  Cambia: enabled → disabled
+
+============================================================
+📊 Analytics Report: AR_20251213_143000
+   Trades analyzed: 87
+   Total P&L: $24.50
+   Best AI: deepseek/deepseek-v3.2-speciale
+   Recommendations: 3
+```
+
 ### Files Reference (Arena)
 
 | File | Purpose |
@@ -790,6 +868,7 @@ docker run -d --name rizzo-arena --env-file .env -p 5055:5055 rizzo-arena
 | `arena/db.py` | Database SQLite per trades, positions, stats |
 | `arena/models.py` | Dataclass: Variant, SubVariant, Position, Trade |
 | `arena/ai_manager.py` | Wrapper OpenRouter API con tracking |
+| `arena/analytics.py` | Analytics engine per raccomandazioni |
 | `arena/config_loader.py` | Carica variants da JSON |
 | `arena/variants.json` | Configurazione varianti e AI models |
 | `Dockerfile.arena` | Docker image per deployment |

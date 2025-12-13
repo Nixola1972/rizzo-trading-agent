@@ -29,6 +29,7 @@ from .db import ArenaDB
 from .config_loader import load_variants, get_enabled_variants
 from .ai_manager import AIManager
 from .smart_sl import SmartSLManager, TrailingSLManager
+from .analytics import AnalyticsEngine
 
 
 logger = logging.getLogger("arena.simulator")
@@ -81,6 +82,11 @@ class ArenaSimulator:
         self.snapshot_interval = int(os.environ.get("ARENA_SNAPSHOT_INTERVAL", 300))  # 5 min default
         self._last_snapshot_time = datetime.min
         self.starting_capital = float(os.environ.get("ARENA_STARTING_CAPITAL", 100))
+
+        # Analytics engine
+        self.analytics = AnalyticsEngine(self.db)
+        self.analytics_interval = int(os.environ.get("ARENA_ANALYTICS_INTERVAL", 3600))  # 1 hour default
+        self._last_analytics_time = datetime.min
 
     def _load_variants(self) -> None:
         """Load variants from database."""
@@ -162,6 +168,12 @@ class ArenaSimulator:
                 if now - self._last_snapshot_time >= snapshot_interval_td:
                     self._record_equity_snapshots()
                     self._last_snapshot_time = now
+
+                # Analytics - run every analytics_interval (default 1 hour)
+                analytics_interval_td = timedelta(seconds=self.analytics_interval)
+                if now - self._last_analytics_time >= analytics_interval_td:
+                    self._run_analytics()
+                    self._last_analytics_time = now
 
                 # Sleep until next fast loop
                 self._stop_event.wait(self.fast_loop_interval)
@@ -701,3 +713,44 @@ class ArenaSimulator:
 
         except Exception as e:
             logger.error(f"Error recording equity snapshots: {e}")
+
+    def _run_analytics(self) -> None:
+        """Run analytics engine to generate insights and recommendations."""
+        try:
+            logger.info("📊 Running Arena Analytics...")
+            report = self.analytics.run_analysis()
+
+            if report:
+                # Log high priority recommendations
+                high_recs = [r for r in report.recommendations
+                            if r.priority.value == "high"]
+
+                if high_recs:
+                    logger.info("=" * 60)
+                    logger.info("🎯 ARENA ANALYTICS - HIGH PRIORITY RECOMMENDATIONS")
+                    logger.info("=" * 60)
+                    for rec in high_recs:
+                        logger.info(f"  📌 {rec.title}")
+                        logger.info(f"     {rec.description}")
+                        logger.info(f"     ➡️  Cambia: {rec.current_value} → {rec.recommended_value}")
+                        logger.info("")
+                    logger.info("=" * 60)
+
+                # Log summary
+                logger.info(f"📊 Analytics Report: {report.report_id}")
+                logger.info(f"   Trades analyzed: {report.total_trades_analyzed}")
+                logger.info(f"   Total P&L: ${report.total_pnl_usd:.2f}")
+                if report.best_ai_model:
+                    logger.info(f"   Best AI: {report.best_ai_model}")
+                logger.info(f"   Recommendations: {len(report.recommendations)}")
+
+        except Exception as e:
+            logger.error(f"Analytics error: {e}")
+
+    def get_analytics_report(self):
+        """Get the latest analytics report."""
+        return self.analytics.get_latest_report()
+
+    def get_recommendations(self):
+        """Get recommendations from analytics."""
+        return self.analytics.get_recommendations()

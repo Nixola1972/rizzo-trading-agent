@@ -257,6 +257,75 @@ DASHBOARD_HTML = """
             font-size: 0.85em;
             margin-top: 20px;
         }
+
+        /* Analytics Tab Styles */
+        .rec-card {
+            background: #1e1e3f;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid #333;
+        }
+        .rec-card.rec-high { border-left-color: #ff4444; }
+        .rec-card.rec-medium { border-left-color: #ffaa00; }
+        .rec-card.rec-low { border-left-color: #00ff88; }
+
+        .rec-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .rec-badge {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+        .rec-badge-high { background: #ff444433; color: #ff4444; }
+        .rec-badge-medium { background: #ffaa0033; color: #ffaa00; }
+        .rec-badge-low { background: #00ff8833; color: #00ff88; }
+        .rec-type { color: #888; font-size: 0.85em; text-transform: uppercase; }
+
+        .rec-card h3 { color: #fff; margin-bottom: 8px; font-size: 1.1em; }
+        .rec-card p { color: #aaa; font-size: 0.95em; line-height: 1.4; }
+
+        .rec-change {
+            background: #0f0f23;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 12px 0;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .rec-old { color: #ff4444; text-decoration: line-through; }
+        .rec-arrow { color: #666; }
+        .rec-new { color: #00ff88; font-weight: 600; }
+
+        .rec-footer {
+            display: flex;
+            justify-content: space-between;
+            color: #666;
+            font-size: 0.85em;
+            margin-top: 10px;
+        }
+
+        .analytics-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-box {
+            background: #1e1e3f;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-label { color: #888; font-size: 0.85em; margin-bottom: 5px; }
+        .stat-value { font-size: 1.3em; font-weight: 600; color: #fff; }
+        .stat-value.positive { color: #00ff88; }
+        .stat-value.negative { color: #ff4444; }
     </style>
 </head>
 <body>
@@ -298,6 +367,7 @@ DASHBOARD_HTML = """
         <div class="tab active" onclick="showTab('ai-battle')">🤖 AI Battle</div>
         <div class="tab" onclick="showTab('strategies')">📊 Strategies</div>
         <div class="tab" onclick="showTab('positions')">📍 Positions</div>
+        <div class="tab" onclick="showTab('analytics')">🎯 Analytics</div>
     </div>
 
     <div class="container">
@@ -499,6 +569,108 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
+        <!-- Analytics Tab -->
+        <div id="analytics" class="tab-content">
+            <div class="two-columns">
+                <div class="section">
+                    <h2>🎯 Recommendations for Production</h2>
+                    <p style="color: #888; margin-bottom: 15px;">
+                        These recommendations are based on {{ analytics.total_trades or 0 }} trades
+                        analyzed in the last 24 hours.
+                    </p>
+                    {% if analytics.recommendations %}
+                    {% for rec in analytics.recommendations %}
+                    <div class="rec-card rec-{{ rec.priority }}">
+                        <div class="rec-header">
+                            <span class="rec-badge rec-badge-{{ rec.priority }}">
+                                {% if rec.priority == 'high' %}🔴 HIGH
+                                {% elif rec.priority == 'medium' %}🟡 MEDIUM
+                                {% else %}🟢 LOW{% endif %}
+                            </span>
+                            <span class="rec-type">{{ rec.type }}</span>
+                        </div>
+                        <h3>{{ rec.title }}</h3>
+                        <p>{{ rec.description }}</p>
+                        <div class="rec-change">
+                            <span class="rec-old">{{ rec.current_value }}</span>
+                            <span class="rec-arrow">→</span>
+                            <span class="rec-new">{{ rec.recommended_value }}</span>
+                        </div>
+                        <div class="rec-footer">
+                            <span>Confidence: {{ "%.0f"|format(rec.confidence * 100) }}%</span>
+                            <span>{{ rec.expected_improvement }}</span>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% else %}
+                    <div style="text-align: center; color: #666; padding: 40px;">
+                        <p>📊 Waiting for enough data...</p>
+                        <p style="font-size: 0.9em;">Recommendations will appear after at least 10 trades.</p>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <div class="section">
+                    <h2>📊 Performance Summary</h2>
+                    <div class="analytics-stats">
+                        <div class="stat-box">
+                            <div class="stat-label">Total P&L (24h)</div>
+                            <div class="stat-value {{ 'positive' if (analytics.total_pnl or 0) >= 0 else 'negative' }}">
+                                ${{ "%.2f"|format(analytics.total_pnl or 0) }}
+                            </div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Avg Win Rate</div>
+                            <div class="stat-value">{{ "%.1f"|format((analytics.avg_win_rate or 0) * 100) }}%</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Best AI Model</div>
+                            <div class="stat-value">{{ analytics.best_ai or 'N/A' }}</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Best Strategy</div>
+                            <div class="stat-value">{{ analytics.best_variant or 'N/A' }}</div>
+                        </div>
+                    </div>
+
+                    <h2 style="margin-top: 30px;">🏆 AI Model Rankings</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>AI Model</th>
+                                <th>Trades</th>
+                                <th>Win%</th>
+                                <th>Profit Factor</th>
+                                <th>P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ai in analytics.ai_rankings %}
+                            <tr>
+                                <td>{{ loop.index }}</td>
+                                <td>{{ ai.model_name }}</td>
+                                <td>{{ ai.total_trades }}</td>
+                                <td>{{ "%.1f"|format(ai.win_rate * 100) }}%</td>
+                                <td>{{ "%.2f"|format(ai.profit_factor) if ai.profit_factor < 100 else '∞' }}</td>
+                                <td class="{{ 'pnl-positive' if ai.total_pnl_usd >= 0 else 'pnl-negative' }}">
+                                    ${{ "%.2f"|format(ai.total_pnl_usd) }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% if not analytics.ai_rankings %}
+                            <tr><td colspan="6" style="text-align: center; color: #666;">No data yet</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+
+                    <div style="margin-top: 20px; text-align: center; color: #666; font-size: 0.9em;">
+                        Last analysis: {{ analytics.last_update or 'Never' }}
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="refresh-info">
             Auto-refresh every 30 seconds • Last update: {{ now }}
         </div>
@@ -595,6 +767,7 @@ def dashboard():
     recent_trades = get_recent_trades_data()
     ai_chart_data = get_ai_chart_data()
     strategy_chart_data = get_strategy_chart_data()
+    analytics = get_analytics_data()
 
     return render_template_string(
         DASHBOARD_HTML,
@@ -606,6 +779,7 @@ def dashboard():
         recent_trades=recent_trades,
         ai_chart_data=ai_chart_data,
         strategy_chart_data=strategy_chart_data,
+        analytics=analytics,
         paused=simulation_paused,
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
@@ -680,6 +854,31 @@ def api_leaderboard():
 def api_costs():
     """API endpoint for API call costs."""
     return jsonify(db.get_api_stats())
+
+
+@app.route('/api/analytics')
+def api_analytics():
+    """API endpoint for analytics data."""
+    return jsonify(get_analytics_data())
+
+
+@app.route('/api/analytics/run', methods=['POST'])
+def api_run_analytics():
+    """Force run analytics and return results."""
+    try:
+        from .analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db)
+        report = analytics.run_analysis(force=True)
+
+        if report:
+            return jsonify({
+                "success": True,
+                "report_id": report.report_id,
+                "recommendations_count": len(report.recommendations),
+            })
+        return jsonify({"success": False, "error": "Not enough data"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 
 # ==================== Data Functions ====================
@@ -829,6 +1028,64 @@ def get_recent_trades_data() -> List[Dict[str, Any]]:
             "pnl_usd": t.pnl_usd,
         })
     return result
+
+
+def get_analytics_data() -> Dict[str, Any]:
+    """Get analytics data for the analytics tab."""
+    try:
+        from .analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db)
+
+        # Try to get or generate report
+        report = analytics.run_analysis(force=False)
+
+        if report:
+            return {
+                "total_trades": report.total_trades_analyzed,
+                "total_pnl": report.total_pnl_usd,
+                "avg_win_rate": report.avg_win_rate,
+                "best_ai": report.best_ai_model.split("/")[-1] if report.best_ai_model else None,
+                "best_variant": report.best_performing_variant,
+                "ai_rankings": [
+                    {
+                        "model_name": r.model_name,
+                        "total_trades": r.total_trades,
+                        "win_rate": r.win_rate,
+                        "profit_factor": r.profit_factor,
+                        "total_pnl_usd": r.total_pnl_usd,
+                    }
+                    for r in report.ai_rankings
+                ],
+                "recommendations": [
+                    {
+                        "type": r.type.value,
+                        "priority": r.priority.value,
+                        "title": r.title,
+                        "description": r.description,
+                        "current_value": str(r.current_value),
+                        "recommended_value": str(r.recommended_value),
+                        "expected_improvement": r.expected_improvement,
+                        "confidence": r.confidence,
+                    }
+                    for r in report.recommendations
+                ],
+                "last_update": report.generated_at.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+    except Exception as e:
+        import logging
+        logging.getLogger("arena.dashboard").warning(f"Analytics error: {e}")
+
+    # Return empty data if no report
+    return {
+        "total_trades": 0,
+        "total_pnl": 0.0,
+        "avg_win_rate": 0.0,
+        "best_ai": None,
+        "best_variant": None,
+        "ai_rankings": [],
+        "recommendations": [],
+        "last_update": None,
+    }
 
 
 def get_ai_chart_data() -> Dict[str, Any]:
