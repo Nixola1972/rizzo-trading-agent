@@ -49,7 +49,11 @@ class ArenaSimulator:
     ):
         """Initialize Arena Simulator."""
         self.db = db or ArenaDB()
-        self.ai_manager = ai_manager or AIManager()
+        self.ai_manager = ai_manager or AIManager(db=self.db)
+
+        # Set DB reference for API tracking
+        self.ai_manager.set_db(self.db)
+
         self.smart_sl = SmartSLManager(self.ai_manager)
         self.trailing_sl = TrailingSLManager()
 
@@ -128,6 +132,16 @@ class ArenaSimulator:
 
         while not self._stop_event.is_set():
             try:
+                # Check if simulation is paused via dashboard
+                try:
+                    from .dashboard import is_simulation_paused
+                    if is_simulation_paused():
+                        logger.debug("Simulation paused via dashboard")
+                        self._stop_event.wait(self.fast_loop_interval)
+                        continue
+                except ImportError:
+                    pass  # Dashboard not running
+
                 now = datetime.now()
 
                 # Fast loop - check open positions
@@ -182,7 +196,12 @@ class ArenaSimulator:
         - Evaluates entry signals for each variant
         - AI Independent mode checks
         """
-        enabled_variants = [v for v in self.variants if v.enabled]
+        # Get enabled variants (check DB for real-time toggle)
+        enabled_variants = []
+        for v in self.variants:
+            v_db = self.db.get_variant(v.id)
+            if v_db and v_db.enabled:
+                enabled_variants.append(v)
 
         if not enabled_variants:
             return
@@ -197,6 +216,12 @@ class ArenaSimulator:
         for variant in enabled_variants:
             for sub_variant in variant.sub_variants:
                 try:
+                    # Check if sub-variant is enabled (reload from DB for real-time toggle)
+                    sv_db = self.db.get_sub_variant(sub_variant.id)
+                    if sv_db and not sv_db.enabled:
+                        logger.debug(f"Skipping disabled sub-variant: {sub_variant.id}")
+                        continue
+
                     self._process_variant(variant, sub_variant, market_data)
                 except Exception as e:
                     logger.error(f"Error processing {sub_variant.id}: {e}")

@@ -172,6 +172,9 @@ class SubVariant:
     ai_model: str                    # e.g., "deepseek/deepseek-chat"
     ai_model_name: str               # e.g., "DeepSeek V3"
 
+    # Control
+    enabled: bool = True             # Can be toggled from dashboard
+
     # Statistics (updated after each trade)
     total_trades: int = 0
     winning_trades: int = 0
@@ -180,6 +183,10 @@ class SubVariant:
     total_pnl_pct: float = 0.0
     max_drawdown_pct: float = 0.0
     sharpe_ratio: float = 0.0
+
+    # API tracking
+    api_calls: int = 0               # Number of API calls made
+    api_errors: int = 0              # Number of API errors
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.now)
@@ -199,6 +206,7 @@ class SubVariant:
             "variant_id": self.variant_id,
             "ai_model": self.ai_model,
             "ai_model_name": self.ai_model_name,
+            "enabled": self.enabled,
             "total_trades": self.total_trades,
             "winning_trades": self.winning_trades,
             "losing_trades": self.losing_trades,
@@ -206,6 +214,8 @@ class SubVariant:
             "total_pnl_pct": self.total_pnl_pct,
             "max_drawdown_pct": self.max_drawdown_pct,
             "sharpe_ratio": self.sharpe_ratio,
+            "api_calls": self.api_calls,
+            "api_errors": self.api_errors,
             "win_rate": self.win_rate,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_trade_at": self.last_trade_at.isoformat() if self.last_trade_at else None,

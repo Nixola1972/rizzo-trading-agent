@@ -89,6 +89,7 @@ class ArenaDB:
                     variant_id TEXT NOT NULL,
                     ai_model TEXT NOT NULL,
                     ai_model_name TEXT,
+                    enabled INTEGER DEFAULT 1,
                     total_trades INTEGER DEFAULT 0,
                     winning_trades INTEGER DEFAULT 0,
                     losing_trades INTEGER DEFAULT 0,
@@ -96,11 +97,27 @@ class ArenaDB:
                     total_pnl_pct REAL DEFAULT 0.0,
                     max_drawdown_pct REAL DEFAULT 0.0,
                     sharpe_ratio REAL DEFAULT 0.0,
+                    api_calls INTEGER DEFAULT 0,
+                    api_errors INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_trade_at TIMESTAMP,
                     FOREIGN KEY (variant_id) REFERENCES arena_variants(id)
                 )
             """)
+
+            # Add columns if they don't exist (for migration)
+            try:
+                cursor.execute("ALTER TABLE arena_sub_variants ADD COLUMN enabled INTEGER DEFAULT 1")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE arena_sub_variants ADD COLUMN api_calls INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cursor.execute("ALTER TABLE arena_sub_variants ADD COLUMN api_errors INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
 
             # Open positions table
             cursor.execute("""
@@ -228,16 +245,18 @@ class ArenaDB:
         """Save sub-variant using existing cursor (for transactions)."""
         cursor.execute("""
             INSERT OR REPLACE INTO arena_sub_variants (
-                id, variant_id, ai_model, ai_model_name,
+                id, variant_id, ai_model, ai_model_name, enabled,
                 total_trades, winning_trades, losing_trades,
                 total_pnl_usd, total_pnl_pct, max_drawdown_pct, sharpe_ratio,
+                api_calls, api_errors,
                 created_at, last_trade_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             sub_variant.id,
             sub_variant.variant_id,
             sub_variant.ai_model,
             sub_variant.ai_model_name,
+            1 if sub_variant.enabled else 0,
             sub_variant.total_trades,
             sub_variant.winning_trades,
             sub_variant.losing_trades,
@@ -245,6 +264,8 @@ class ArenaDB:
             sub_variant.total_pnl_pct,
             sub_variant.max_drawdown_pct,
             sub_variant.sharpe_ratio,
+            sub_variant.api_calls,
+            sub_variant.api_errors,
             sub_variant.created_at.isoformat() if sub_variant.created_at else datetime.now().isoformat(),
             sub_variant.last_trade_at.isoformat() if sub_variant.last_trade_at else None,
         ))
@@ -356,16 +377,18 @@ class ArenaDB:
 
             cursor.execute("""
                 INSERT OR REPLACE INTO arena_sub_variants (
-                    id, variant_id, ai_model, ai_model_name,
+                    id, variant_id, ai_model, ai_model_name, enabled,
                     total_trades, winning_trades, losing_trades,
                     total_pnl_usd, total_pnl_pct, max_drawdown_pct, sharpe_ratio,
+                    api_calls, api_errors,
                     created_at, last_trade_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 sub_variant.id,
                 sub_variant.variant_id,
                 sub_variant.ai_model,
                 sub_variant.ai_model_name,
+                1 if sub_variant.enabled else 0,
                 sub_variant.total_trades,
                 sub_variant.winning_trades,
                 sub_variant.losing_trades,
@@ -373,6 +396,8 @@ class ArenaDB:
                 sub_variant.total_pnl_pct,
                 sub_variant.max_drawdown_pct,
                 sub_variant.sharpe_ratio,
+                sub_variant.api_calls,
+                sub_variant.api_errors,
                 sub_variant.created_at.isoformat() if sub_variant.created_at else datetime.now().isoformat(),
                 sub_variant.last_trade_at.isoformat() if sub_variant.last_trade_at else None,
             ))
@@ -443,13 +468,95 @@ class ArenaDB:
             conn.commit()
             return True
 
+    def toggle_variant(self, variant_id: str, enabled: bool) -> bool:
+        """Toggle variant enabled status."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE arena_variants SET enabled = ? WHERE id = ?",
+                (1 if enabled else 0, variant_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def toggle_sub_variant(self, sub_variant_id: str, enabled: bool) -> bool:
+        """Toggle sub-variant enabled status."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE arena_sub_variants SET enabled = ? WHERE id = ?",
+                (1 if enabled else 0, sub_variant_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def increment_api_calls(self, sub_variant_id: str, error: bool = False) -> bool:
+        """Increment API call counter for a sub-variant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if error:
+                cursor.execute(
+                    "UPDATE arena_sub_variants SET api_calls = api_calls + 1, api_errors = api_errors + 1 WHERE id = ?",
+                    (sub_variant_id,)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE arena_sub_variants SET api_calls = api_calls + 1 WHERE id = ?",
+                    (sub_variant_id,)
+                )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_api_stats(self) -> List[Dict[str, Any]]:
+        """Get API call statistics for all sub-variants."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    sv.id,
+                    sv.ai_model_name,
+                    sv.ai_model,
+                    sv.enabled,
+                    sv.api_calls,
+                    sv.api_errors,
+                    v.name as variant_name
+                FROM arena_sub_variants sv
+                JOIN arena_variants v ON sv.variant_id = v.id
+                ORDER BY sv.api_calls DESC
+            """)
+
+            return [
+                {
+                    "id": row["id"],
+                    "ai_model_name": row["ai_model_name"],
+                    "ai_model": row["ai_model"],
+                    "enabled": bool(row["enabled"]),
+                    "api_calls": row["api_calls"] or 0,
+                    "api_errors": row["api_errors"] or 0,
+                    "variant_name": row["variant_name"],
+                }
+                for row in cursor.fetchall()
+            ]
+
     def _row_to_sub_variant(self, row: sqlite3.Row) -> SubVariant:
         """Convert database row to SubVariant object."""
+        # Handle migration - column might not exist in old databases
+        enabled = True
+        api_calls = 0
+        api_errors = 0
+        try:
+            enabled = bool(row["enabled"]) if row["enabled"] is not None else True
+            api_calls = row["api_calls"] or 0
+            api_errors = row["api_errors"] or 0
+        except (KeyError, IndexError):
+            pass
+
         return SubVariant(
             id=row["id"],
             variant_id=row["variant_id"],
             ai_model=row["ai_model"],
             ai_model_name=row["ai_model_name"] or "",
+            enabled=enabled,
             total_trades=row["total_trades"] or 0,
             winning_trades=row["winning_trades"] or 0,
             losing_trades=row["losing_trades"] or 0,
@@ -457,6 +564,8 @@ class ArenaDB:
             total_pnl_pct=row["total_pnl_pct"] or 0.0,
             max_drawdown_pct=row["max_drawdown_pct"] or 0.0,
             sharpe_ratio=row["sharpe_ratio"] or 0.0,
+            api_calls=api_calls,
+            api_errors=api_errors,
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
             last_trade_at=datetime.fromisoformat(row["last_trade_at"]) if row["last_trade_at"] else None,
         )

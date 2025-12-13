@@ -32,10 +32,11 @@ class AIManager:
     Uses OpenRouter API to support multiple models.
     """
 
-    def __init__(self):
+    def __init__(self, db=None):
         """Initialize AI Manager."""
         self.api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
         self.api_base = os.environ.get("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
+        self.db = db  # Database for API call tracking
 
         if not self.api_key:
             logger.warning("No API key found for AI Manager. Set OPENROUTER_API_KEY.")
@@ -47,6 +48,18 @@ class AIManager:
         # Cache for recent decisions
         self._decision_cache: Dict[str, Tuple[datetime, Dict]] = {}
         self._cache_ttl_seconds = 60
+
+    def set_db(self, db) -> None:
+        """Set database reference for API tracking."""
+        self.db = db
+
+    def _track_api_call(self, sub_variant_id: str, error: bool = False) -> None:
+        """Track API call in database."""
+        if self.db and sub_variant_id:
+            try:
+                self.db.increment_api_calls(sub_variant_id, error=error)
+            except Exception as e:
+                logger.warning(f"Failed to track API call: {e}")
 
     def validate_trade(
         self,
@@ -84,13 +97,18 @@ class AIManager:
             response = self._call_ai(sub_variant.ai_model, prompt)
 
             if not response:
+                self._track_api_call(sub_variant.id, error=True)
                 return True, None, "AI call failed - auto-approved", 0.3
+
+            # Track successful API call
+            self._track_api_call(sub_variant.id, error=False)
 
             # Parse response
             return self._parse_response(response, direction)
 
         except Exception as e:
             logger.error(f"AI validation error: {e}")
+            self._track_api_call(sub_variant.id, error=True)
             return True, None, f"Error: {str(e)[:50]}", 0.3
 
     def get_independent_decision(
@@ -122,12 +140,17 @@ class AIManager:
             response = self._call_ai(sub_variant.ai_model, prompt)
 
             if not response:
+                self._track_api_call(sub_variant.id, error=True)
                 return "hold", None, "AI call failed", 0.0
+
+            # Track successful API call
+            self._track_api_call(sub_variant.id, error=False)
 
             return self._parse_independent_response(response)
 
         except Exception as e:
             logger.error(f"AI independent decision error: {e}")
+            self._track_api_call(sub_variant.id, error=True)
             return "hold", None, f"Error: {str(e)[:50]}", 0.0
 
     def check_smart_sl_extension(
@@ -163,12 +186,17 @@ class AIManager:
             response = self._call_ai(sub_variant.ai_model, prompt)
 
             if not response:
+                self._track_api_call(sub_variant.id, error=True)
                 return False, "AI call failed", 0.0
+
+            # Track successful API call
+            self._track_api_call(sub_variant.id, error=False)
 
             return self._parse_smart_sl_response(response)
 
         except Exception as e:
             logger.error(f"Smart SL AI error: {e}")
+            self._track_api_call(sub_variant.id, error=True)
             return False, f"Error: {str(e)[:50]}", 0.0
 
     def _rate_limit(self, model: str) -> None:
