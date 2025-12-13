@@ -1,11 +1,11 @@
 {
   "version": "1.0",
-  "description": "Arena variant configurations - Edit this file to customize variants",
+  "description": "Arena variant configurations - Modelli AI personalizzati",
   "variants": [
     {
       "id": "V1_BASELINE",
-      "name": "Baseline",
-      "description": "Current production configuration for comparison",
+      "name": "Baseline DeepSeek V3",
+      "description": "Configurazione produzione con DeepSeek V3",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": ["deepseek/deepseek-chat"],
@@ -43,15 +43,17 @@
     },
     {
       "id": "V2_MULTI_AI",
-      "name": "Multi-AI Battle",
-      "description": "Same config, different AI models compete",
+      "name": "Battle: 6 AI a Confronto",
+      "description": "DeepSeek V3 vs Grok vs Claude vs GPT vs Qwen",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": [
         "deepseek/deepseek-chat",
-        "openai/gpt-4o-mini",
-        "anthropic/claude-3-haiku",
-        "qwen/qwen-2.5-72b-instruct"
+        "x-ai/grok-code-fast-1",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3-max",
+        "qwen/qwen3-235b-a22b:free"
       ],
       "trading_params": {
         "position_size_usd": 50.0,
@@ -71,8 +73,8 @@
     },
     {
       "id": "V3_SMART_EXIT",
-      "name": "Smart Exit",
-      "description": "AI-controlled stop loss with extension capability",
+      "name": "Smart Exit con DeepSeek",
+      "description": "SL intelligente controllato da AI",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": ["deepseek/deepseek-chat"],
@@ -96,8 +98,8 @@
     },
     {
       "id": "V4_INDICATOR_TEST",
-      "name": "Indicator Optimization",
-      "description": "Testing different indicator weights and periods",
+      "name": "Indicatori Ottimizzati",
+      "description": "Pesi e periodi indicatori diversi",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": ["deepseek/deepseek-chat"],
@@ -135,13 +137,13 @@
     },
     {
       "id": "V5_AI_FREE",
-      "name": "AI Independent",
-      "description": "AI decides every 15 min without score filter",
+      "name": "AI Libero (ogni 15min)",
+      "description": "AI decide liberamente senza filtro score",
       "enabled": true,
       "operation_mode": "AI_INDEPENDENT",
       "ai_models": [
         "deepseek/deepseek-chat",
-        "openai/gpt-4o-mini"
+        "qwen/qwen3-235b-a22b:free"
       ],
       "trading_params": {
         "position_size_usd": 50.0,
