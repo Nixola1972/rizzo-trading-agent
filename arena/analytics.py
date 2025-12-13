@@ -269,9 +269,11 @@ class AnalyticsEngine:
 
     def _get_recent_trades(self):
         """Get trades from the analysis period."""
-        cutoff = datetime.now() - timedelta(hours=self.analysis_period_hours)
-        all_trades = self.db.get_all_closed_trades()
-        return [t for t in all_trades if t.close_time and t.close_time >= cutoff]
+        # Use get_recent_trades with large limit to get all trades in period
+        return self.db.get_recent_trades(
+            hours=self.analysis_period_hours,
+            limit=10000
+        )
 
     def _analyze_ai_models(self, trades, sub_variants) -> List[AIModelStats]:
         """Analyze performance of each AI model."""
