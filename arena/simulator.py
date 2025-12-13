@@ -231,6 +231,9 @@ class ArenaSimulator:
         # Update P&L
         position.update_pnl(current_price)
 
+        # Save updated position to DB (for dashboard to show current price/P&L)
+        self.db.save_position(position)
+
         # Get variant for this position
         sub_variant = self.db.get_sub_variant(position.sub_variant_id)
         if not sub_variant:
