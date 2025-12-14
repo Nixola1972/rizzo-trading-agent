@@ -39,18 +39,17 @@
       "pattern_detection_enabled": true,
       "pattern_timeframe": "1h",
       "pattern_min_confidence": 0.60,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
     },
     {
       "id": "V2_MULTI_AI",
-      "name": "Battle: 6 AI a Confronto",
-      "description": "DeepSeek V3 vs Grok vs Claude vs GPT vs Qwen",
+      "name": "Battle: 5 AI a Confronto",
+      "description": "DeepSeek V3 vs Grok vs GPT vs Qwen (Haiku rimosso per costi API)",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": [
         "deepseek/deepseek-v3.2-speciale",
         "x-ai/grok-code-fast-1",
-        "anthropic/claude-haiku-4.5",
         "openai/gpt-oss-120b",
         "qwen/qwen3-max",
         "qwen/qwen3-235b-a22b:free"
@@ -69,7 +68,7 @@
       },
       "indicator_config": {},
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
     },
     {
       "id": "V3_SMART_EXIT",
@@ -94,7 +93,7 @@
       },
       "indicator_config": {},
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
     },
     {
       "id": "V4_INDICATOR_TEST",
@@ -133,7 +132,7 @@
         "adx_min_trend": 18.0
       },
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
     },
     {
       "id": "V5_AI_FREE",
@@ -163,7 +162,7 @@
       "ai_check_interval_minutes": 15,
       "ai_independent_timeframe": "4h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
     }
   ]
 }
