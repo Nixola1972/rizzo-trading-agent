@@ -314,8 +314,8 @@ class AnalyticsEngine:
             # Calculate average hold time
             hold_times = []
             for t in model_trade_list:
-                if t.open_time and t.close_time:
-                    hold_hours = (t.close_time - t.open_time).total_seconds() / 3600
+                if t.entry_time and t.exit_time:
+                    hold_hours = (t.exit_time - t.entry_time).total_seconds() / 3600
                     hold_times.append(hold_hours)
             avg_hold_time = statistics.mean(hold_times) if hold_times else 0.0
 
