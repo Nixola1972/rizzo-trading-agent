@@ -39,7 +39,7 @@
       "pattern_detection_enabled": true,
       "pattern_timeframe": "1h",
       "pattern_min_confidence": 0.60,
-      "symbols": ["BTC", "ETH", "SOL"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
     },
     {
       "id": "V2_MULTI_AI",
@@ -69,7 +69,7 @@
       },
       "indicator_config": {},
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
     },
     {
       "id": "V3_SMART_EXIT",
@@ -94,7 +94,7 @@
       },
       "indicator_config": {},
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
     },
     {
       "id": "V4_INDICATOR_TEST",
@@ -133,7 +133,7 @@
         "adx_min_trend": 18.0
       },
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
     },
     {
       "id": "V5_AI_FREE",
@@ -163,7 +163,7 @@
       "ai_check_interval_minutes": 15,
       "ai_independent_timeframe": "4h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL"]
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "ARB", "SUI"]
     }
   ]
 }
