@@ -377,13 +377,22 @@ class AnalyticsEngine:
 
     def _analyze_stop_loss(self, trades) -> Optional[ParameterAnalysis]:
         """Analyze stop loss effectiveness."""
+        # SimulatedTrade doesn't have stop_loss_pct stored
+        # Skip this analysis for now - could be enhanced later
+        # by tracking the original SL% used when opening positions
+        return None
+
+    def _analyze_stop_loss_placeholder(self, trades) -> Optional[ParameterAnalysis]:
+        """Placeholder for future SL analysis when data is available."""
         # Group by SL percentage
         sl_groups: Dict[float, List[float]] = {}
 
         for t in trades:
-            if t.stop_loss_pct and t.pnl_usd is not None:
+            # Would need stop_loss_pct attribute on trade
+            sl_pct = getattr(t, 'stop_loss_pct', None)
+            if sl_pct and t.pnl_usd is not None:
                 # Round to nearest 0.5%
-                sl_bucket = round(t.stop_loss_pct * 2) / 2
+                sl_bucket = round(sl_pct * 2) / 2
                 if sl_bucket not in sl_groups:
                     sl_groups[sl_bucket] = []
                 sl_groups[sl_bucket].append(t.pnl_usd)
