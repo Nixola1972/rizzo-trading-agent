@@ -16,8 +16,12 @@ RUN pip install --no-cache-dir \
 # Copy application
 COPY . .
 
-# Create data directory
+# Create data directory (will be mounted as volume for persistence)
 RUN mkdir -p /app/data
+
+# IMPORTANT: Mount /app/data as volume to persist database!
+# docker run -v arena_data:/app/data ...
+VOLUME /app/data
 
 # Expose dashboard port
 EXPOSE 5055
