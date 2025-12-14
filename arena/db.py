@@ -435,6 +435,14 @@ class ArenaDB:
 
             return self._row_to_sub_variant(row)
 
+    def get_all_sub_variants(self) -> List[SubVariant]:
+        """Get all sub-variants."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM arena_sub_variants")
+            rows = cursor.fetchall()
+            return [self._row_to_sub_variant(row) for row in rows]
+
     def update_sub_variant_stats(
         self,
         sub_variant_id: str,
