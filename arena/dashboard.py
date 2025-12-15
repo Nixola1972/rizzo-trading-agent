@@ -1171,18 +1171,26 @@ def get_strategy_chart_data() -> Dict[str, Any]:
     for i, v in enumerate(variants):
         # Aggregate snapshots for all sub-variants in this variant
         # FIX: Use AVERAGE instead of SUM for fair comparison between variants
-        variant_equity = {}  # timestamp -> {"total_pnl": float, "count": int}
+        # FIX2: Bucket timestamps to minute to group snapshots from different sub-variants
+        variant_equity = {}  # timestamp_bucket -> {"total_pnl": float, "count": int}
 
         for sv in v.sub_variants:
             snapshots = all_snapshots.get(sv.id, [])
             for snap in snapshots:
                 ts = snap["timestamp"]
-                if ts not in variant_equity:
-                    variant_equity[ts] = {"total_pnl": 0.0, "count": 0}
+                # Bucket timestamp to minute (remove seconds/milliseconds)
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    ts_bucket = dt.strftime("%Y-%m-%dT%H:%M:00")
+                except Exception:
+                    ts_bucket = ts[:16] + ":00"  # Fallback: truncate to minute
+
+                if ts_bucket not in variant_equity:
+                    variant_equity[ts_bucket] = {"total_pnl": 0.0, "count": 0}
                 # Track P&L and count for averaging
                 pnl = snap["total_equity"] - STARTING_CAPITAL
-                variant_equity[ts]["total_pnl"] += pnl
-                variant_equity[ts]["count"] += 1
+                variant_equity[ts_bucket]["total_pnl"] += pnl
+                variant_equity[ts_bucket]["count"] += 1
 
         if variant_equity:
             # Sort by timestamp and build equity curve
