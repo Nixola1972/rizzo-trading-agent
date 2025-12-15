@@ -875,4 +875,233 @@ ARENA_ANALYTICS_INTERVAL=3600    # Secondi tra analisi (default: 1 ora)
 
 ---
 
+## Infrastructure & Database Configuration
+
+### PostgreSQL Database
+
+Il sistema usa PostgreSQL per la persistenza dei dati. Il database gira in un container Docker.
+
+#### Container Info
+
+```
+Container Name: memory_postgres
+Image: postgres:16-alpine
+Port: 5433:5432 (host:container)
+Network: unified-memory-stack_memory-net
+```
+
+#### Users & Permissions
+
+| User | Role | Permissions |
+|------|------|-------------|
+| `memory_user` | Superuser | CREATE DB, Replication, Bypass RLS |
+| `tradingbot` | Application user | Standard access |
+
+#### Databases
+
+| Database | Owner | Purpose |
+|----------|-------|---------|
+| `rizzo_trading` | tradingbot | Bot di produzione (Rizzo) |
+| `botone_baseline` | tradingbot | Bot baseline (Botone) |
+| `unified_memory` | memory_user | Sistema memoria AI |
+
+#### Comandi Utili
+
+```bash
+# Connetti al database
+docker exec -it memory_postgres psql -U tradingbot -d rizzo_trading
+
+# Lista database
+docker exec -it memory_postgres psql -U tradingbot -d rizzo_trading -c "\l"
+
+# Lista utenti/ruoli
+docker exec -it memory_postgres psql -U tradingbot -d rizzo_trading -c "\du"
+
+# Crea nuovo database (usa superuser)
+docker exec -it memory_postgres psql -U memory_user -d postgres -c "CREATE DATABASE nome_db OWNER tradingbot;"
+```
+
+---
+
+## Production Bots
+
+### Rizzo (Production Bot)
+
+Bot principale in produzione con configurazione ottimizzata.
+
+```
+Containers:
+├─ rizzo_sentinel_slow  (entry logic, ogni 60s)
+├─ rizzo_sentinel_fast  (monitoring SL/TP, ogni 5s)
+├─ rizzo_main           (main.py loop)
+├─ rizzo_dashboard      (Streamlit UI, porta 8501)
+└─ rizzo-arena          (Simulazione, porta 5055)
+
+Database: rizzo_trading
+HyperLiquid: Account principale
+```
+
+### Botone-Baseline (Baseline Bot)
+
+Bot separato che replica la strategia V1_BASELINE dell'Arena per test in produzione reale.
+
+```
+Containers:
+├─ botone_baseline_slow  (entry logic)
+└─ botone_baseline_fast  (monitoring)
+
+Database: botone_baseline
+HyperLiquid: Sub-account dedicato (separato da Rizzo)
+```
+
+#### Configurazione Botone (.env.baseline)
+
+```bash
+# ═══════════════════════════════════════════════════════════════════════════
+# BOTONE-BASELINE CONFIGURATION
+# Replica la strategia V1_BASELINE dell'Arena
+# ═══════════════════════════════════════════════════════════════════════════
+
+# --- Bot Identity ---
+BOT_NAME=botone-baseline
+
+# --- API Keys ---
+OPENROUTER_API_KEY=sk-or-v1-xxxxx
+OPENROUTER_MODEL=deepseek/deepseek-v3.2-speciale
+
+# --- HyperLiquid (SUB-ACCOUNT DEDICATO) ---
+HL_PRIVATE_KEY=0xYourSubAccountPrivateKey
+HL_ACCOUNT_ADDRESS=0xYourSubAccountAddress
+
+# --- Database (SEPARATO da Rizzo) ---
+DATABASE_URL=postgresql://tradingbot:TradingBot2025!Secure@memory_postgres:5432/botone_baseline
+
+# --- Trading Parameters (V1_BASELINE) ---
+SCORE_THRESHOLD_OPEN=15
+TRADING_STYLE=moderate
+DOUBLE_CHECK_AI_ENABLED=true
+
+# --- Trailing Stop Esteso (fino al 40%) ---
+TRAILING_STEPS=2.5:0.0,3.5:1.0,4.5:1.5,5.0:2.0,6.0:3.0,7.5:4.5,8.5:5.5,10.0:7.0,12.5:9.5,15.0:12.0,17.5:14.0,20.0:16.0,25.0:21.0,30.0:26.0,35.0:31.0,40.0:36.0
+TAKE_PROFIT_ENABLED=false
+
+# --- Position Sizing ---
+POSITION_SIZE_USD=10
+LEVERAGE=5
+```
+
+#### Trailing Stop Steps Spiegazione
+
+```
+Formato: PROFIT%:LOCK%
+
+2.5:0.0   → A +2.5% profit, SL a breakeven (0%)
+3.5:1.0   → A +3.5% profit, lock +1.0%
+4.5:1.5   → A +4.5% profit, lock +1.5%
+5.0:2.0   → A +5.0% profit, lock +2.0%
+6.0:3.0   → A +6.0% profit, lock +3.0%
+7.5:4.5   → A +7.5% profit, lock +4.5%
+8.5:5.5   → A +8.5% profit, lock +5.5%
+10.0:7.0  → A +10% profit, lock +7.0%
+12.5:9.5  → A +12.5% profit, lock +9.5%
+15.0:12.0 → A +15% profit, lock +12%
+17.5:14.0 → A +17.5% profit, lock +14%
+20.0:16.0 → A +20% profit, lock +16%
+25.0:21.0 → A +25% profit, lock +21%
+30.0:26.0 → A +30% profit, lock +26%
+35.0:31.0 → A +35% profit, lock +31%
+40.0:36.0 → A +40% profit, lock +36%
+```
+
+#### Setup Botone-Baseline
+
+```bash
+# 1. Crea database
+docker exec -it memory_postgres psql -U memory_user -d postgres -c "CREATE DATABASE botone_baseline OWNER tradingbot;"
+
+# 2. Pull codice
+cd ~/trading-bots/rizzo-trading-agent
+git pull origin claude/project-expansion-discussion-e6H5a
+
+# 3. Crea e configura .env.baseline
+cp .env.baseline.template .env.baseline
+nano .env.baseline  # Inserisci le tue credenziali
+
+# 4. Build immagine
+docker build -t botone-baseline -f Dockerfile .
+
+# 5. Avvia SLOW container
+docker run -d \
+  --name botone_baseline_slow \
+  --env-file .env.baseline \
+  -e PYTHONUNBUFFERED=1 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  botone-baseline \
+  sentinel.py --mode slow --loop
+
+# 6. Avvia FAST container
+docker run -d \
+  --name botone_baseline_fast \
+  --env-file .env.baseline \
+  -e PYTHONUNBUFFERED=1 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  botone-baseline \
+  sentinel.py --mode fast --loop
+
+# 7. Verifica
+docker ps | grep botone
+docker logs -f botone_baseline_slow --tail 50
+```
+
+#### Architettura SLOW + FAST
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 BOTONE-BASELINE ARCHITECTURE                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   ┌─────────────────────┐     ┌─────────────────────┐           │
+│   │  botone_baseline_   │     │  botone_baseline_   │           │
+│   │       SLOW          │     │       FAST          │           │
+│   ├─────────────────────┤     ├─────────────────────┤           │
+│   │ • Ogni 60 secondi   │     │ • Ogni 5 secondi    │           │
+│   │ • Calcola score     │     │ • Legge posizioni   │           │
+│   │ • Chiama AI         │     │ • Check SL/TP       │           │
+│   │ • APRE posizioni    │     │ • Trailing stop     │           │
+│   │                     │     │ • CHIUDE posizioni  │           │
+│   └──────────┬──────────┘     └──────────┬──────────┘           │
+│              │                           │                       │
+│              └─────────────┬─────────────┘                       │
+│                            │                                     │
+│                            ▼                                     │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │              SHARED RESOURCES                            │   │
+│   │  ├─ PostgreSQL: botone_baseline                         │   │
+│   │  └─ HyperLiquid: Sub-account dedicato                   │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│   I due container si COORDINANO attraverso il database:          │
+│   • SLOW scrive nuove posizioni → FAST le monitora               │
+│   • Non si ostacolano perché leggono/scrivono dati diversi       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Differenze Rizzo vs Botone
+
+| Aspetto | Rizzo (Produzione) | Botone (Baseline) |
+|---------|-------------------|-------------------|
+| Score Threshold | 45 | 15 |
+| Trading Style | Varia | moderate |
+| Trailing Steps | Standard | Esteso (fino 40%) |
+| Take Profit | Configurabile | Disabilitato |
+| Database | rizzo_trading | botone_baseline |
+| HL Account | Principale | Sub-account |
+
+---
+
 *Last updated: December 2025*
