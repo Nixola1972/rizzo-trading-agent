@@ -1,0 +1,51 @@
+# Ignore environment files (credentials)
+.env
+.env.baseline
+.env.local
+.env.production
+
+# Keep templates
+!.env.baseline.template
+!.env.template
+
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environments
+venv
+.venv
+env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Data files (use volumes instead)
+data/*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# Documentation
+*.md
+!README.md
+docs/
