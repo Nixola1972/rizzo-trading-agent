@@ -1170,23 +1170,33 @@ def get_strategy_chart_data() -> Dict[str, Any]:
 
     for i, v in enumerate(variants):
         # Aggregate snapshots for all sub-variants in this variant
-        variant_equity = {}  # timestamp -> total_equity
+        # FIX: Use AVERAGE instead of SUM for fair comparison between variants
+        variant_equity = {}  # timestamp -> {"total_pnl": float, "count": int}
 
         for sv in v.sub_variants:
             snapshots = all_snapshots.get(sv.id, [])
             for snap in snapshots:
                 ts = snap["timestamp"]
                 if ts not in variant_equity:
-                    variant_equity[ts] = STARTING_CAPITAL
-                # Add P&L from this sub-variant
-                variant_equity[ts] = variant_equity.get(ts, STARTING_CAPITAL) + (snap["total_equity"] - STARTING_CAPITAL)
+                    variant_equity[ts] = {"total_pnl": 0.0, "count": 0}
+                # Track P&L and count for averaging
+                pnl = snap["total_equity"] - STARTING_CAPITAL
+                variant_equity[ts]["total_pnl"] += pnl
+                variant_equity[ts]["count"] += 1
 
         if variant_equity:
             # Sort by timestamp and build equity curve
             sorted_ts = sorted(variant_equity.keys())
             equity = []
             for ts in sorted_ts:
-                equity.append(variant_equity[ts])
+                # Calculate AVERAGE equity across sub-variants
+                data = variant_equity[ts]
+                if data["count"] > 0:
+                    avg_pnl = data["total_pnl"] / data["count"]
+                    avg_equity = STARTING_CAPITAL + avg_pnl
+                else:
+                    avg_equity = STARTING_CAPITAL
+                equity.append(round(avg_equity, 2))
                 if len(labels) < len(equity):
                     try:
                         dt = datetime.fromisoformat(ts)
