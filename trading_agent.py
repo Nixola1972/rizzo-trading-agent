@@ -347,6 +347,27 @@ def call_ai_api(prompt, use_json_format=True, max_retries=None, signal_scores=No
             duration_ms = int((time.time() - start_time) * 1000)
             response_text = response.choices[0].message.content
 
+            # Check for reasoning details (DeepSeek with reasoning mode)
+            reasoning_text_full = ""
+            message_dict = response.choices[0].message.model_dump() if hasattr(response.choices[0].message, 'model_dump') else {}
+            reasoning_details = message_dict.get("reasoning_details")
+
+            if reasoning_details:
+                # Extract text from reasoning_details
+                if isinstance(reasoning_details, list):
+                    for item in reasoning_details:
+                        if isinstance(item, dict) and item.get("text"):
+                            reasoning_text_full += item.get("text", "")
+                elif isinstance(reasoning_details, str):
+                    reasoning_text_full = reasoning_details
+
+                print(f"   🧠 AI reasoning ({len(reasoning_text_full)} chars): {reasoning_text_full[:200]}...")
+
+            # If content is empty but we have reasoning, try to extract JSON from reasoning
+            if not response_text and reasoning_text_full:
+                print(f"   🔍 Content vuoto, estraggo JSON dal reasoning...")
+                response_text = reasoning_text_full  # Use reasoning as fallback
+
             # Estrai JSON dalla risposta
             if MODEL in MODELS_WITH_JSON_SUPPORT:
                 # Modelli con supporto nativo: parse diretto

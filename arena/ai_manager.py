@@ -270,18 +270,35 @@ Be concise and focus on key indicators."""
 
             # Check for reasoning details (DeepSeek reasoning mode)
             reasoning_details = message.get("reasoning_details")
+            reasoning_text_full = ""
             if reasoning_details:
+                # Extract text from reasoning_details (can be list or other format)
+                if isinstance(reasoning_details, list):
+                    for item in reasoning_details:
+                        if isinstance(item, dict) and item.get("text"):
+                            reasoning_text_full += item.get("text", "")
+                elif isinstance(reasoning_details, str):
+                    reasoning_text_full = reasoning_details
+
                 # Log the reasoning process (truncated)
-                reasoning_text = str(reasoning_details)[:300]
-                logger.info(f"AI [{model.split('/')[-1]}] reasoning: {reasoning_text}...")
+                logger.info(f"AI [{model.split('/')[-1]}] reasoning: {reasoning_text_full[:300]}...")
+
+            # If content is empty but we have reasoning, try to extract JSON from reasoning
+            if not content and reasoning_text_full:
+                logger.info(f"AI [{model.split('/')[-1]}] extracting JSON from reasoning text...")
+                # Try to find JSON in reasoning text
+                result = self._extract_json(reasoning_text_full)
+                if result:
+                    logger.info(f"AI [{model.split('/')[-1]}] found JSON in reasoning: {result}")
+                    return result
 
             # Log raw response for debugging (INFO level to see in logs)
             if content:
                 logger.info(f"AI [{model.split('/')[-1]}] response: {content[:150]}...")
             else:
                 # Check if reasoning is available but content is empty
-                if reasoning_details:
-                    logger.warning(f"AI [{model.split('/')[-1]}] has reasoning but EMPTY content!")
+                if reasoning_text_full:
+                    logger.warning(f"AI [{model.split('/')[-1]}] has reasoning but NO JSON found!")
                 else:
                     logger.warning(f"AI [{model.split('/')[-1]}] returned EMPTY response!")
 
