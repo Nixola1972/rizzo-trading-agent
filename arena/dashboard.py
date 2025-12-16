@@ -309,6 +309,47 @@ DASHBOARD_HTML = """
             font-size: 0.85em;
             margin-top: 10px;
         }
+        .apply-btn {
+            width: 100%;
+            margin-top: 12px;
+            padding: 10px;
+            background: linear-gradient(135deg, #00aa55, #00cc66);
+            border: none;
+            border-radius: 6px;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .apply-btn:hover {
+            background: linear-gradient(135deg, #00cc66, #00ee77);
+            transform: translateY(-1px);
+        }
+        .apply-btn:disabled {
+            background: #444;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .apply-btn.applied {
+            background: #333;
+            color: #888;
+        }
+        .apply-all-btn {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #ff6600, #ff8800);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-weight: 600;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .apply-all-btn:hover {
+            background: linear-gradient(135deg, #ff8800, #ffaa00);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(255, 136, 0, 0.4);
+        }
 
         .analytics-stats {
             display: grid;
@@ -580,7 +621,7 @@ DASHBOARD_HTML = """
                     </p>
                     {% if analytics.recommendations %}
                     {% for rec in analytics.recommendations %}
-                    <div class="rec-card rec-{{ rec.priority }}">
+                    <div class="rec-card rec-{{ rec.priority }}" id="rec-{{ loop.index0 }}">
                         <div class="rec-header">
                             <span class="rec-badge rec-badge-{{ rec.priority }}">
                                 {% if rec.priority == 'high' %}🔴 HIGH
@@ -600,8 +641,18 @@ DASHBOARD_HTML = """
                             <span>Confidence: {{ "%.0f"|format(rec.confidence * 100) }}%</span>
                             <span>{{ rec.expected_improvement }}</span>
                         </div>
+                        <button class="apply-btn" onclick="applyRecommendation({{ loop.index0 }})">
+                            ✅ Applica
+                        </button>
                     </div>
                     {% endfor %}
+                    {% if analytics.recommendations %}
+                    <div style="margin-top: 20px; text-align: center;">
+                        <button class="apply-all-btn" onclick="applyAllRecommendations()">
+                            🚀 Applica Tutte le HIGH Priority
+                        </button>
+                    </div>
+                    {% endif %}
                     {% else %}
                     <div style="text-align: center; color: #666; padding: 40px;">
                         <p>📊 Waiting for enough data...</p>
@@ -714,6 +765,58 @@ DASHBOARD_HTML = """
                     .then(r => r.json())
                     .then(d => location.reload());
             }
+        }
+
+        function applyRecommendation(index) {
+            const btn = document.querySelector(`#rec-${index} .apply-btn`);
+            btn.disabled = true;
+            btn.textContent = '⏳ Applicando...';
+
+            fetch(`/api/analytics/apply/${index}`, { method: 'POST' })
+                .then(r => r.json())
+                .then(d => {
+                    if (d.success) {
+                        btn.textContent = '✓ Applicato!';
+                        btn.classList.add('applied');
+                        alert(`✅ ${d.message}\n\nModifiche:\n${d.changes.join('\n')}`);
+                    } else {
+                        btn.textContent = '❌ Errore';
+                        btn.disabled = false;
+                        alert(`Errore: ${d.message || d.error}`);
+                    }
+                })
+                .catch(e => {
+                    btn.textContent = '❌ Errore';
+                    btn.disabled = false;
+                    alert('Errore di connessione');
+                });
+        }
+
+        function applyAllRecommendations() {
+            if (!confirm('Applicare TUTTE le raccomandazioni HIGH priority?')) return;
+
+            const btn = document.querySelector('.apply-all-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Applicando...';
+
+            fetch('/api/analytics/apply-all', { method: 'POST' })
+                .then(r => r.json())
+                .then(d => {
+                    if (d.success) {
+                        alert(`✅ Applicate ${d.applied}/${d.total} raccomandazioni!\n\n` +
+                              d.results.map(r => `${r.success ? '✓' : '✗'} ${r.message}`).join('\n'));
+                        location.reload();
+                    } else {
+                        btn.textContent = '❌ Errore';
+                        btn.disabled = false;
+                        alert(`Errore: ${d.error}`);
+                    }
+                })
+                .catch(e => {
+                    btn.textContent = '❌ Errore';
+                    btn.disabled = false;
+                    alert('Errore di connessione');
+                });
         }
 
         // Charts
