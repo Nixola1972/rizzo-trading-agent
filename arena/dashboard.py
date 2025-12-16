@@ -26,22 +26,52 @@ def sanitize_for_json(obj):
     """
     Recursively sanitize an object to ensure it's JSON-serializable.
     Replaces inf, -inf, nan with safe values.
+    Handles datetime, None, and various numeric types.
     """
-    if isinstance(obj, dict):
+    if obj is None:
+        return None
+    elif isinstance(obj, dict):
         return {k: sanitize_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [sanitize_for_json(item) for item in obj]
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, (int, bool, str)):
+        return obj
     elif isinstance(obj, float):
         if math.isnan(obj):
             return 0.0
         elif math.isinf(obj):
             return 999.99 if obj > 0 else -999.99
         return obj
-    return obj
+    else:
+        # Try to convert to float for numpy types, etc.
+        try:
+            val = float(obj)
+            if math.isnan(val):
+                return 0.0
+            elif math.isinf(val):
+                return 999.99 if val > 0 else -999.99
+            return val
+        except (TypeError, ValueError):
+            # Last resort: convert to string
+            return str(obj)
 
 
 # Flask app
 app = Flask(__name__)
+
+
+def safe_json_filter(obj):
+    """Custom Jinja filter for safe JSON encoding that handles inf/nan."""
+    from markupsafe import Markup
+    sanitized = sanitize_for_json(obj)
+    return Markup(json.dumps(sanitized, ensure_ascii=False, default=str))
+
+
+# Register the custom filter
+app.jinja_env.filters['safejson'] = safe_json_filter
+
 
 # Database
 db: Optional[ArenaDB] = None
@@ -839,8 +869,8 @@ DASHBOARD_HTML = """
         }
 
         // Charts
-        const aiData = {{ ai_chart_data | tojson }};
-        const stratData = {{ strategy_chart_data | tojson }};
+        const aiData = {{ ai_chart_data | safejson }};
+        const stratData = {{ strategy_chart_data | safejson }};
 
         const chartOptions = {
             responsive: true,
