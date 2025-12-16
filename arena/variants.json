@@ -52,7 +52,8 @@
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5",
         "qwen/qwen3-max",
-        "tngtech/deepseek-r1t2-chimera:free"
+        "tngtech/deepseek-r1t2-chimera:free",
+        "openai/gpt-oss-120b"
       ],
       "trading_params": {
         "position_size_usd": 50.0,
