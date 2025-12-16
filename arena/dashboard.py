@@ -87,6 +87,17 @@ simulation_paused = False
 # Starting capital for equity simulation
 STARTING_CAPITAL = float(os.environ.get("ARENA_STARTING_CAPITAL", 100))
 
+# Available AI models for selection (all models from V2_MULTI_AI + speciale)
+AVAILABLE_AI_MODELS = [
+    {"id": "deepseek/deepseek-v3.2-speciale", "name": "DeepSeek V3.2 Speciale"},
+    {"id": "deepseek/deepseek-chat", "name": "DeepSeek Chat"},
+    {"id": "x-ai/grok-4.1-fast", "name": "Grok 4.1 Fast"},
+    {"id": "anthropic/claude-haiku-4.5", "name": "Claude Haiku 4.5"},
+    {"id": "qwen/qwen3-max", "name": "Qwen3 Max"},
+    {"id": "tngtech/deepseek-r1t2-chimera:free", "name": "DeepSeek R1T2 Chimera (Free)"},
+    {"id": "openai/gpt-oss-120b", "name": "GPT OSS 120B"},
+]
+
 
 def init_dashboard(database: Optional[ArenaDB] = None):
     """Initialize dashboard with database connection."""
@@ -277,6 +288,31 @@ DASHBOARD_HTML = """
         .badge-short { background: #ff444433; color: #ff4444; }
         .badge-enabled { background: #00ff8833; color: #00ff88; }
         .badge-disabled { background: #88888833; color: #888; }
+
+        /* Model Selector Dropdown */
+        .model-selector {
+            background: #1a1a3e;
+            color: #00d4ff;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 0.85em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .model-selector:hover {
+            border-color: #00d4ff;
+            background: #252550;
+        }
+        .model-selector:focus {
+            outline: none;
+            border-color: #00d4ff;
+            box-shadow: 0 0 5px rgba(0, 212, 255, 0.3);
+        }
+        .model-selector option {
+            background: #1a1a3e;
+            color: #ccc;
+        }
 
         .pnl-positive { color: #00ff88; }
         .pnl-negative { color: #ff4444; }
@@ -671,7 +707,7 @@ DASHBOARD_HTML = """
                         <tr>
                             <th>Strategy</th>
                             <th>Mode</th>
-                            <th>AI Models</th>
+                            <th>AI Model</th>
                             <th>Trades</th>
                             <th>Win%</th>
                             <th>P&L</th>
@@ -683,7 +719,19 @@ DASHBOARD_HTML = """
                         <tr>
                             <td>{{ v.name }}</td>
                             <td>{{ v.mode }}</td>
-                            <td>{{ v.ai_count }}</td>
+                            <td>
+                                {% if v.is_single_model %}
+                                <select class="model-selector" onchange="changeVariantModel('{{ v.id }}', this.value)" style="max-width: 180px;">
+                                    {% for m in available_models %}
+                                    <option value="{{ m.id }}" {{ 'selected' if m.id == v.current_model else '' }}>
+                                        {{ m.name }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                                {% else %}
+                                <span style="color: #888;">{{ v.ai_count }} modelli (Battle)</span>
+                                {% endif %}
+                            </td>
                             <td>{{ v.trades }}</td>
                             <td>{{ "%.1f"|format(v.win_rate) }}%</td>
                             <td class="{{ 'pnl-positive' if v.pnl >= 0 else 'pnl-negative' }}">
@@ -1032,6 +1080,36 @@ DASHBOARD_HTML = """
             }).then(r => r.json());
         }
 
+        function changeVariantModel(variantId, modelId) {
+            const select = event.target;
+            select.disabled = true;
+            select.style.opacity = '0.5';
+
+            fetch(`/api/variant/${variantId}/model`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: modelId })
+            })
+            .then(r => r.json())
+            .then(d => {
+                select.disabled = false;
+                select.style.opacity = '1';
+
+                if (d.success) {
+                    alert('✅ ' + d.message);
+                    // Reload page after short delay
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    alert('❌ Errore: ' + d.error);
+                }
+            })
+            .catch(e => {
+                select.disabled = false;
+                select.style.opacity = '1';
+                alert('❌ Errore di connessione');
+            });
+        }
+
         function closePosition(positionId) {
             if (confirm('Close this position?')) {
                 fetch(`/api/position/${positionId}/close`, { method: 'POST' })
@@ -1288,6 +1366,7 @@ def dashboard():
         ai_chart_data=ai_chart_data,
         strategy_chart_data=strategy_chart_data,
         analytics=analytics,
+        available_models=AVAILABLE_AI_MODELS,
         paused=simulation_paused,
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
@@ -1308,6 +1387,86 @@ def api_toggle_variant(variant_id):
     enabled = data.get('enabled', True)
     success = db.toggle_variant(variant_id, enabled)
     return jsonify({"success": success, "enabled": enabled})
+
+
+@app.route('/api/variant/<variant_id>/model', methods=['POST'])
+def api_change_variant_model(variant_id):
+    """Change the AI model for a single-model variant."""
+    import logging
+    logger = logging.getLogger("arena.dashboard")
+
+    data = request.get_json() or {}
+    new_model = data.get('model')
+
+    if not new_model:
+        return jsonify({"success": False, "error": "Model not specified"})
+
+    # Validate model is in available list
+    valid_models = [m["id"] for m in AVAILABLE_AI_MODELS]
+    if new_model not in valid_models:
+        return jsonify({"success": False, "error": f"Invalid model: {new_model}"})
+
+    try:
+        # Load and update variants.json
+        import os
+        variants_path = os.path.join(os.path.dirname(__file__), "variants.json")
+
+        with open(variants_path, 'r') as f:
+            variants_data = json.load(f)
+
+        # Find and update the variant
+        updated = False
+        for v in variants_data.get("variants", []):
+            if v.get("id") == variant_id:
+                # Only update single-model variants (not V2_MULTI_AI)
+                if len(v.get("ai_models", [])) == 1:
+                    v["ai_models"] = [new_model]
+                    updated = True
+                    logger.info(f"Updated {variant_id} AI model to: {new_model}")
+                else:
+                    return jsonify({"success": False, "error": "Cannot change model for multi-AI variants"})
+                break
+
+        if not updated:
+            return jsonify({"success": False, "error": f"Variant {variant_id} not found"})
+
+        # Save updated variants.json
+        with open(variants_path, 'w') as f:
+            json.dump(variants_data, f, indent=2)
+
+        # Update the sub-variant in database
+        old_sv_id = f"{variant_id}_{new_model.split('/')[-1]}"
+        model_short = new_model.split('/')[-1]
+        new_sv_id = f"{variant_id}_{model_short}"
+
+        # Delete old sub-variant and create new one
+        db.delete_sub_variant_by_variant(variant_id)
+
+        from .models import SubVariant
+        new_sv = SubVariant(
+            id=new_sv_id,
+            variant_id=variant_id,
+            ai_model=new_model,
+            ai_model_name=model_short,
+            enabled=True
+        )
+        db.save_sub_variant(new_sv)
+
+        return jsonify({
+            "success": True,
+            "model": new_model,
+            "message": f"Modello cambiato a {model_short}. Riavvia Arena per applicare."
+        })
+
+    except Exception as e:
+        logger.error(f"Error changing model: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/available-models')
+def api_available_models():
+    """Get list of available AI models."""
+    return jsonify({"models": AVAILABLE_AI_MODELS})
 
 
 @app.route('/api/model/<sub_variant_id>/toggle', methods=['POST'])
@@ -1587,6 +1746,10 @@ def get_variants_data() -> List[Dict[str, Any]]:
 
         mode_short = "SCORE" if v.operation_mode.value == "SCORE_TRIGGERED" else "AI_FREE"
 
+        # Check if it's a single-model variant (can change model)
+        is_single_model = len(v.ai_models) == 1 and v.id != "V2_MULTI_AI"
+        current_model = v.ai_models[0] if v.ai_models else None
+
         variants.append({
             "id": v.id,
             "name": v.name,
@@ -1596,6 +1759,9 @@ def get_variants_data() -> List[Dict[str, Any]]:
             "win_rate": metrics["win_rate"],
             "pnl": metrics["total_pnl_usd"],
             "enabled": v.enabled,
+            "is_single_model": is_single_model,
+            "current_model": current_model,
+            "current_model_name": current_model.split("/")[-1] if current_model else None,
         })
     return variants
 
