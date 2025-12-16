@@ -4,11 +4,11 @@
   "variants": [
     {
       "id": "V1_BASELINE",
-      "name": "Baseline Grok Mini",
-      "description": "Configurazione baseline con Grok 3 Mini (DeepSeek rate limited)",
+      "name": "Baseline GPT-OSS-120b",
+      "description": "Configurazione baseline con GPT-OSS-120b (DeepSeek rate limited)",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["x-ai/grok-3-mini-beta"],
+      "ai_models": ["openai/gpt-oss-120b"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
