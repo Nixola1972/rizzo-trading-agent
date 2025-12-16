@@ -8,7 +8,7 @@
       "description": "Configurazione baseline con DeepSeek V3 (modello principale)",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-chat"],
+      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -48,11 +48,11 @@
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": [
-        "deepseek/deepseek-chat",
+        "deepseek/deepseek-v3.2-speciale",
         "x-ai/grok-2-1212",
         "openai/gpt-4o-mini",
-        "qwen/qwen-2.5-72b-instruct",
-        "qwen/qwen-2.5-coder-32b-instruct:free"
+        "qwen/qwen3-max",
+        "tngtech/deepseek-r1t2-chimera:free"
       ],
       "trading_params": {
         "position_size_usd": 50.0,
@@ -76,7 +76,7 @@
       "description": "SL intelligente controllato da AI",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-chat"],
+      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -101,7 +101,7 @@
       "description": "Pesi e periodi indicatori diversi",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-chat"],
+      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -141,8 +141,8 @@
       "enabled": true,
       "operation_mode": "AI_INDEPENDENT",
       "ai_models": [
-        "deepseek/deepseek-chat",
-        "qwen/qwen-2.5-coder-32b-instruct:free"
+        "deepseek/deepseek-v3.2-speciale",
+        "tngtech/deepseek-r1t2-chimera:free"
       ],
       "trading_params": {
         "position_size_usd": 50.0,
