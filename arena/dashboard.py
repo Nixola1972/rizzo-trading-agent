@@ -881,6 +881,107 @@ def api_run_analytics():
         return jsonify({"success": False, "error": str(e)})
 
 
+@app.route('/api/analytics/apply/<int:index>', methods=['POST'])
+def api_apply_recommendation(index: int):
+    """Apply a specific recommendation by index."""
+    try:
+        from .analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db)
+
+        # Get latest report
+        report = analytics.get_latest_report()
+        if not report:
+            # Try to run analysis first
+            report = analytics.run_analysis(force=True)
+
+        if not report or not report.recommendations:
+            return jsonify({"success": False, "error": "Nessuna raccomandazione disponibile"})
+
+        if index < 0 or index >= len(report.recommendations):
+            return jsonify({"success": False, "error": f"Indice {index} non valido. Range: 0-{len(report.recommendations)-1}"})
+
+        recommendation = report.recommendations[index]
+        result = analytics.apply_recommendation(recommendation)
+
+        return jsonify({
+            "success": result["success"],
+            "recommendation": recommendation.title,
+            "message": result["message"],
+            "changes": result["changes"],
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/analytics/apply-all', methods=['POST'])
+def api_apply_all_recommendations():
+    """Apply all HIGH priority recommendations automatically."""
+    try:
+        from .analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db)
+
+        # Ensure we have a recent report
+        report = analytics.get_latest_report()
+        if not report:
+            report = analytics.run_analysis(force=True)
+
+        if not report:
+            return jsonify({"success": False, "error": "Impossibile generare report analytics"})
+
+        results = analytics.apply_all_high_priority()
+
+        applied_count = sum(1 for r in results if r.get("success"))
+        total = len(results)
+
+        return jsonify({
+            "success": applied_count > 0,
+            "applied": applied_count,
+            "total": total,
+            "results": results,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/analytics/recommendations')
+def api_get_recommendations():
+    """Get all current recommendations with details."""
+    try:
+        from .analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db)
+
+        report = analytics.get_latest_report()
+        if not report:
+            report = analytics.run_analysis(force=True)
+
+        if not report:
+            return jsonify({"success": False, "recommendations": []})
+
+        recs = []
+        for i, rec in enumerate(report.recommendations):
+            recs.append({
+                "index": i,
+                "type": rec.type.value,
+                "priority": rec.priority.value,
+                "title": rec.title,
+                "description": rec.description,
+                "current_value": str(rec.current_value),
+                "recommended_value": str(rec.recommended_value),
+                "expected_improvement": rec.expected_improvement,
+                "confidence": rec.confidence,
+                "evidence": rec.evidence,
+            })
+
+        return jsonify({
+            "success": True,
+            "report_id": report.report_id,
+            "generated_at": report.generated_at.isoformat(),
+            "recommendations": recs,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e), "recommendations": []})
+
+
 # ==================== Data Functions ====================
 
 def get_dashboard_stats() -> Dict[str, Any]:

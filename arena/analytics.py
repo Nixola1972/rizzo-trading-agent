@@ -373,58 +373,282 @@ class AnalyticsEngine:
         if leverage_analysis:
             analyses.append(leverage_analysis)
 
+        # Analyze entry score threshold
+        score_analysis = self._analyze_score_threshold(trades)
+        if score_analysis:
+            analyses.append(score_analysis)
+
+        # Analyze trailing stop effectiveness
+        trailing_analysis = self._analyze_trailing_stop(trades)
+        if trailing_analysis:
+            analyses.append(trailing_analysis)
+
+        # Analyze symbol performance
+        symbol_analysis = self._analyze_symbols(trades)
+        if symbol_analysis:
+            analyses.extend(symbol_analysis)
+
         return analyses
 
     def _analyze_stop_loss(self, trades) -> Optional[ParameterAnalysis]:
-        """Analyze stop loss effectiveness."""
-        # SimulatedTrade doesn't have stop_loss_pct stored
-        # Skip this analysis for now - could be enhanced later
-        # by tracking the original SL% used when opening positions
-        return None
+        """
+        Analyze stop loss effectiveness by looking at exit reasons and P&L.
 
-    def _analyze_stop_loss_placeholder(self, trades) -> Optional[ParameterAnalysis]:
-        """Placeholder for future SL analysis when data is available."""
-        # Group by SL percentage
-        sl_groups: Dict[float, List[float]] = {}
-
-        for t in trades:
-            # Would need stop_loss_pct attribute on trade
-            sl_pct = getattr(t, 'stop_loss_pct', None)
-            if sl_pct and t.pnl_usd is not None:
-                # Round to nearest 0.5%
-                sl_bucket = round(sl_pct * 2) / 2
-                if sl_bucket not in sl_groups:
-                    sl_groups[sl_bucket] = []
-                sl_groups[sl_bucket].append(t.pnl_usd)
-
-        if not sl_groups:
+        Evaluates:
+        - % of trades hitting SL vs TP
+        - Average loss when SL hit
+        - Whether SL is too tight (many small losses) or too loose (big losses)
+        """
+        if len(trades) < 5:
             return None
 
-        # Find best SL
-        sl_performance = {
-            sl: statistics.mean(pnls) for sl, pnls in sl_groups.items() if len(pnls) >= 3
-        }
+        # Count exits by reason
+        sl_trades = [t for t in trades if t.exit_reason and 'SL' in t.exit_reason.value]
+        tp_trades = [t for t in trades if t.exit_reason and 'TP' in t.exit_reason.value]
 
-        if not sl_performance:
+        if not sl_trades:
             return None
 
-        best_sl = max(sl_performance, key=sl_performance.get)
-        current_sl = 3.0  # Default from variants
+        sl_count = len(sl_trades)
+        tp_count = len(tp_trades)
+        total = len(trades)
 
-        if best_sl != current_sl:
-            improvement = ((sl_performance[best_sl] - sl_performance.get(current_sl, 0)) /
-                          abs(sl_performance.get(current_sl, 1))) * 100 if sl_performance.get(current_sl) else 0
+        sl_rate = sl_count / total if total > 0 else 0
+        avg_sl_loss = statistics.mean([abs(t.pnl_pct) for t in sl_trades]) if sl_trades else 0
 
+        # Analyze if SL might be too tight
+        # If >60% hit SL but average loss is small (<2%), SL might be too tight
+        sl_too_tight = sl_rate > 0.6 and avg_sl_loss < 2.0
+
+        # Analyze if SL might be too loose
+        # If SL hits are rare but average loss is large (>4%), SL might be too loose
+        sl_too_loose = sl_rate < 0.3 and avg_sl_loss > 4.0
+
+        # Get current SL from variant config (default 3%)
+        current_sl = 3.0
+
+        if sl_too_tight:
+            # Suggest widening SL
+            suggested_sl = min(current_sl + 1.0, 5.0)
             return ParameterAnalysis(
                 parameter_name="stop_loss_pct",
                 current_value=current_sl,
-                optimal_value=best_sl,
-                improvement_pct=improvement,
-                sample_size=len(sl_groups.get(best_sl, [])),
-                confidence=min(len(sl_groups.get(best_sl, [])) / 20, 1.0),
+                optimal_value=suggested_sl,
+                improvement_pct=15.0,  # Estimated
+                sample_size=sl_count,
+                confidence=min(sl_count / 15, 0.8),
+            )
+        elif sl_too_loose:
+            # Suggest tightening SL
+            suggested_sl = max(current_sl - 0.5, 2.0)
+            return ParameterAnalysis(
+                parameter_name="stop_loss_pct",
+                current_value=current_sl,
+                optimal_value=suggested_sl,
+                improvement_pct=10.0,  # Estimated
+                sample_size=sl_count,
+                confidence=min(sl_count / 15, 0.7),
             )
 
         return None
+
+    def _analyze_score_threshold(self, trades) -> Optional[ParameterAnalysis]:
+        """
+        Analyze optimal entry score threshold.
+
+        Groups trades by entry_score ranges and identifies which thresholds
+        produce the best results.
+        """
+        if len(trades) < 10:
+            return None
+
+        # Group trades by score ranges
+        score_groups: Dict[str, List[float]] = {
+            "10-15": [],
+            "15-20": [],
+            "20-25": [],
+            "25-30": [],
+            "30+": [],
+        }
+
+        for t in trades:
+            if t.entry_score and t.pnl_usd is not None:
+                score = abs(t.entry_score)
+                if 10 <= score < 15:
+                    score_groups["10-15"].append(t.pnl_usd)
+                elif 15 <= score < 20:
+                    score_groups["15-20"].append(t.pnl_usd)
+                elif 20 <= score < 25:
+                    score_groups["20-25"].append(t.pnl_usd)
+                elif 25 <= score < 30:
+                    score_groups["25-30"].append(t.pnl_usd)
+                elif score >= 30:
+                    score_groups["30+"].append(t.pnl_usd)
+
+        # Calculate performance per group (need at least 3 trades)
+        score_performance = {}
+        for range_name, pnls in score_groups.items():
+            if len(pnls) >= 3:
+                avg_pnl = statistics.mean(pnls)
+                win_rate = sum(1 for p in pnls if p > 0) / len(pnls)
+                score_performance[range_name] = {
+                    "avg_pnl": avg_pnl,
+                    "win_rate": win_rate,
+                    "count": len(pnls),
+                    "score": avg_pnl * win_rate  # Combined metric
+                }
+
+        if not score_performance:
+            return None
+
+        # Find best performing score range
+        best_range = max(score_performance, key=lambda x: score_performance[x]["score"])
+        best_data = score_performance[best_range]
+
+        # Map range to threshold value
+        threshold_map = {
+            "10-15": 12.0,
+            "15-20": 15.0,
+            "20-25": 20.0,
+            "25-30": 25.0,
+            "30+": 30.0,
+        }
+
+        optimal_threshold = threshold_map.get(best_range, 15.0)
+        current_threshold = 15.0  # Default
+
+        if optimal_threshold != current_threshold:
+            return ParameterAnalysis(
+                parameter_name="score_threshold_open",
+                current_value=current_threshold,
+                optimal_value=optimal_threshold,
+                improvement_pct=best_data["avg_pnl"] * 10 if best_data["avg_pnl"] > 0 else 0,
+                sample_size=best_data["count"],
+                confidence=min(best_data["count"] / 20, 0.9),
+            )
+
+        return None
+
+    def _analyze_trailing_stop(self, trades) -> Optional[ParameterAnalysis]:
+        """
+        Analyze trailing stop effectiveness by comparing peak P&L vs final P&L.
+
+        High "give-back" indicates trailing stop might be too loose.
+        """
+        if len(trades) < 10:
+            return None
+
+        # Calculate give-back for profitable trades that hit SL
+        giveback_trades = [
+            t for t in trades
+            if t.peak_pnl_pct > 2.0  # Had significant profit
+            and t.exit_reason and 'SL' in t.exit_reason.value
+        ]
+
+        if len(giveback_trades) < 3:
+            return None
+
+        # Calculate average give-back percentage
+        givebacks = []
+        for t in giveback_trades:
+            if t.peak_pnl_pct > 0:
+                giveback = t.peak_pnl_pct - t.pnl_pct
+                givebacks.append(giveback)
+
+        if not givebacks:
+            return None
+
+        avg_giveback = statistics.mean(givebacks)
+
+        # If giving back >3% on average, trailing is too loose
+        if avg_giveback > 3.0:
+            return ParameterAnalysis(
+                parameter_name="trailing_steps",
+                current_value="current",
+                optimal_value="tighter",
+                improvement_pct=avg_giveback / 2,  # Could capture half the giveback
+                sample_size=len(giveback_trades),
+                confidence=min(len(giveback_trades) / 10, 0.7),
+            )
+
+        # If giving back <1%, trailing might be too tight (exits too early)
+        # Check if many profitable trades hit SL instead of running
+        tp_trades = [t for t in trades if t.exit_reason and 'TP' in t.exit_reason.value]
+        sl_with_profit = [t for t in trades if t.pnl_usd > 0 and t.exit_reason and 'SL' in t.exit_reason.value]
+
+        if len(sl_with_profit) > len(tp_trades) * 2:  # 2x more SL exits than TP
+            return ParameterAnalysis(
+                parameter_name="trailing_steps",
+                current_value="current",
+                optimal_value="looser",
+                improvement_pct=10.0,
+                sample_size=len(sl_with_profit),
+                confidence=0.5,
+            )
+
+        return None
+
+    def _analyze_symbols(self, trades) -> List[ParameterAnalysis]:
+        """
+        Analyze performance by symbol to identify best/worst performers.
+        """
+        if len(trades) < 10:
+            return []
+
+        # Group by symbol
+        symbol_groups: Dict[str, List] = {}
+        for t in trades:
+            if t.symbol not in symbol_groups:
+                symbol_groups[t.symbol] = []
+            symbol_groups[t.symbol].append(t)
+
+        analyses = []
+        symbol_stats = {}
+
+        for symbol, symbol_trades in symbol_groups.items():
+            if len(symbol_trades) >= 3:
+                total_pnl = sum(t.pnl_usd for t in symbol_trades if t.pnl_usd)
+                win_rate = sum(1 for t in symbol_trades if t.pnl_usd and t.pnl_usd > 0) / len(symbol_trades)
+                symbol_stats[symbol] = {
+                    "pnl": total_pnl,
+                    "win_rate": win_rate,
+                    "count": len(symbol_trades)
+                }
+
+        if len(symbol_stats) < 2:
+            return []
+
+        # Find worst performing symbol
+        worst_symbol = min(symbol_stats, key=lambda x: symbol_stats[x]["pnl"])
+        worst_data = symbol_stats[worst_symbol]
+
+        # If a symbol is consistently losing, suggest disabling it
+        if worst_data["pnl"] < -5.0 and worst_data["win_rate"] < 0.4:
+            analyses.append(ParameterAnalysis(
+                parameter_name=f"symbol_{worst_symbol}",
+                current_value="enabled",
+                optimal_value="disabled",
+                improvement_pct=abs(worst_data["pnl"]),
+                sample_size=worst_data["count"],
+                confidence=min(worst_data["count"] / 10, 0.8),
+            ))
+
+        # Find best performing symbol
+        best_symbol = max(symbol_stats, key=lambda x: symbol_stats[x]["pnl"])
+        best_data = symbol_stats[best_symbol]
+
+        # If one symbol is significantly outperforming, note it
+        if best_data["pnl"] > 5.0 and best_data["win_rate"] > 0.6:
+            analyses.append(ParameterAnalysis(
+                parameter_name=f"symbol_{best_symbol}",
+                current_value="standard_weight",
+                optimal_value="increased_weight",
+                improvement_pct=best_data["pnl"],
+                sample_size=best_data["count"],
+                confidence=min(best_data["count"] / 10, 0.7),
+            ))
+
+        return analyses
 
     def _analyze_leverage(self, trades) -> Optional[ParameterAnalysis]:
         """Analyze leverage effectiveness."""
@@ -546,6 +770,98 @@ class AnalyticsEngine:
                 created_at=now,
             ))
 
+        # Recommendation 4: Score threshold optimization
+        score_analysis = next((p for p in parameter_analyses if p.parameter_name == "score_threshold_open"), None)
+        if score_analysis and score_analysis.optimal_value != score_analysis.current_value:
+            recommendations.append(Recommendation(
+                type=RecommendationType.SCORE_THRESHOLD,
+                priority=RecommendationPriority.MEDIUM if score_analysis.confidence > 0.6 else RecommendationPriority.LOW,
+                title=f"Alza threshold a {score_analysis.optimal_value} (attuale: {score_analysis.current_value})",
+                description=(
+                    f"I trade con score {score_analysis.optimal_value}+ performano meglio. "
+                    f"Win rate e P&L superiori su {score_analysis.sample_size} trade."
+                ),
+                current_value=score_analysis.current_value,
+                recommended_value=score_analysis.optimal_value,
+                expected_improvement=f"+{score_analysis.improvement_pct:.1f}% P&L stimato",
+                confidence=score_analysis.confidence,
+                evidence=f"Analisi di {score_analysis.sample_size} trade per fascia di score",
+                created_at=now,
+            ))
+
+        # Recommendation 5: Trailing stop optimization
+        trailing_analysis = next((p for p in parameter_analyses if p.parameter_name == "trailing_steps"), None)
+        if trailing_analysis:
+            if trailing_analysis.optimal_value == "tighter":
+                recommendations.append(Recommendation(
+                    type=RecommendationType.TRADING_STYLE,
+                    priority=RecommendationPriority.MEDIUM,
+                    title="Trailing stop troppo largo - stringi gli step",
+                    description=(
+                        f"I trade restituiscono troppo profitto prima di chiudersi. "
+                        f"Considera di attivare step più aggressivi nel trailing."
+                    ),
+                    current_value="trailing_steps attuale",
+                    recommended_value="Aggiungi step intermedi (es: 4.0:2.0)",
+                    expected_improvement=f"+{trailing_analysis.improvement_pct:.1f}% profitto recuperabile",
+                    confidence=trailing_analysis.confidence,
+                    evidence=f"Basato su {trailing_analysis.sample_size} trade con profit restituito",
+                    created_at=now,
+                ))
+            elif trailing_analysis.optimal_value == "looser":
+                recommendations.append(Recommendation(
+                    type=RecommendationType.TRADING_STYLE,
+                    priority=RecommendationPriority.LOW,
+                    title="Trailing stop troppo stretto - lascia correre i profitti",
+                    description=(
+                        "Molti trade profittevoli vengono chiusi dal trailing prima "
+                        "di raggiungere il take profit."
+                    ),
+                    current_value="trailing_steps attuale",
+                    recommended_value="Allarga gli step (es: 3.0:0.0,6.0:2.0)",
+                    expected_improvement="Più trade potrebbero raggiungere TP",
+                    confidence=trailing_analysis.confidence,
+                    evidence=f"Basato su {trailing_analysis.sample_size} trade",
+                    created_at=now,
+                ))
+
+        # Recommendation 6: Symbol-specific recommendations
+        for p in parameter_analyses:
+            if p.parameter_name.startswith("symbol_"):
+                symbol = p.parameter_name.replace("symbol_", "")
+                if p.optimal_value == "disabled":
+                    recommendations.append(Recommendation(
+                        type=RecommendationType.TRADING_STYLE,
+                        priority=RecommendationPriority.MEDIUM if p.confidence > 0.6 else RecommendationPriority.LOW,
+                        title=f"Considera di disabilitare {symbol}",
+                        description=(
+                            f"{symbol} sta perdendo ${p.improvement_pct:.2f} con win rate basso. "
+                            f"Potrebbe non essere adatto alla strategia corrente."
+                        ),
+                        current_value="enabled",
+                        recommended_value="disabled",
+                        expected_improvement=f"Evita -${p.improvement_pct:.2f} perdite",
+                        confidence=p.confidence,
+                        evidence=f"Basato su {p.sample_size} trade su {symbol}",
+                        created_at=now,
+                    ))
+                elif p.optimal_value == "increased_weight":
+                    recommendations.append(Recommendation(
+                        type=RecommendationType.TRADING_STYLE,
+                        priority=RecommendationPriority.LOW,
+                        title=f"{symbol} è il symbol più performante",
+                        description=(
+                            f"{symbol} sta generando ${p.improvement_pct:.2f} di profitto "
+                            f"con win rate alto. Considera di aumentare la size su questo symbol."
+                        ),
+                        current_value="standard",
+                        recommended_value="aumenta position size",
+                        expected_improvement=f"Potenziale +${p.improvement_pct:.2f}",
+                        confidence=p.confidence,
+                        evidence=f"Basato su {p.sample_size} trade su {symbol}",
+                        created_at=now,
+                    ))
+
         # Sort by priority
         priority_order = {
             RecommendationPriority.HIGH: 0,
@@ -567,6 +883,126 @@ class AnalyticsEngine:
             logger.info(f"  - Recommendations: {len(report.recommendations)}")
         except Exception as e:
             logger.error(f"Failed to save report: {e}")
+
+    def apply_recommendation(self, recommendation: Recommendation) -> Dict[str, Any]:
+        """
+        Apply a recommendation by updating the variant configuration.
+
+        Returns dict with success status and details.
+        """
+        result = {
+            "success": False,
+            "recommendation_type": recommendation.type.value,
+            "message": "",
+            "changes": [],
+        }
+
+        try:
+            if recommendation.type == RecommendationType.AI_MODEL:
+                # Toggle AI model on/off
+                if recommendation.recommended_value == "disabled":
+                    # Find sub-variants with this model and disable them
+                    sub_variants = self.db.get_all_sub_variants()
+                    for sv in sub_variants:
+                        if recommendation.current_value in sv.ai_model:
+                            self.db.toggle_sub_variant(sv.id, enabled=False)
+                            result["changes"].append(f"Disabilitato {sv.ai_model_name}")
+                    result["success"] = True
+                    result["message"] = f"AI model disabilitato"
+
+            elif recommendation.type == RecommendationType.STOP_LOSS:
+                # Update stop loss in variant trading params
+                variants = self.db.get_all_variants(enabled_only=True)
+                for variant in variants:
+                    old_sl = variant.trading_params.stop_loss_pct
+                    variant.trading_params.stop_loss_pct = recommendation.recommended_value
+                    self.db.save_variant(variant)
+                    result["changes"].append(
+                        f"{variant.id}: SL {old_sl}% → {recommendation.recommended_value}%"
+                    )
+                result["success"] = True
+                result["message"] = f"Stop loss aggiornato a {recommendation.recommended_value}%"
+
+            elif recommendation.type == RecommendationType.SCORE_THRESHOLD:
+                # Update score threshold in variant trading params
+                variants = self.db.get_all_variants(enabled_only=True)
+                for variant in variants:
+                    old_threshold = variant.trading_params.score_threshold_open
+                    variant.trading_params.score_threshold_open = recommendation.recommended_value
+                    self.db.save_variant(variant)
+                    result["changes"].append(
+                        f"{variant.id}: threshold {old_threshold} → {recommendation.recommended_value}"
+                    )
+                result["success"] = True
+                result["message"] = f"Score threshold aggiornato a {recommendation.recommended_value}"
+
+            elif recommendation.type == RecommendationType.LEVERAGE:
+                # Update leverage in variant trading params
+                variants = self.db.get_all_variants(enabled_only=True)
+                for variant in variants:
+                    old_lev = variant.trading_params.leverage
+                    variant.trading_params.leverage = int(recommendation.recommended_value)
+                    self.db.save_variant(variant)
+                    result["changes"].append(
+                        f"{variant.id}: leverage {old_lev}x → {recommendation.recommended_value}x"
+                    )
+                result["success"] = True
+                result["message"] = f"Leverage aggiornato a {recommendation.recommended_value}x"
+
+            elif recommendation.type == RecommendationType.TRADING_STYLE:
+                # Handle symbol disable or trailing stop changes
+                if "symbol_" in str(recommendation.title).lower() or "disabilita" in recommendation.title.lower():
+                    # Extract symbol from title
+                    import re
+                    match = re.search(r'(BTC|ETH|SOL|DOGE|AVAX|ARB|SUI)', recommendation.title)
+                    if match:
+                        symbol = match.group(1)
+                        variants = self.db.get_all_variants(enabled_only=True)
+                        for variant in variants:
+                            if symbol in variant.symbols:
+                                variant.symbols.remove(symbol)
+                                self.db.save_variant(variant)
+                                result["changes"].append(f"{variant.id}: rimosso {symbol}")
+                        result["success"] = True
+                        result["message"] = f"Symbol {symbol} rimosso dalle strategie"
+                elif "trailing" in recommendation.title.lower():
+                    # Log suggestion - trailing steps require manual review
+                    result["success"] = False
+                    result["message"] = "Modifica trailing steps richiede revisione manuale"
+                    result["changes"].append(
+                        f"Suggerimento: {recommendation.recommended_value}"
+                    )
+
+            else:
+                result["message"] = f"Tipo raccomandazione non supportato: {recommendation.type.value}"
+
+        except Exception as e:
+            result["message"] = f"Errore applicando raccomandazione: {str(e)}"
+            logger.error(f"Error applying recommendation: {e}")
+
+        return result
+
+    def apply_all_high_priority(self) -> List[Dict[str, Any]]:
+        """
+        Apply all HIGH priority recommendations automatically.
+
+        Returns list of results for each applied recommendation.
+        """
+        if not self._last_report:
+            return [{"success": False, "message": "Nessun report disponibile"}]
+
+        results = []
+        high_priority = [
+            r for r in self._last_report.recommendations
+            if r.priority == RecommendationPriority.HIGH
+        ]
+
+        for rec in high_priority:
+            result = self.apply_recommendation(rec)
+            results.append(result)
+            logger.info(f"Applied recommendation: {rec.title} - {result['message']}")
+
+        return results
 
     def get_insights_for_prompt(self) -> str:
         """
