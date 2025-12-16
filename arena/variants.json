@@ -4,11 +4,11 @@
   "variants": [
     {
       "id": "V1_BASELINE",
-      "name": "Baseline DeepSeek V3",
-      "description": "Configurazione produzione con DeepSeek V3",
+      "name": "Baseline Grok Mini",
+      "description": "Configurazione baseline con Grok 3 Mini (DeepSeek rate limited)",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
+      "ai_models": ["x-ai/grok-3-mini-beta"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
