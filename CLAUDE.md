@@ -547,6 +547,10 @@ PATTERN_ENTRY_VOLUME_MULTIPLIER=1.5     # Volume > 1.5x average
 PATTERN_CONTRA_ACTION=ACCELERATE        # CLOSE, ACCELERATE, REDUCE_50, ALERT_ONLY
 PATTERN_CONTRA_MIN_CONFIDENCE=0.70      # Min confidence to trigger action
 
+# --- ACCELERATE Control ---
+ACCELERATE_COOLDOWN_SECONDS=300         # Cooldown between ACCELERATE triggers (0=disabled)
+ACCELERATE_MIN_PROFIT=0.0               # Min P&L% to trigger ACCELERATE (0=always, 1.5=only in profit)
+
 # --- Stop Loss ---
 PATTERN_SL_USE_ATR=true                 # Use ATR for dynamic SL
 PATTERN_SL_ATR_MULTIPLIER=1.5           # SL = entry - (1.5 × ATR)

@@ -223,6 +223,10 @@ PATTERN_ENTRY_VOLUME_MULTIPLIER = float(os.getenv('PATTERN_ENTRY_VOLUME_MULTIPLI
 PATTERN_CONTRA_ACTION = os.getenv('PATTERN_CONTRA_ACTION', 'ACCELERATE').upper()
 PATTERN_CONTRA_MIN_CONFIDENCE = float(os.getenv('PATTERN_CONTRA_MIN_CONFIDENCE', '0.70'))
 
+# ACCELERATE cooldown and profit requirements
+ACCELERATE_COOLDOWN_SECONDS = int(os.getenv('ACCELERATE_COOLDOWN_SECONDS', '300'))  # 5 min default
+ACCELERATE_MIN_PROFIT = float(os.getenv('ACCELERATE_MIN_PROFIT', '0.0'))  # 0 = no min profit requirement
+
 # Stop Loss from pattern
 PATTERN_SL_USE_ATR = os.getenv('PATTERN_SL_USE_ATR', 'true').lower() == 'true'
 PATTERN_SL_ATR_MULTIPLIER = float(os.getenv('PATTERN_SL_ATR_MULTIPLIER', '1.5'))
@@ -238,6 +242,9 @@ _pattern_cache = {}
 
 # Pending entries for FAST_LOOP system (symbol -> entry_data)
 _pending_entries = {}
+
+# ACCELERATE cooldown tracking (symbol -> last_accelerate_timestamp)
+_accelerate_last_time = {}
 
 def parse_trailing_steps(steps_str: str, default_steps: list = None) -> list:
     """Parse trailing steps from string format 'pnl:sl,pnl:sl,...' to list of tuples."""
@@ -749,6 +756,51 @@ def handle_contrary_pattern(
         return False
 
     return False
+
+
+def can_accelerate(symbol: str, pos: dict) -> tuple[bool, str]:
+    """
+    Check if ACCELERATE is allowed based on cooldown and MIN_PROFIT requirements.
+
+    Args:
+        symbol: Trading symbol
+        pos: Position dict with entry_price, mark_price, side
+
+    Returns:
+        Tuple of (allowed: bool, reason: str)
+    """
+    import time
+
+    # Check cooldown
+    if ACCELERATE_COOLDOWN_SECONDS > 0:
+        last_time = _accelerate_last_time.get(symbol, 0)
+        elapsed = time.time() - last_time
+        if elapsed < ACCELERATE_COOLDOWN_SECONDS:
+            remaining = int(ACCELERATE_COOLDOWN_SECONDS - elapsed)
+            return False, f"Cooldown attivo ({remaining}s rimanenti)"
+
+    # Check MIN_PROFIT requirement
+    if ACCELERATE_MIN_PROFIT > 0:
+        entry_price = float(pos.get("entry_price", 0))
+        mark_price = float(pos.get("mark_price", 0))
+        direction = pos.get("side", "").upper()
+
+        if entry_price > 0 and mark_price > 0:
+            if direction == "LONG":
+                pnl_pct = ((mark_price - entry_price) / entry_price) * 100
+            else:  # SHORT
+                pnl_pct = ((entry_price - mark_price) / entry_price) * 100
+
+            if pnl_pct < ACCELERATE_MIN_PROFIT:
+                return False, f"P&L {pnl_pct:+.2f}% < MIN_PROFIT {ACCELERATE_MIN_PROFIT}%"
+
+    return True, "OK"
+
+
+def record_accelerate(symbol: str):
+    """Record ACCELERATE timestamp for cooldown tracking."""
+    import time
+    _accelerate_last_time[symbol] = time.time()
 
 
 # Tracking SL corrente per ogni simbolo (in-memory)
@@ -6362,22 +6414,30 @@ def run_sentinel_slow():
                     conf = double_bottom.get('confidence', 0)
                     if handle_contrary_pattern(symbol, position_direction, "DOUBLE_BOTTOM", conf, bot.exchange, bot.info):
                         if PATTERN_CONTRA_ACTION == "ACCELERATE" and SMART_EXIT_AVAILABLE:
-                            # Force ACCELERATE through smart_exit
-                            log(f"[SLOW] 🔄 {symbol}: Forcing ACCELERATE due to contrary pattern")
-                            # Set flag for smart_exit to use
-                            tracking_data['force_accelerate'] = True
-                            db_utils.update_position_tracking(symbol, tracking_data)
+                            # Check cooldown and MIN_PROFIT before triggering
+                            can_accel, accel_reason = can_accelerate(symbol, pos)
+                            if can_accel:
+                                log(f"[SLOW] 🔄 {symbol}: Forcing ACCELERATE due to contrary pattern")
+                                tracking_data['force_accelerate'] = True
+                                db_utils.update_position_tracking(symbol, tracking_data)
+                                record_accelerate(symbol)
+                            else:
+                                log(f"[SLOW] ⏸️ {symbol}: ACCELERATE bloccato - {accel_reason}")
 
                 # Check Double Top against LONG position
                 elif position_direction == "LONG" and double_top and double_top.get('detected'):
                     conf = double_top.get('confidence', 0)
                     if handle_contrary_pattern(symbol, position_direction, "DOUBLE_TOP", conf, bot.exchange, bot.info):
                         if PATTERN_CONTRA_ACTION == "ACCELERATE" and SMART_EXIT_AVAILABLE:
-                            # Force ACCELERATE through smart_exit
-                            log(f"[SLOW] 🔄 {symbol}: Forcing ACCELERATE due to contrary pattern")
-                            # Set flag for smart_exit to use
-                            tracking_data['force_accelerate'] = True
-                            db_utils.update_position_tracking(symbol, tracking_data)
+                            # Check cooldown and MIN_PROFIT before triggering
+                            can_accel, accel_reason = can_accelerate(symbol, pos)
+                            if can_accel:
+                                log(f"[SLOW] 🔄 {symbol}: Forcing ACCELERATE due to contrary pattern")
+                                tracking_data['force_accelerate'] = True
+                                db_utils.update_position_tracking(symbol, tracking_data)
+                                record_accelerate(symbol)
+                            else:
+                                log(f"[SLOW] ⏸️ {symbol}: ACCELERATE bloccato - {accel_reason}")
 
         # === CHECK AI WAKE FOR NORMAL RANGE ===
         log("[SLOW] 🤖 Check wake AI per range NORMAL...")
@@ -6429,6 +6489,9 @@ def main():
             print(f"      Entry System: {PATTERN_ENTRY_SYSTEM}")
             print(f"      Contra Action: {PATTERN_CONTRA_ACTION}")
             print(f"      Min Confidence: {PATTERN_MIN_CONFIDENCE*100:.0f}%")
+            if PATTERN_CONTRA_ACTION == "ACCELERATE":
+                print(f"      ⚡ ACCELERATE Cooldown: {ACCELERATE_COOLDOWN_SECONDS}s")
+                print(f"      ⚡ ACCELERATE Min Profit: {ACCELERATE_MIN_PROFIT}%")
         print("=" * 50)
 
     if args.loop:
