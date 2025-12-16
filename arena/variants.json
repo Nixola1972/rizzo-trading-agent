@@ -4,11 +4,11 @@
   "variants": [
     {
       "id": "V1_BASELINE",
-      "name": "Baseline GPT-OSS-120b",
-      "description": "Configurazione baseline con GPT-OSS-120b (DeepSeek rate limited)",
+      "name": "Baseline DeepSeek",
+      "description": "Configurazione baseline con DeepSeek V3 (modello principale)",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["openai/gpt-oss-120b"],
+      "ai_models": ["deepseek/deepseek-chat"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -48,11 +48,11 @@
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
-        "x-ai/grok-code-fast-1",
-        "openai/gpt-oss-120b",
-        "qwen/qwen3-max",
-        "qwen/qwen3-235b-a22b:free"
+        "deepseek/deepseek-chat",
+        "x-ai/grok-2-1212",
+        "openai/gpt-4o-mini",
+        "qwen/qwen-2.5-72b-instruct",
+        "qwen/qwen-2.5-coder-32b-instruct:free"
       ],
       "trading_params": {
         "position_size_usd": 50.0,
@@ -76,7 +76,7 @@
       "description": "SL intelligente controllato da AI",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
+      "ai_models": ["deepseek/deepseek-chat"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -101,7 +101,7 @@
       "description": "Pesi e periodi indicatori diversi",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
+      "ai_models": ["deepseek/deepseek-chat"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -141,8 +141,8 @@
       "enabled": true,
       "operation_mode": "AI_INDEPENDENT",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
-        "qwen/qwen3-235b-a22b:free"
+        "deepseek/deepseek-chat",
+        "qwen/qwen-2.5-coder-32b-instruct:free"
       ],
       "trading_params": {
         "position_size_usd": 50.0,

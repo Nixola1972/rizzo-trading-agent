@@ -49,9 +49,10 @@ class Recommendation:
     confidence: float  # 0.0 - 1.0
     evidence: str
     created_at: datetime
+    details: Optional[Dict[str, Any]] = None  # Detailed breakdown data
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "type": self.type.value,
             "priority": self.priority.value,
             "title": self.title,
@@ -63,6 +64,9 @@ class Recommendation:
             "evidence": self.evidence,
             "created_at": self.created_at.isoformat(),
         }
+        if self.details:
+            result["details"] = self.details
+        return result
 
 
 @dataclass
@@ -95,6 +99,7 @@ class ParameterAnalysis:
     improvement_pct: float
     sample_size: int
     confidence: float
+    breakdown: Optional[Dict[str, Any]] = None  # Detailed breakdown by category
 
 
 @dataclass
@@ -517,6 +522,33 @@ class AnalyticsEngine:
         optimal_threshold = threshold_map.get(best_range, 15.0)
         current_threshold = 15.0  # Default
 
+        # Build detailed breakdown for display
+        breakdown = {
+            "ranges": [],
+            "best_range": best_range,
+            "total_trades": sum(len(pnls) for pnls in score_groups.values()),
+        }
+        for range_name in ["10-15", "15-20", "20-25", "25-30", "30+"]:
+            if range_name in score_performance:
+                perf = score_performance[range_name]
+                breakdown["ranges"].append({
+                    "range": range_name,
+                    "trades": perf["count"],
+                    "win_rate": perf["win_rate"],
+                    "avg_pnl": perf["avg_pnl"],
+                    "is_best": range_name == best_range,
+                })
+            elif range_name in score_groups and len(score_groups[range_name]) > 0:
+                # Not enough trades but show count
+                breakdown["ranges"].append({
+                    "range": range_name,
+                    "trades": len(score_groups[range_name]),
+                    "win_rate": None,
+                    "avg_pnl": None,
+                    "is_best": False,
+                    "note": "< 3 trade"
+                })
+
         if optimal_threshold != current_threshold:
             return ParameterAnalysis(
                 parameter_name="score_threshold_open",
@@ -525,6 +557,7 @@ class AnalyticsEngine:
                 improvement_pct=best_data["avg_pnl"] * 10 if best_data["avg_pnl"] > 0 else 0,
                 sample_size=best_data["count"],
                 confidence=min(best_data["count"] / 20, 0.9),
+                breakdown=breakdown,
             )
 
         return None
@@ -787,6 +820,7 @@ class AnalyticsEngine:
                 confidence=score_analysis.confidence,
                 evidence=f"Analisi di {score_analysis.sample_size} trade per fascia di score",
                 created_at=now,
+                details=score_analysis.breakdown,  # Include detailed breakdown
             ))
 
         # Recommendation 5: Trailing stop optimization

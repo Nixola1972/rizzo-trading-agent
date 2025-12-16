@@ -363,6 +363,56 @@ DASHBOARD_HTML = """
             font-size: 0.85em;
             margin-top: 10px;
         }
+        .details-btn {
+            width: 100%;
+            margin-top: 10px;
+            padding: 8px;
+            background: #2a2a4e;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #aaa;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+        .details-btn:hover {
+            background: #3a3a5e;
+            color: #fff;
+        }
+        .rec-details {
+            margin-top: 10px;
+            padding: 10px;
+            background: #1a1a3e;
+            border-radius: 6px;
+            border: 1px solid #333;
+        }
+        .details-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85em;
+        }
+        .details-table th {
+            text-align: left;
+            padding: 6px;
+            color: #888;
+            border-bottom: 1px solid #333;
+        }
+        .details-table td {
+            padding: 6px;
+            border-bottom: 1px solid #222;
+        }
+        .details-table .best-row {
+            background: rgba(0, 255, 136, 0.1);
+        }
+        .details-table .best-row td {
+            color: #00ff88;
+            font-weight: 600;
+        }
+        .details-summary {
+            margin-top: 10px;
+            text-align: center;
+            color: #666;
+            font-size: 0.8em;
+        }
         .apply-btn {
             width: 100%;
             margin-top: 12px;
@@ -421,6 +471,86 @@ DASHBOARD_HTML = """
         .stat-value { font-size: 1.3em; font-weight: 600; color: #fff; }
         .stat-value.positive { color: #00ff88; }
         .stat-value.negative { color: #ff4444; }
+
+        /* AI Analysis Styles */
+        .ai-analysis-btn {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-weight: 600;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+        }
+        .ai-analysis-btn:hover {
+            background: linear-gradient(135deg, #8b5cf6, #a78bfa);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+        }
+        .ai-analysis-btn:disabled {
+            background: #444;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .ai-analysis-btn.loading {
+            background: linear-gradient(135deg, #4b4b8a, #5a5a9a);
+            animation: pulse-btn 1.5s infinite;
+        }
+        @keyframes pulse-btn {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .ai-result-card {
+            background: #1e1e3f;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 3px solid #6366f1;
+        }
+        .ai-result-card h3 {
+            color: #a78bfa;
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+        .ai-result-card ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .ai-result-card li {
+            padding: 5px 0;
+            border-bottom: 1px solid #333;
+        }
+        .ai-result-card li:last-child {
+            border-bottom: none;
+        }
+        .ai-action-item {
+            background: #252550;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 10px;
+        }
+        .ai-action-item .action-title {
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 5px;
+        }
+        .ai-action-item .action-reason {
+            color: #aaa;
+            font-size: 0.9em;
+        }
+        .ai-action-item .action-meta {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 0.85em;
+        }
+        .ai-action-item .priority-high { color: #ff4444; }
+        .ai-action-item .priority-medium { color: #ffaa00; }
+        .ai-action-item .priority-low { color: #00ff88; }
     </style>
 </head>
 <body>
@@ -695,6 +825,38 @@ DASHBOARD_HTML = """
                             <span>Confidence: {{ "%.0f"|format(rec.confidence * 100) }}%</span>
                             <span>{{ rec.expected_improvement }}</span>
                         </div>
+                        {% if rec.details and rec.details.ranges %}
+                        <button class="details-btn" onclick="toggleDetails({{ loop.index0 }})">
+                            📊 Mostra dettagli
+                        </button>
+                        <div class="rec-details" id="details-{{ loop.index0 }}" style="display: none;">
+                            <table class="details-table">
+                                <thead>
+                                    <tr>
+                                        <th>Score Range</th>
+                                        <th>Trade</th>
+                                        <th>Win Rate</th>
+                                        <th>Avg P&L</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for r in rec.details.ranges %}
+                                    <tr class="{% if r.is_best %}best-row{% endif %}">
+                                        <td>{{ r.range }}{% if r.is_best %} ⭐{% endif %}</td>
+                                        <td>{{ r.trades }}</td>
+                                        <td>{% if r.win_rate %}{{ "%.1f"|format(r.win_rate * 100) }}%{% else %}-{% endif %}</td>
+                                        <td class="{% if r.avg_pnl and r.avg_pnl > 0 %}pnl-positive{% elif r.avg_pnl and r.avg_pnl < 0 %}pnl-negative{% endif %}">
+                                            {% if r.avg_pnl %}${{ "%.2f"|format(r.avg_pnl) }}{% else %}-{% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                            <div class="details-summary">
+                                Totale: {{ rec.details.total_trades }} trade analizzati
+                            </div>
+                        </div>
+                        {% endif %}
                         <button class="apply-btn" onclick="applyRecommendation({{ loop.index0 }})">
                             ✅ Applica
                         </button>
@@ -773,6 +935,52 @@ DASHBOARD_HTML = """
                         Last analysis: {{ analytics.last_update or 'Never' }}
                     </div>
                 </div>
+
+                <!-- AI Deep Analysis Section -->
+                <div class="section" style="margin-top: 30px;">
+                    <h2>🤖 AI Deep Analysis</h2>
+                    <p style="color: #888; margin-bottom: 15px;">
+                        Analisi approfondita dei dati di trading usando LLM. Genera insight, pattern e raccomandazioni avanzate.
+                    </p>
+
+                    <div style="text-align: center; margin-bottom: 20px;">
+                        <button class="ai-analysis-btn" id="run-ai-analysis" onclick="runAIAnalysis()">
+                            🧠 Esegui Analisi AI
+                        </button>
+                        <span id="ai-analysis-status" style="margin-left: 15px; color: #888;"></span>
+                    </div>
+
+                    <div id="ai-analysis-result" style="display: none;">
+                        <div class="ai-result-card">
+                            <h3>📝 Riepilogo</h3>
+                            <p id="ai-summary" style="color: #ccc;"></p>
+                        </div>
+
+                        <div class="ai-result-card">
+                            <h3>💡 Key Insights</h3>
+                            <ul id="ai-insights" style="color: #ccc;"></ul>
+                        </div>
+
+                        <div class="ai-result-card">
+                            <h3>⚡ Azioni Raccomandate</h3>
+                            <div id="ai-actions"></div>
+                        </div>
+
+                        <div class="ai-result-card" style="border-left: 3px solid #ff4444;">
+                            <h3>⚠️ Risk Warnings</h3>
+                            <ul id="ai-warnings" style="color: #ffaa00;"></ul>
+                        </div>
+
+                        <div class="ai-result-card">
+                            <h3>📊 Market Observations</h3>
+                            <ul id="ai-observations" style="color: #ccc;"></ul>
+                        </div>
+
+                        <div style="text-align: center; margin-top: 15px; color: #666; font-size: 0.8em;">
+                            <span id="ai-meta"></span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -832,6 +1040,18 @@ DASHBOARD_HTML = """
             }
         }
 
+        function toggleDetails(index) {
+            const details = document.getElementById('details-' + index);
+            const btn = details.previousElementSibling;
+            if (details.style.display === 'none') {
+                details.style.display = 'block';
+                btn.textContent = '📊 Nascondi dettagli';
+            } else {
+                details.style.display = 'none';
+                btn.textContent = '📊 Mostra dettagli';
+            }
+        }
+
         function applyRecommendation(index) {
             const btn = document.querySelector(`#rec-${index} .apply-btn`);
             btn.disabled = true;
@@ -883,6 +1103,116 @@ DASHBOARD_HTML = """
                     alert('Errore di connessione');
                 });
         }
+
+        function runAIAnalysis() {
+            const btn = document.getElementById('run-ai-analysis');
+            const status = document.getElementById('ai-analysis-status');
+            const result = document.getElementById('ai-analysis-result');
+
+            btn.disabled = true;
+            btn.classList.add('loading');
+            btn.textContent = '⏳ Analizzando...';
+            status.textContent = 'Chiamata API in corso...';
+
+            fetch('/api/ai-analysis/run', { method: 'POST' })
+                .then(r => r.json())
+                .then(d => {
+                    btn.disabled = false;
+                    btn.classList.remove('loading');
+                    btn.textContent = '🧠 Esegui Analisi AI';
+
+                    if (d.success) {
+                        status.textContent = `Completato in ${d.execution_time.toFixed(1)}s (${d.model_used})`;
+                        result.style.display = 'block';
+
+                        // Populate summary
+                        document.getElementById('ai-summary').textContent = d.summary || 'Nessun riepilogo disponibile';
+
+                        // Populate insights
+                        const insightsList = document.getElementById('ai-insights');
+                        insightsList.innerHTML = '';
+                        (d.key_insights || []).forEach(insight => {
+                            const li = document.createElement('li');
+                            li.textContent = insight;
+                            insightsList.appendChild(li);
+                        });
+                        if (!d.key_insights || d.key_insights.length === 0) {
+                            insightsList.innerHTML = '<li style="color: #666;">Nessun insight disponibile</li>';
+                        }
+
+                        // Populate actions
+                        const actionsDiv = document.getElementById('ai-actions');
+                        actionsDiv.innerHTML = '';
+                        (d.recommended_actions || []).forEach(action => {
+                            const actionDiv = document.createElement('div');
+                            actionDiv.className = 'ai-action-item';
+                            actionDiv.innerHTML = `
+                                <div class="action-title">${action.action || 'Azione'}</div>
+                                <div class="action-reason">${action.reason || ''}</div>
+                                <div class="action-meta">
+                                    <span class="priority-${action.priority || 'medium'}">${(action.priority || 'medium').toUpperCase()}</span>
+                                    <span>${action.expected_impact || ''}</span>
+                                </div>
+                            `;
+                            actionsDiv.appendChild(actionDiv);
+                        });
+                        if (!d.recommended_actions || d.recommended_actions.length === 0) {
+                            actionsDiv.innerHTML = '<p style="color: #666;">Nessuna azione raccomandata</p>';
+                        }
+
+                        // Populate warnings
+                        const warningsList = document.getElementById('ai-warnings');
+                        warningsList.innerHTML = '';
+                        (d.risk_warnings || []).forEach(warning => {
+                            const li = document.createElement('li');
+                            li.textContent = warning;
+                            warningsList.appendChild(li);
+                        });
+                        if (!d.risk_warnings || d.risk_warnings.length === 0) {
+                            warningsList.innerHTML = '<li style="color: #666;">Nessun warning</li>';
+                        }
+
+                        // Populate observations
+                        const obsList = document.getElementById('ai-observations');
+                        obsList.innerHTML = '';
+                        (d.market_observations || []).forEach(obs => {
+                            const li = document.createElement('li');
+                            li.textContent = obs;
+                            obsList.appendChild(li);
+                        });
+                        if (!d.market_observations || d.market_observations.length === 0) {
+                            obsList.innerHTML = '<li style="color: #666;">Nessuna osservazione</li>';
+                        }
+
+                        // Meta info
+                        document.getElementById('ai-meta').textContent =
+                            `Report ID: ${d.report_id} | Model: ${d.model_used}`;
+
+                    } else {
+                        status.textContent = `Errore: ${d.error}`;
+                        result.style.display = 'none';
+                    }
+                })
+                .catch(e => {
+                    btn.disabled = false;
+                    btn.classList.remove('loading');
+                    btn.textContent = '🧠 Esegui Analisi AI';
+                    status.textContent = 'Errore di connessione';
+                    console.error('AI Analysis error:', e);
+                });
+        }
+
+        // Check for previous AI analysis on page load
+        (function loadLastAIAnalysis() {
+            fetch('/api/ai-analysis/last')
+                .then(r => r.json())
+                .then(d => {
+                    if (d.success) {
+                        const status = document.getElementById('ai-analysis-status');
+                        status.textContent = `Ultimo report: ${d.generated_at}`;
+                    }
+                });
+        })();
 
         // Auto-refresh every 60 seconds (preserves current tab via URL hash)
         setTimeout(() => location.reload(), 60000);
@@ -1160,6 +1490,66 @@ def api_get_recommendations():
         return jsonify({"success": False, "error": str(e), "recommendations": []})
 
 
+# AI Analysis cache
+_ai_analyzer = None
+_ai_last_report = None
+
+
+@app.route('/api/ai-analysis/run', methods=['POST'])
+def api_run_ai_analysis():
+    """Trigger AI-powered deep analysis."""
+    global _ai_analyzer, _ai_last_report
+
+    try:
+        from .ai_analysis import AIAnalyzer
+
+        if _ai_analyzer is None:
+            _ai_analyzer = AIAnalyzer(db)
+
+        report = _ai_analyzer.run_analysis(force=True)
+
+        if report:
+            _ai_last_report = report
+            return jsonify({
+                "success": True,
+                "report_id": report.report_id,
+                "model_used": report.model_used,
+                "summary": report.analysis_text,
+                "key_insights": report.key_insights,
+                "recommended_actions": report.recommended_actions,
+                "risk_warnings": report.risk_warnings,
+                "market_observations": report.market_observations,
+                "execution_time": report.execution_time_seconds,
+            })
+        else:
+            return jsonify({"success": False, "error": "AI analysis failed - check API key"})
+
+    except Exception as e:
+        import traceback
+        return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()})
+
+
+@app.route('/api/ai-analysis/last')
+def api_get_last_ai_analysis():
+    """Get the last AI analysis report."""
+    global _ai_last_report
+
+    if _ai_last_report:
+        return jsonify({
+            "success": True,
+            "report_id": _ai_last_report.report_id,
+            "generated_at": _ai_last_report.generated_at.isoformat(),
+            "model_used": _ai_last_report.model_used,
+            "summary": _ai_last_report.analysis_text,
+            "key_insights": _ai_last_report.key_insights,
+            "recommended_actions": _ai_last_report.recommended_actions,
+            "risk_warnings": _ai_last_report.risk_warnings,
+            "market_observations": _ai_last_report.market_observations,
+        })
+    else:
+        return jsonify({"success": False, "message": "Nessuna analisi AI disponibile. Clicca 'Esegui Analisi AI' per generarne una."})
+
+
 # ==================== Data Functions ====================
 
 def get_dashboard_stats() -> Dict[str, Any]:
@@ -1345,6 +1735,7 @@ def get_analytics_data() -> Dict[str, Any]:
                         "recommended_value": str(r.recommended_value),
                         "expected_improvement": r.expected_improvement,
                         "confidence": r.confidence,
+                        "details": r.details if hasattr(r, 'details') and r.details else None,
                     }
                     for r in report.recommendations
                 ],

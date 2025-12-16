@@ -348,6 +348,8 @@ class ArenaSimulator:
         # Determine direction from score
         direction = TradeDirection.LONG if net_score > 0 else TradeDirection.SHORT
 
+        logger.info(f"[ARENA] 📊 {sub_variant.id} {symbol}: Score {net_score:.1f} >= {threshold} → {direction.value}")
+
         # Double check with AI if enabled
         if variant.trading_params.double_check_ai_enabled:
             approved, override_dir, reason, confidence = self.ai_manager.validate_trade(
@@ -355,7 +357,7 @@ class ArenaSimulator:
             )
 
             if not approved:
-                logger.debug(f"[ARENA] {sub_variant.id} {symbol}: AI rejected - {reason}")
+                logger.info(f"[ARENA] ❌ {sub_variant.id} {symbol}: AI rejected {direction.value} - {reason} (confidence: {confidence:.0%})")
                 return
 
             if override_dir:
