@@ -252,9 +252,11 @@ Be concise and focus on key indicators."""
             data = response.json()
             content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-            # Log raw response for debugging
+            # Log raw response for debugging (INFO level to see in logs)
             if content:
-                logger.debug(f"AI raw response: {content[:300]}")
+                logger.info(f"AI [{model.split('/')[-1]}] response: {content[:150]}...")
+            else:
+                logger.warning(f"AI [{model.split('/')[-1]}] returned EMPTY response!")
 
             # Try to parse JSON from response
             result = self._extract_json(content)
