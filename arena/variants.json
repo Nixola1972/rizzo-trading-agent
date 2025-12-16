@@ -49,8 +49,8 @@
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": [
         "deepseek/deepseek-v3.2-speciale",
-        "x-ai/grok-2-1212",
-        "openai/gpt-4o-mini",
+        "x-ai/grok-4.1-fast",
+        "anthropic/claude-haiku-4.5",
         "qwen/qwen3-max",
         "tngtech/deepseek-r1t2-chimera:free"
       ],
