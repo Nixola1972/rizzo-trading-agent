@@ -1928,7 +1928,7 @@ def is_simulation_paused() -> bool:
     return simulation_paused
 
 
-def run_dashboard(host: str = "0.0.0.0", port: int = 5050, debug: bool = False):
+def run_dashboard(host: str = "0.0.0.0", port: int = 5055, debug: bool = False):
     """Run the dashboard server."""
     init_dashboard()
     app.run(host=host, port=port, debug=debug, threaded=True)
