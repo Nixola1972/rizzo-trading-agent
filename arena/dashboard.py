@@ -777,19 +777,29 @@ DASHBOARD_HTML = """
         </div>
 
         <div class="refresh-info">
-            Auto-refresh every 30 seconds • Last update: {{ now }}
+            Auto-refresh every 60 seconds • Last update: {{ now }}
         </div>
     </div>
 
     <!-- Essential UI functions - separate script to ensure they load even if charts fail -->
     <script>
-        // Tab switching
+        // Tab switching - preserves tab in URL hash for refresh
         function showTab(tabId) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             document.querySelector(`[onclick="showTab('${tabId}')"]`).classList.add('active');
             document.getElementById(tabId).classList.add('active');
+            // Save current tab to URL hash for persistence across refresh
+            window.location.hash = tabId;
         }
+
+        // Restore tab from URL hash on page load
+        (function() {
+            const hash = window.location.hash.substring(1);
+            if (hash && document.getElementById(hash)) {
+                showTab(hash);
+            }
+        })();
 
         // Toggle functions
         function toggleSimulation() {
@@ -874,8 +884,8 @@ DASHBOARD_HTML = """
                 });
         }
 
-        // Auto-refresh
-        setTimeout(() => location.reload(), 30000);
+        // Auto-refresh every 60 seconds (preserves current tab via URL hash)
+        setTimeout(() => location.reload(), 60000);
     </script>
 
     <!-- Charts - separate script so chart errors don't break UI functions -->
