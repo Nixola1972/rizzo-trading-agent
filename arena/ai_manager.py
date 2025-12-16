@@ -25,6 +25,16 @@ from .models import (
 # Configure logging
 logger = logging.getLogger("arena.ai_manager")
 
+# Reasoning mode for supported models (DeepSeek, etc.)
+AI_REASONING_ENABLED = os.environ.get("AI_REASONING_ENABLED", "true").lower() == "true"
+
+# Models that support reasoning mode
+REASONING_MODELS = [
+    "deepseek/deepseek-v3.2-speciale",
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-reasoner",
+]
+
 
 class AIManager:
     """
@@ -237,6 +247,11 @@ Be concise and focus on key indicators."""
             "max_tokens": 500,
         }
 
+        # Add reasoning parameter for supported models (DeepSeek, etc.)
+        if AI_REASONING_ENABLED and any(rm in model for rm in REASONING_MODELS):
+            payload["reasoning"] = {"enabled": True}
+            logger.debug(f"Reasoning mode enabled for {model}")
+
         try:
             response = requests.post(
                 f"{self.api_base}/chat/completions",
@@ -250,13 +265,25 @@ Be concise and focus on key indicators."""
                 return None
 
             data = response.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            message = data.get("choices", [{}])[0].get("message", {})
+            content = message.get("content", "")
+
+            # Check for reasoning details (DeepSeek reasoning mode)
+            reasoning_details = message.get("reasoning_details")
+            if reasoning_details:
+                # Log the reasoning process (truncated)
+                reasoning_text = str(reasoning_details)[:300]
+                logger.info(f"AI [{model.split('/')[-1]}] reasoning: {reasoning_text}...")
 
             # Log raw response for debugging (INFO level to see in logs)
             if content:
                 logger.info(f"AI [{model.split('/')[-1]}] response: {content[:150]}...")
             else:
-                logger.warning(f"AI [{model.split('/')[-1]}] returned EMPTY response!")
+                # Check if reasoning is available but content is empty
+                if reasoning_details:
+                    logger.warning(f"AI [{model.split('/')[-1]}] has reasoning but EMPTY content!")
+                else:
+                    logger.warning(f"AI [{model.split('/')[-1]}] returned EMPTY response!")
 
             # Try to parse JSON from response
             result = self._extract_json(content)
