@@ -1255,7 +1255,7 @@ def get_analytics_data() -> Dict[str, Any]:
                         "model_name": r.model_name,
                         "total_trades": r.total_trades,
                         "win_rate": r.win_rate,
-                        "profit_factor": r.profit_factor,
+                        "profit_factor": r.profit_factor if r.profit_factor != float('inf') else 999.99,
                         "total_pnl_usd": r.total_pnl_usd,
                     }
                     for r in report.ai_rankings
