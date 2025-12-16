@@ -1434,10 +1434,12 @@ def api_change_variant_model(variant_id):
         with open(variants_path, 'w') as f:
             json.dump(variants_data, f, indent=2)
 
-        # Update the sub-variant in database
-        old_sv_id = f"{variant_id}_{new_model.split('/')[-1]}"
         model_short = new_model.split('/')[-1]
         new_sv_id = f"{variant_id}_{model_short}"
+
+        # Update variant's ai_models in database
+        db.update_variant_ai_models(variant_id, [new_model])
+        logger.info(f"Updated variant {variant_id} ai_models in DB to: {new_model}")
 
         # Delete old sub-variant and create new one
         db.delete_sub_variant_by_variant(variant_id)
@@ -1455,7 +1457,7 @@ def api_change_variant_model(variant_id):
         return jsonify({
             "success": True,
             "model": new_model,
-            "message": f"Modello cambiato a {model_short}. Riavvia Arena per applicare."
+            "message": f"Modello cambiato a {model_short}. Refresh page per vedere."
         })
 
     except Exception as e:

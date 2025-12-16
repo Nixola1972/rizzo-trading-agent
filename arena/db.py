@@ -369,6 +369,17 @@ class ArenaDB:
             conn.commit()
             return cursor.rowcount > 0
 
+    def update_variant_ai_models(self, variant_id: str, ai_models: list) -> bool:
+        """Update the ai_models list for a variant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE arena_variants SET ai_models = ? WHERE id = ?",
+                (json.dumps(ai_models), variant_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
     def _row_to_variant(self, row: sqlite3.Row) -> Variant:
         """Convert database row to Variant object."""
         trading_params = TradingParams.from_dict(json.loads(row["trading_params"] or "{}"))
