@@ -77,6 +77,17 @@ MODELS_WITH_JSON_SUPPORT = [
     'anthropic/claude-3-sonnet',
 ]
 
+# Modelli che supportano reasoning mode (OpenRouter)
+# Abilita il ragionamento step-by-step per decisioni migliori
+MODELS_WITH_REASONING = [
+    'deepseek/deepseek-v3.2-speciale',
+    'deepseek/deepseek-chat',
+    'deepseek/deepseek-reasoner',
+]
+
+# Config per abilitare reasoning
+AI_REASONING_ENABLED = os.getenv('AI_REASONING_ENABLED', 'true').lower() == 'true'
+
 # Modelli che NON supportano response_format ma possono comunque produrre JSON
 # Questi sono modelli 2025 più recenti e performanti
 MODELS_WITHOUT_JSON_SUPPORT = [
@@ -322,6 +333,13 @@ def call_ai_api(prompt, use_json_format=True, max_retries=None, signal_scores=No
             else:
                 if attempt == 0:
                     print(f"   📝 Usando parsing JSON manuale (modello: {MODEL})")
+
+            # Aggiungi reasoning per modelli che lo supportano (OpenRouter)
+            if AI_REASONING_ENABLED and AI_PROVIDER == 'openrouter':
+                if any(rm in MODEL for rm in MODELS_WITH_REASONING):
+                    call_params["extra_body"] = {"reasoning": {"enabled": True}}
+                    if attempt == 0:
+                        print(f"   🧠 Reasoning mode ATTIVO per {MODEL}")
 
             # Chiamata API con timing
             start_time = time.time()
