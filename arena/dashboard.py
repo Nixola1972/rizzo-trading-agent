@@ -11,6 +11,7 @@ Features:
 
 import os
 import json
+import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from flask import Flask, render_template_string, jsonify, request
@@ -19,6 +20,24 @@ from .db import ArenaDB
 from .config_loader import load_variants
 from .metrics import calculate_metrics, get_leaderboard
 from .models import TradeDirection
+
+
+def sanitize_for_json(obj):
+    """
+    Recursively sanitize an object to ensure it's JSON-serializable.
+    Replaces inf, -inf, nan with safe values.
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(item) for item in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj):
+            return 0.0
+        elif math.isinf(obj):
+            return 999.99 if obj > 0 else -999.99
+        return obj
+    return obj
 
 
 # Flask app
@@ -868,16 +887,16 @@ def dashboard():
     ai_leaderboard = get_ai_leaderboard()
     positions = get_positions_data()
     recent_trades = get_recent_trades_data()
-    ai_chart_data = get_ai_chart_data()
-    strategy_chart_data = get_strategy_chart_data()
-    analytics = get_analytics_data()
+    ai_chart_data = sanitize_for_json(get_ai_chart_data())
+    strategy_chart_data = sanitize_for_json(get_strategy_chart_data())
+    analytics = sanitize_for_json(get_analytics_data())
 
     return render_template_string(
         DASHBOARD_HTML,
-        stats=stats,
-        variants=variants,
-        ai_models=ai_models,
-        ai_leaderboard=ai_leaderboard,
+        stats=sanitize_for_json(stats),
+        variants=sanitize_for_json(variants),
+        ai_models=sanitize_for_json(ai_models),
+        ai_leaderboard=sanitize_for_json(ai_leaderboard),
         positions=positions,
         recent_trades=recent_trades,
         ai_chart_data=ai_chart_data,
