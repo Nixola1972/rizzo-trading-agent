@@ -63,10 +63,15 @@ app = Flask(__name__)
 
 
 def safe_json_filter(obj):
-    """Custom Jinja filter for safe JSON encoding that handles inf/nan."""
+    """Custom Jinja filter for safe JSON encoding that handles inf/nan and HTML."""
     from markupsafe import Markup
     sanitized = sanitize_for_json(obj)
-    return Markup(json.dumps(sanitized, ensure_ascii=False, default=str))
+    # Use ensure_ascii=True to escape all non-ASCII characters
+    # Then escape HTML-unsafe characters for inline script safety
+    json_str = json.dumps(sanitized, ensure_ascii=True, default=str)
+    # Escape characters that could break inline <script> tags
+    json_str = json_str.replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+    return Markup(json_str)
 
 
 # Register the custom filter
@@ -776,6 +781,7 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
+    <!-- Essential UI functions - separate script to ensure they load even if charts fail -->
     <script>
         // Tab switching
         function showTab(tabId) {
@@ -868,34 +874,44 @@ DASHBOARD_HTML = """
                 });
         }
 
-        // Charts
-        const aiData = {{ ai_chart_data | safejson }};
-        const stratData = {{ strategy_chart_data | safejson }};
-
-        const chartOptions = {
-            responsive: true,
-            interaction: { mode: 'index', intersect: false },
-            plugins: { legend: { labels: { color: '#888' } } },
-            scales: {
-                x: { grid: { color: '#333' }, ticks: { color: '#888' } },
-                y: { grid: { color: '#333' }, ticks: { color: '#888', callback: v => '$' + v.toFixed(2) } }
-            }
-        };
-
-        new Chart(document.getElementById('aiBattleChart').getContext('2d'), {
-            type: 'line',
-            data: { labels: aiData.labels, datasets: aiData.datasets },
-            options: chartOptions
-        });
-
-        new Chart(document.getElementById('strategiesChart').getContext('2d'), {
-            type: 'line',
-            data: { labels: stratData.labels, datasets: stratData.datasets },
-            options: chartOptions
-        });
-
         // Auto-refresh
         setTimeout(() => location.reload(), 30000);
+    </script>
+
+    <!-- Charts - separate script so chart errors don't break UI functions -->
+    <script>
+        try {
+            const aiData = {{ ai_chart_data | safejson }};
+            const stratData = {{ strategy_chart_data | safejson }};
+
+            const chartOptions = {
+                responsive: true,
+                interaction: { mode: 'index', intersect: false },
+                plugins: { legend: { labels: { color: '#888' } } },
+                scales: {
+                    x: { grid: { color: '#333' }, ticks: { color: '#888' } },
+                    y: { grid: { color: '#333' }, ticks: { color: '#888', callback: v => '$' + v.toFixed(2) } }
+                }
+            };
+
+            if (typeof Chart !== 'undefined') {
+                new Chart(document.getElementById('aiBattleChart').getContext('2d'), {
+                    type: 'line',
+                    data: { labels: aiData.labels || [], datasets: aiData.datasets || [] },
+                    options: chartOptions
+                });
+
+                new Chart(document.getElementById('strategiesChart').getContext('2d'), {
+                    type: 'line',
+                    data: { labels: stratData.labels || [], datasets: stratData.datasets || [] },
+                    options: chartOptions
+                });
+            } else {
+                console.warn('Chart.js not loaded - charts disabled');
+            }
+        } catch (e) {
+            console.error('Chart initialization error:', e);
+        }
     </script>
 </body>
 </html>
