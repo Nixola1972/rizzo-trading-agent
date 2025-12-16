@@ -833,7 +833,7 @@ DASHBOARD_HTML = """
                     if (d.success) {
                         btn.textContent = '✓ Applicato!';
                         btn.classList.add('applied');
-                        alert(`✅ ${d.message}\n\nModifiche:\n${d.changes.join('\n')}`);
+                        alert(`✅ ${d.message}\\n\\nModifiche:\\n${d.changes.join('\\n')}`);
                     } else {
                         btn.textContent = '❌ Errore';
                         btn.disabled = false;
@@ -858,8 +858,8 @@ DASHBOARD_HTML = """
                 .then(r => r.json())
                 .then(d => {
                     if (d.success) {
-                        alert(`✅ Applicate ${d.applied}/${d.total} raccomandazioni!\n\n` +
-                              d.results.map(r => `${r.success ? '✓' : '✗'} ${r.message}`).join('\n'));
+                        alert(`✅ Applicate ${d.applied}/${d.total} raccomandazioni!\\n\\n` +
+                              d.results.map(r => `${r.success ? '✓' : '✗'} ${r.message}`).join('\\n'));
                         location.reload();
                     } else {
                         btn.textContent = '❌ Errore';
