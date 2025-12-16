@@ -8,7 +8,7 @@
       "description": "Configurazione baseline con DeepSeek V3 (modello principale)",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
+      "ai_models": ["deepseek/deepseek-chat"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -48,7 +48,7 @@
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-chat",
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5",
         "qwen/qwen3-max",
@@ -77,7 +77,7 @@
       "description": "SL intelligente controllato da AI",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
+      "ai_models": ["deepseek/deepseek-chat"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -102,7 +102,7 @@
       "description": "Pesi e periodi indicatori diversi",
       "enabled": true,
       "operation_mode": "SCORE_TRIGGERED",
-      "ai_models": ["deepseek/deepseek-v3.2-speciale"],
+      "ai_models": ["deepseek/deepseek-chat"],
       "trading_params": {
         "position_size_usd": 50.0,
         "leverage": 3,
@@ -142,7 +142,7 @@
       "enabled": true,
       "operation_mode": "AI_INDEPENDENT",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-chat",
         "tngtech/deepseek-r1t2-chimera:free"
       ],
       "trading_params": {
