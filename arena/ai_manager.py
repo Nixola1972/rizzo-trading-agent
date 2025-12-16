@@ -252,8 +252,18 @@ Be concise and focus on key indicators."""
             data = response.json()
             content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
+            # Log raw response for debugging
+            if content:
+                logger.debug(f"AI raw response: {content[:300]}")
+
             # Try to parse JSON from response
-            return self._extract_json(content)
+            result = self._extract_json(content)
+
+            # If no reason extracted, use first 200 chars of content as reason
+            if result and not result.get("reason"):
+                result["reason"] = content[:200] if content else "No response"
+
+            return result
 
         except requests.exceptions.Timeout:
             logger.warning(f"AI call timeout for model {model}")
@@ -264,29 +274,49 @@ Be concise and focus on key indicators."""
 
     def _extract_json(self, content: str) -> Optional[Dict[str, Any]]:
         """Extract JSON from AI response."""
+        import re
+
         # Try direct parse
         try:
             return json.loads(content)
         except json.JSONDecodeError:
             pass
 
-        # Try to find JSON in content
-        import re
-        json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+        # Try to find JSON block (handles nested braces better)
+        # Look for ```json ... ``` blocks first
+        json_block = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+        if json_block:
+            try:
+                return json.loads(json_block.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Try to find JSON object with nested content
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group())
             except json.JSONDecodeError:
                 pass
 
-        # Return structured response from plain text
+        # Simpler pattern as fallback
+        json_match = re.search(r'\{.*?\}', content, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+
+        # Return structured response from plain text with full reason
         content_lower = content.lower()
-        if "open" in content_lower or "buy" in content_lower or "long" in content_lower:
-            return {"operation": "open", "reason": content[:100]}
+        reason = content[:200] if content else "No clear response"
+
+        if "open" in content_lower or "buy" in content_lower:
+            return {"operation": "open", "reason": reason}
         elif "close" in content_lower or "sell" in content_lower:
-            return {"operation": "close", "reason": content[:100]}
+            return {"operation": "close", "reason": reason}
         else:
-            return {"operation": "hold", "reason": content[:100]}
+            return {"operation": "hold", "reason": reason}
 
     def _build_validation_prompt(
         self,
