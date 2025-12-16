@@ -1997,17 +1997,16 @@ def get_strategy_chart_data() -> Dict[str, Any]:
     """Get chart data for strategy comparison using equity snapshots."""
     colors = ['#00d4ff', '#00ff88', '#ff4444', '#ffaa00', '#aa44ff']
     datasets = []
-    labels = []
 
     # Get all snapshots for the last 24 hours
     all_snapshots = db.get_all_equity_snapshots(hours=24)
-
     variants = load_variants(db)
 
-    for i, v in enumerate(variants):
-        # Aggregate snapshots for all sub-variants in this variant
-        # FIX: Use AVERAGE instead of SUM for fair comparison between variants
-        # FIX2: Bucket timestamps to minute to group snapshots from different sub-variants
+    # FIRST PASS: Collect all unique timestamps globally and build per-variant equity maps
+    global_timestamps = set()
+    variant_data = {}  # variant_id -> {timestamp: equity}
+
+    for v in variants:
         variant_equity = {}  # timestamp_bucket -> {"total_pnl": float, "count": int}
 
         for sv in v.sub_variants:
@@ -2021,56 +2020,72 @@ def get_strategy_chart_data() -> Dict[str, Any]:
                 except Exception:
                     ts_bucket = ts[:16] + ":00"  # Fallback: truncate to minute
 
+                global_timestamps.add(ts_bucket)
+
                 if ts_bucket not in variant_equity:
                     variant_equity[ts_bucket] = {"total_pnl": 0.0, "count": 0}
-                # Track P&L and count for averaging
                 pnl = snap["total_equity"] - STARTING_CAPITAL
                 variant_equity[ts_bucket]["total_pnl"] += pnl
                 variant_equity[ts_bucket]["count"] += 1
 
-        if variant_equity:
-            # Sort by timestamp and build equity curve
-            sorted_ts = sorted(variant_equity.keys())
+        # Convert to final equity values
+        equity_map = {}
+        for ts, data in variant_equity.items():
+            if data["count"] > 0:
+                avg_pnl = data["total_pnl"] / data["count"]
+                equity_map[ts] = round(STARTING_CAPITAL + avg_pnl, 2)
+
+        variant_data[v.id] = {
+            "name": v.name,
+            "equity_map": equity_map
+        }
+
+    # Sort global timestamps chronologically
+    sorted_global_ts = sorted(global_timestamps)
+
+    # Build labels from sorted global timestamps
+    labels = []
+    for ts in sorted_global_ts:
+        try:
+            dt = datetime.fromisoformat(ts)
+            labels.append(dt.strftime("%H:%M"))
+        except Exception:
+            labels.append("")
+
+    # SECOND PASS: Build datasets using global timestamps
+    for i, v in enumerate(variants):
+        vdata = variant_data.get(v.id, {})
+        equity_map = vdata.get("equity_map", {})
+
+        if equity_map:
+            # Build equity curve aligned to global timestamps
             equity = []
-            for ts in sorted_ts:
-                # Calculate AVERAGE equity across sub-variants
-                data = variant_equity[ts]
-                if data["count"] > 0:
-                    avg_pnl = data["total_pnl"] / data["count"]
-                    avg_equity = STARTING_CAPITAL + avg_pnl
-                else:
-                    avg_equity = STARTING_CAPITAL
-                equity.append(round(avg_equity, 2))
-                if len(labels) < len(equity):
-                    try:
-                        dt = datetime.fromisoformat(ts)
-                        labels.append(dt.strftime("%H:%M"))
-                    except Exception:
-                        labels.append("")
+            last_equity = STARTING_CAPITAL
+
+            for ts in sorted_global_ts:
+                if ts in equity_map:
+                    last_equity = equity_map[ts]
+                equity.append(last_equity)
         else:
-            # Fallback to trade-based if no snapshots yet
+            # Fallback to trade-based if no snapshots
             trades = db.get_trades_for_variant(v.id, limit=1000)
             trades.sort(key=lambda t: t.exit_time or datetime.min)
 
-            equity = [STARTING_CAPITAL]
+            equity = []
             cumulative = STARTING_CAPITAL
 
+            # Fill with starting capital up to global length
+            if sorted_global_ts:
+                for _ in sorted_global_ts:
+                    equity.append(STARTING_CAPITAL)
+            else:
+                equity = [STARTING_CAPITAL]
+
+            # Apply trade P&L (simplified)
             for t in trades:
                 cumulative += t.pnl_usd
-                equity.append(cumulative)
-                if t.exit_time and len(labels) < len(equity):
-                    labels.append(t.exit_time.strftime("%H:%M"))
-
-            # Add unrealized P&L from open positions
-            open_positions = db.get_positions_for_variant(v.id)
-            unrealized_pnl = sum(p.current_pnl_usd for p in open_positions)
-            if unrealized_pnl != 0 or open_positions:
-                equity.append(cumulative + unrealized_pnl)
-                if len(labels) < len(equity):
-                    labels.append("Now")
-
-        while len(labels) < len(equity):
-            labels.append("")
+            if equity:
+                equity[-1] = cumulative  # Last point shows current state
 
         color = colors[i % len(colors)]
         datasets.append({
@@ -2079,12 +2094,16 @@ def get_strategy_chart_data() -> Dict[str, Any]:
             "borderColor": color,
             "backgroundColor": "transparent",
             "tension": 0.4,
-            "pointRadius": 0,  # Hide points for cleaner look
+            "pointRadius": 0,
         })
 
     # Add "Start" label if no data
     if not labels:
         labels = ["Start"]
+        # Ensure each dataset has at least one point
+        for ds in datasets:
+            if not ds["data"]:
+                ds["data"] = [STARTING_CAPITAL]
 
     return {"labels": labels, "datasets": datasets}
 
