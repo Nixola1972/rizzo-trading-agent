@@ -269,7 +269,7 @@ class AIAnalyzer:
 ### Riepilogo Generale
 - Trade totali: {data['total_trades']}
 - P&L totale: ${data['total_pnl_usd']:.2f}
-- Win rate: {data['win_rate']:.1%}
+- Win rate: {data['win_rate']:.1f}%
 - Profit factor: {data['profit_factor']:.2f}
 
 ### Performance per Modello AI
