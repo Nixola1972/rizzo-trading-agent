@@ -3497,6 +3497,11 @@ def get_best_v6_model() -> Optional[Dict[str, Any]]:
                                         break
                     break
 
+    # Fallback: if no variant found, use V6_FAST_MODERATE as default
+    if best_variant_id is None:
+        best_variant_id = "V6_FAST_MODERATE"
+        best_prompt_style = "moderate"
+
     return {
         "id": model_id or best["ai_model"],
         "name": best["ai_model"],
@@ -3504,7 +3509,7 @@ def get_best_v6_model() -> Optional[Dict[str, Any]]:
         "win_rate": best["win_rate"],
         "pnl": best["total_pnl_usd"],
         "variant_id": best_variant_id,
-        "prompt_style": best_prompt_style,
+        "prompt_style": best_prompt_style or "moderate",
     }
 
 
