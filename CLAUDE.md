@@ -723,7 +723,7 @@ CREATE TABLE arena_sub_variants (
 );
 ```
 
-### Modelli AI Configurati (V2_MULTI_AI Battle)
+### Modelli AI Configurati (V2_MULTI_AI Battle - Legacy)
 
 | AI Model | Provider | Note |
 |----------|----------|------|
@@ -733,6 +733,140 @@ CREATE TABLE arena_sub_variants (
 | `openai/gpt-oss-120b` | OpenAI | GPT open source |
 | `qwen/qwen3-max` | Alibaba | Qwen premium |
 | `qwen/qwen3-235b-a22b:free` | Alibaba | Qwen gratuito |
+
+### V6 AI Battle System (Attivo)
+
+Il sistema V6 è la nuova architettura per testare AI models su diverse strategie e timeframe.
+
+#### Varianti V6
+
+| Variant | Timeframe | Stile | Descrizione |
+|---------|-----------|-------|-------------|
+| `V6_FAST_PRUDENT` | 5min | Prudente | Alta frequenza, basso rischio |
+| `V6_FAST_MODERATE` | 5min | Moderato | Bilanciato |
+| `V6_FAST_AGGRESSIVE` | 5min | Aggressivo | Alto rischio/rendimento |
+| `V6_MEDIUM_PRUDENT` | 15min | Prudente | Medio termine, conservativo |
+| `V6_MEDIUM_MODERATE` | 15min | Moderato | Approccio bilanciato |
+| `V6_MEDIUM_AGGRESSIVE` | 15min | Aggressivo | Trend following aggressivo |
+| `V6_MACRO_TREND` | 1h | Trend | Macro trend following |
+
+#### Modelli AI V6 (8 per variante)
+
+| AI Model | Provider | Note |
+|----------|----------|------|
+| `deepseek/deepseek-v3.2-speciale` | DeepSeek | Principale, ottimizzato |
+| `deepseek/deepseek-r1t2-chimera:free` | DeepSeek | Gratuito |
+| `qwen/qwen3-235b-a22b:free` | Alibaba | Qwen gratuito |
+| `deepseek/deepseek-chat` | DeepSeek | Chat model |
+| `openai/gpt-oss-120b` | OpenAI | GPT open source |
+| `qwen/qwen3-max` | Alibaba | Qwen premium |
+| `x-ai/grok-4.1-fast` | xAI | Grok veloce |
+| `anthropic/claude-haiku-4.5` | Anthropic | Claude economico |
+
+#### Configurazione Default
+
+- **Tutte le varianti disabilitate di default** - Attivazione manuale dalla dashboard
+- **Toggle persistente nel database** - Le modifiche sopravvivono ai restart
+- **Dashboard mostra**: Win Rate (W/L), API Calls, Errori per ogni modello
+
+### Threading Architecture
+
+Il simulator usa **thread separati e indipendenti** per FAST e SLOW loop:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    DUAL-THREAD ARCHITECTURE                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌─────────────────────────────┐   ┌─────────────────────────────┐        │
+│   │     SLOW LOOP THREAD        │   │     FAST LOOP THREAD        │        │
+│   ├─────────────────────────────┤   ├─────────────────────────────┤        │
+│   │ • Ogni 60 secondi           │   │ • Ogni 5 secondi            │        │
+│   │ • Calcola score             │   │ • Aggiorna prezzi           │        │
+│   │ • Chiama AI (può bloccare   │   │ • Calcola P&L real-time     │        │
+│   │   per 20-30s)               │   │ • Check SL/TP               │        │
+│   │ • Apre nuove posizioni      │   │ • Trailing stop             │        │
+│   │ • Analytics                 │   │ • Equity snapshots          │        │
+│   └─────────────────────────────┘   └─────────────────────────────┘        │
+│              │                                   │                          │
+│              └───────────────┬───────────────────┘                          │
+│                              │                                              │
+│                   INDIPENDENTI (no blocking)                                │
+│                                                                             │
+│   Problema risolto:                                                         │
+│   Prima: SLOW bloccava FAST → posizioni mostravano $0.00                    │
+│   Ora: Thread separati → prezzi sempre aggiornati                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Implementazione (simulator.py)
+
+```python
+def start(self, blocking: bool = True) -> None:
+    """Start simulation with separate threads for fast/slow loops."""
+    if not blocking:
+        # Non-blocking: start both loops in separate threads
+        self._fast_thread = threading.Thread(target=self._run_fast_loop, daemon=True)
+        self._slow_thread = threading.Thread(target=self._run_slow_loop, daemon=True)
+        self._fast_thread.start()
+        self._slow_thread.start()
+```
+
+### Toggle State Persistence
+
+I toggle dei modelli AI ora **salvano nel database SQLite**, non nel file JSON:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    TOGGLE PERSISTENCE FLOW                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   1. Utente clicca toggle nella dashboard                                   │
+│      └─ POST /api/v6/model/toggle { family: "FAST", model_id: "...", ... }  │
+│                                                                             │
+│   2. API chiama db.toggle_sub_variant(sub_variant_id, enabled)              │
+│      └─ UPDATE arena_sub_variants SET enabled = ? WHERE id = ?              │
+│                                                                             │
+│   3. Al refresh pagina, get_v6_model_controls() legge dal DB                │
+│      └─ SELECT enabled FROM arena_sub_variants WHERE id = ?                 │
+│                                                                             │
+│   Risultato: Toggle persistente anche dopo restart container                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Dashboard V6 Features
+
+La dashboard V6 mostra statistiche dettagliate per ogni modello AI:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  🤖 V6 AI Model Controls                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  V6 Fast (5min) - High frequency trading                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  deepseek-v3.2-speciale    [ON]                                      │   │
+│  │  25 trades | 68.0% WR                                                │   │
+│  │  📊 WR: 68.0% (17W / 8L) | 📞 API: 142 | ❌ Err: 2                    │   │
+│  ├─────────────────────────────────────────────────────────────────────┤   │
+│  │  claude-haiku-4.5          [OFF]                                     │   │
+│  │  18 trades | 55.5% WR                                                │   │
+│  │  📊 WR: 55.5% (10W / 8L) | 📞 API: 98 | ❌ Err: 0                     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  V6 Leaderboard                                                             │
+│  ┌───────┬──────────────────────┬────────┬────────┬─────────┬───────────┐   │
+│  │ Rank  │ AI Model             │ Trades │ W/L    │ P&L     │ API Calls │   │
+│  ├───────┼──────────────────────┼────────┼────────┼─────────┼───────────┤   │
+│  │ 🥇 1  │ deepseek-v3.2        │ 25     │ 17/8   │ +$15.42 │ 142       │   │
+│  │ 🥈 2  │ qwen3-max            │ 22     │ 14/8   │ +$8.75  │ 120       │   │
+│  │ 🥉 3  │ grok-4.1-fast        │ 20     │ 11/9   │ +$3.20  │ 105       │   │
+│  └───────┴──────────────────────┴────────┴────────┴─────────┴───────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ### Environment Variables (.env)
 
