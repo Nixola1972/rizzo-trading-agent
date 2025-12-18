@@ -8,9 +8,9 @@
       "cost_tier": "free",
       "default_enabled": true
     },
-    "qwen_free": {
-      "id": "qwen/qwen3-235b-a22b:free",
-      "name": "Qwen 235B (FREE)",
+    "glm_exacto": {
+      "id": "z-ai/glm-4.6:exacto",
+      "name": "GLM 4.6 Exacto",
       "cost_tier": "free",
       "default_enabled": true
     },
@@ -20,9 +20,9 @@
       "cost_tier": "low",
       "default_enabled": true
     },
-    "deepseek_speciale": {
-      "id": "deepseek/deepseek-v3.2-speciale",
-      "name": "DeepSeek V3.2 Speciale",
+    "deepseek_exp": {
+      "id": "deepseek/deepseek-v3.2-exp",
+      "name": "DeepSeek V3.2 Exp",
       "cost_tier": "low",
       "default_enabled": true
     },
@@ -32,9 +32,9 @@
       "cost_tier": "medium",
       "default_enabled": true
     },
-    "qwen_max": {
-      "id": "qwen/qwen3-max",
-      "name": "Qwen3 Max",
+    "qwen_2507": {
+      "id": "qwen/qwen3-235b-a22b-2507",
+      "name": "Qwen3 235B 2507",
       "cost_tier": "medium",
       "default_enabled": true
     },
@@ -44,9 +44,9 @@
       "cost_tier": "high",
       "default_enabled": true
     },
-    "claude_haiku": {
-      "id": "anthropic/claude-haiku-4.5",
-      "name": "Claude Haiku 4.5",
+    "kimi_k2": {
+      "id": "moonshotai/kimi-k2-0905",
+      "name": "Kimi K2",
       "cost_tier": "high",
       "default_enabled": true
     }
@@ -83,11 +83,11 @@
       "enabled": false,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-v3.2-exp",
         "deepseek/deepseek-chat",
         "x-ai/grok-4.1-fast",
-        "anthropic/claude-haiku-4.5",
-        "qwen/qwen3-max",
+        "moonshotai/kimi-k2-0905",
+        "qwen/qwen3-235b-a22b-2507",
         "tngtech/deepseek-r1t2-chimera:free",
         "openai/gpt-oss-120b"
       ],
@@ -143,14 +143,14 @@
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "PRUDENT",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-v3.2-exp",
         "tngtech/deepseek-r1t2-chimera:free",
-        "qwen/qwen3-235b-a22b:free",
+        "z-ai/glm-4.6:exacto",
         "deepseek/deepseek-chat",
         "openai/gpt-oss-120b",
-        "qwen/qwen3-max",
+        "qwen/qwen3-235b-a22b-2507",
         "x-ai/grok-4.1-fast",
-        "anthropic/claude-haiku-4.5"
+        "moonshotai/kimi-k2-0905"
       ],
       "disabled_models": [],
       "trading_params": {
@@ -181,14 +181,14 @@
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "MODERATE",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-v3.2-exp",
         "tngtech/deepseek-r1t2-chimera:free",
-        "qwen/qwen3-235b-a22b:free",
+        "z-ai/glm-4.6:exacto",
         "deepseek/deepseek-chat",
         "openai/gpt-oss-120b",
-        "qwen/qwen3-max",
+        "qwen/qwen3-235b-a22b-2507",
         "x-ai/grok-4.1-fast",
-        "anthropic/claude-haiku-4.5"
+        "moonshotai/kimi-k2-0905"
       ],
       "disabled_models": [],
       "trading_params": {
@@ -219,14 +219,14 @@
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "AGGRESSIVE",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-v3.2-exp",
         "tngtech/deepseek-r1t2-chimera:free",
-        "qwen/qwen3-235b-a22b:free",
+        "z-ai/glm-4.6:exacto",
         "deepseek/deepseek-chat",
         "openai/gpt-oss-120b",
-        "qwen/qwen3-max",
+        "qwen/qwen3-235b-a22b-2507",
         "x-ai/grok-4.1-fast",
-        "anthropic/claude-haiku-4.5"
+        "moonshotai/kimi-k2-0905"
       ],
       "disabled_models": [],
       "trading_params": {
@@ -257,14 +257,14 @@
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "PRUDENT",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-v3.2-exp",
         "tngtech/deepseek-r1t2-chimera:free",
-        "qwen/qwen3-235b-a22b:free",
+        "z-ai/glm-4.6:exacto",
         "deepseek/deepseek-chat",
         "openai/gpt-oss-120b",
-        "qwen/qwen3-max",
+        "qwen/qwen3-235b-a22b-2507",
         "x-ai/grok-4.1-fast",
-        "anthropic/claude-haiku-4.5"
+        "moonshotai/kimi-k2-0905"
       ],
       "disabled_models": [],
       "trading_params": {
@@ -295,14 +295,14 @@
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "MODERATE",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-v3.2-exp",
         "tngtech/deepseek-r1t2-chimera:free",
-        "qwen/qwen3-235b-a22b:free",
+        "z-ai/glm-4.6:exacto",
         "deepseek/deepseek-chat",
         "openai/gpt-oss-120b",
-        "qwen/qwen3-max",
+        "qwen/qwen3-235b-a22b-2507",
         "x-ai/grok-4.1-fast",
-        "anthropic/claude-haiku-4.5"
+        "moonshotai/kimi-k2-0905"
       ],
       "disabled_models": [],
       "trading_params": {
@@ -333,14 +333,14 @@
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "AGGRESSIVE",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-v3.2-exp",
         "tngtech/deepseek-r1t2-chimera:free",
-        "qwen/qwen3-235b-a22b:free",
+        "z-ai/glm-4.6:exacto",
         "deepseek/deepseek-chat",
         "openai/gpt-oss-120b",
-        "qwen/qwen3-max",
+        "qwen/qwen3-235b-a22b-2507",
         "x-ai/grok-4.1-fast",
-        "anthropic/claude-haiku-4.5"
+        "moonshotai/kimi-k2-0905"
       ],
       "disabled_models": [],
       "trading_params": {
@@ -371,14 +371,14 @@
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "MACRO",
       "ai_models": [
-        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-v3.2-exp",
         "tngtech/deepseek-r1t2-chimera:free",
-        "qwen/qwen3-235b-a22b:free",
+        "z-ai/glm-4.6:exacto",
         "deepseek/deepseek-chat",
         "openai/gpt-oss-120b",
-        "qwen/qwen3-max",
+        "qwen/qwen3-235b-a22b-2507",
         "x-ai/grok-4.1-fast",
-        "anthropic/claude-haiku-4.5"
+        "moonshotai/kimi-k2-0905"
       ],
       "disabled_models": [],
       "trading_params": {
