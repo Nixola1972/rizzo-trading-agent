@@ -199,19 +199,31 @@ class ArenaSimulator:
             return
 
         # Group by symbol for efficient price fetching
-        symbols = set(p.symbol for p in positions)
-        prices = self._get_prices(list(symbols))
+        symbols = list(set(p.symbol for p in positions))
+        logger.debug(f"Fast loop: {len(positions)} positions, symbols: {symbols}")
 
+        prices = self._get_prices(symbols)
+
+        if not prices:
+            logger.warning(f"Fast loop: No prices returned for {symbols}")
+            return
+
+        updated_count = 0
         for position in positions:
             try:
                 price = prices.get(position.symbol)
                 if not price:
+                    logger.warning(f"No price for {position.symbol}, skipping position {position.id}")
                     continue
 
                 self._process_position(position, price)
+                updated_count += 1
 
             except Exception as e:
                 logger.error(f"Error processing position {position.id}: {e}")
+
+        if updated_count > 0:
+            logger.debug(f"Fast loop: Updated {updated_count}/{len(positions)} positions")
 
     def _slow_loop(self) -> None:
         """
@@ -574,11 +586,18 @@ class ArenaSimulator:
             for symbol in symbols:
                 if symbol in all_mids:
                     prices[symbol] = float(all_mids[symbol])
+                else:
+                    logger.warning(f"Price not found for {symbol}")
+
+            if not prices:
+                logger.warning(f"No prices fetched for symbols: {symbols}")
+            else:
+                logger.debug(f"Fetched prices: {prices}")
 
             return prices
 
         except Exception as e:
-            logger.warning(f"Could not get prices: {e}")
+            logger.error(f"Could not get prices: {e}", exc_info=True)
             return {}
 
     def _get_market_data(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
