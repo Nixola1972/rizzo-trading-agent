@@ -66,6 +66,8 @@ class ArenaSimulator:
         self._running = False
         self._stop_event = Event()
         self._thread: Optional[Thread] = None
+        self._fast_thread: Optional[Thread] = None
+        self._slow_thread: Optional[Thread] = None
 
         # Simulation settings
         self.loop_interval = int(os.environ.get("ARENA_LOOP_INTERVAL", 60))  # seconds
@@ -117,10 +119,15 @@ class ArenaSimulator:
         logger.info("Starting Arena Simulator...")
 
         if blocking:
-            self._run_loop()
+            self._run_loops()
         else:
-            self._thread = Thread(target=self._run_loop, daemon=True)
-            self._thread.start()
+            # Start fast loop thread (high frequency - position updates)
+            self._fast_thread = Thread(target=self._run_fast_loop, daemon=True, name="ArenaFastLoop")
+            self._fast_thread.start()
+
+            # Start slow loop thread (low frequency - AI decisions)
+            self._slow_thread = Thread(target=self._run_slow_loop, daemon=True, name="ArenaSlowLoop")
+            self._slow_thread.start()
 
     def stop(self) -> None:
         """Stop the simulation loop."""
@@ -131,15 +138,37 @@ class ArenaSimulator:
         self._stop_event.set()
         self._running = False
 
+        if hasattr(self, '_fast_thread') and self._fast_thread:
+            self._fast_thread.join(timeout=10)
+        if hasattr(self, '_slow_thread') and self._slow_thread:
+            self._slow_thread.join(timeout=10)
         if self._thread:
             self._thread.join(timeout=10)
 
-    def _run_loop(self) -> None:
-        """Main simulation loop."""
-        logger.info("Arena simulation loop started")
+    def _run_loops(self) -> None:
+        """Run both loops in single thread (blocking mode)."""
+        logger.info("Arena simulation loops started (blocking mode)")
 
         last_slow_loop = datetime.min
         slow_loop_interval = timedelta(seconds=self.loop_interval)
+
+        while not self._stop_event.is_set():
+            try:
+                now = datetime.now()
+                self._fast_loop()
+
+                if now - last_slow_loop >= slow_loop_interval:
+                    self._slow_loop()
+                    last_slow_loop = now
+
+                self._stop_event.wait(self.fast_loop_interval)
+            except Exception as e:
+                logger.error(f"Simulation loop error: {e}", exc_info=True)
+                time.sleep(5)
+
+    def _run_fast_loop(self) -> None:
+        """Fast loop thread - runs every few seconds for position updates."""
+        logger.info("[FAST] Fast loop thread started")
 
         while not self._stop_event.is_set():
             try:
@@ -147,42 +176,61 @@ class ArenaSimulator:
                 try:
                     from .dashboard import is_simulation_paused
                     if is_simulation_paused():
-                        logger.debug("Simulation paused via dashboard")
                         self._stop_event.wait(self.fast_loop_interval)
                         continue
                 except ImportError:
-                    pass  # Dashboard not running
+                    pass
 
-                now = datetime.now()
-
-                # Fast loop - check open positions
                 self._fast_loop()
 
-                # Slow loop - check for new entries
-                if now - last_slow_loop >= slow_loop_interval:
-                    self._slow_loop()
-                    last_slow_loop = now
-
                 # Equity snapshots - record every snapshot_interval
+                now = datetime.now()
                 snapshot_interval_td = timedelta(seconds=self.snapshot_interval)
                 if now - self._last_snapshot_time >= snapshot_interval_td:
                     self._record_equity_snapshots()
                     self._last_snapshot_time = now
 
+                # Sleep until next fast loop
+                self._stop_event.wait(self.fast_loop_interval)
+
+            except Exception as e:
+                logger.error(f"[FAST] Loop error: {e}", exc_info=True)
+                time.sleep(5)
+
+        logger.info("[FAST] Fast loop thread stopped")
+
+    def _run_slow_loop(self) -> None:
+        """Slow loop thread - runs every loop_interval for AI decisions."""
+        logger.info("[SLOW] Slow loop thread started")
+
+        while not self._stop_event.is_set():
+            try:
+                # Check if simulation is paused via dashboard
+                try:
+                    from .dashboard import is_simulation_paused
+                    if is_simulation_paused():
+                        self._stop_event.wait(self.loop_interval)
+                        continue
+                except ImportError:
+                    pass
+
+                self._slow_loop()
+
                 # Analytics - run every analytics_interval (default 1 hour)
+                now = datetime.now()
                 analytics_interval_td = timedelta(seconds=self.analytics_interval)
                 if now - self._last_analytics_time >= analytics_interval_td:
                     self._run_analytics()
                     self._last_analytics_time = now
 
-                # Sleep until next fast loop
-                self._stop_event.wait(self.fast_loop_interval)
+                # Sleep until next slow loop
+                self._stop_event.wait(self.loop_interval)
 
             except Exception as e:
-                logger.error(f"Simulation loop error: {e}", exc_info=True)
-                time.sleep(5)
+                logger.error(f"[SLOW] Loop error: {e}", exc_info=True)
+                time.sleep(10)
 
-        logger.info("Arena simulation loop stopped")
+        logger.info("[SLOW] Slow loop thread stopped")
 
     def _fast_loop(self) -> None:
         """
