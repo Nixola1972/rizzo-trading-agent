@@ -192,10 +192,14 @@ class ArenaSimulator:
         - Applies trailing stops
         - Checks Smart SL
         """
+        # Always log that fast loop is running (to confirm code is deployed)
+        logger.info("[FAST] Loop running...")
+
         # Get all open positions
         positions = self.db.get_all_open_positions()
 
         if not positions:
+            logger.info("[FAST] No open positions to process")
             return
 
         # Group by symbol for efficient price fetching
