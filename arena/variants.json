@@ -1,6 +1,6 @@
 {
-  "version": "2.0",
-  "description": "Arena variant configurations - V6 AI Battle System",
+  "version": "2.1",
+  "description": "Arena variant configurations - Legacy + V6 AI Battle System",
   "ai_models_registry": {
     "chimera_free": {
       "id": "tngtech/deepseek-r1t2-chimera:free",
@@ -17,6 +17,12 @@
     "deepseek_v3": {
       "id": "deepseek/deepseek-chat",
       "name": "DeepSeek V3",
+      "cost_tier": "low",
+      "default_enabled": true
+    },
+    "deepseek_speciale": {
+      "id": "deepseek/deepseek-v3.2-speciale",
+      "name": "DeepSeek V3.2 Speciale",
       "cost_tier": "low",
       "default_enabled": true
     },
@@ -47,8 +53,9 @@
   },
   "variants": [
     {
+      "_comment": "=== LEGACY VARIANTS (Sistema Originale) ===",
       "id": "V1_BASELINE",
-      "name": "Baseline DeepSeek",
+      "name": "V1 Baseline DeepSeek",
       "description": "Configurazione baseline con DeepSeek V3 (modello principale)",
       "enabled": false,
       "operation_mode": "SCORE_TRIGGERED",
@@ -70,6 +77,65 @@
       "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
     },
     {
+      "id": "V2_MULTI_AI",
+      "name": "V2 Multi AI Battle",
+      "description": "Battle tra 6 modelli AI con score threshold",
+      "enabled": true,
+      "operation_mode": "SCORE_TRIGGERED",
+      "ai_models": [
+        "deepseek/deepseek-v3.2-speciale",
+        "deepseek/deepseek-chat",
+        "x-ai/grok-4.1-fast",
+        "anthropic/claude-haiku-4.5",
+        "qwen/qwen3-max",
+        "tngtech/deepseek-r1t2-chimera:free",
+        "openai/gpt-oss-120b"
+      ],
+      "trading_params": {
+        "position_size_usd": 25.0,
+        "leverage": 5,
+        "stop_loss_pct": 4.0,
+        "take_profit_pct": 8.0,
+        "trailing_enabled": true,
+        "trailing_steps": "2.5:0.0,5.0:2.0,7.5:4.0,10.0:6.0",
+        "score_threshold_open": 15.0,
+        "double_check_ai_enabled": true,
+        "trading_style": "moderate",
+        "smart_sl_enabled": false
+      },
+      "indicator_config": {},
+      "pattern_detection_enabled": true,
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+    },
+    {
+      "id": "V5_AI_FREE",
+      "name": "V5 AI Free (Independent)",
+      "description": "AI decide liberamente ogni check, no score threshold",
+      "enabled": true,
+      "operation_mode": "AI_INDEPENDENT",
+      "ai_models": ["tngtech/deepseek-r1t2-chimera:free"],
+      "trading_params": {
+        "position_size_usd": 25.0,
+        "leverage": 5,
+        "stop_loss_pct": 4.0,
+        "take_profit_pct": 8.0,
+        "trailing_enabled": true,
+        "trailing_steps": "2.5:0.0,5.0:2.0,7.5:4.0,10.0:6.0",
+        "score_threshold_open": 0.0,
+        "double_check_ai_enabled": false,
+        "trading_style": "moderate",
+        "smart_sl_enabled": true,
+        "smart_sl_extension_pct": 1.5,
+        "smart_sl_max_extensions": 2
+      },
+      "indicator_config": {},
+      "ai_check_interval_minutes": 15,
+      "ai_independent_timeframe": "1h",
+      "pattern_detection_enabled": true,
+      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+    },
+    {
+      "_comment": "=== V6 VARIANTS (Nuovo Sistema AI Battle) ===",
       "id": "V6_FAST_PRUDENT",
       "name": "V6 Fast Prudente (5min)",
       "description": "AI Battle - Check ogni 5min, strategia prudente (WR alto)",
