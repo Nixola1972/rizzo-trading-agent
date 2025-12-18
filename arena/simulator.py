@@ -200,30 +200,32 @@ class ArenaSimulator:
 
         # Group by symbol for efficient price fetching
         symbols = list(set(p.symbol for p in positions))
-        logger.debug(f"Fast loop: {len(positions)} positions, symbols: {symbols}")
+        # Log at INFO level so it shows in production logs
+        logger.info(f"[FAST] {len(positions)} positions, fetching prices for: {symbols}")
 
         prices = self._get_prices(symbols)
 
         if not prices:
-            logger.warning(f"Fast loop: No prices returned for {symbols}")
+            logger.error(f"[FAST] CRITICAL: No prices returned for {symbols} - positions won't be updated!")
             return
+
+        logger.info(f"[FAST] Got prices: {prices}")
 
         updated_count = 0
         for position in positions:
             try:
                 price = prices.get(position.symbol)
                 if not price:
-                    logger.warning(f"No price for {position.symbol}, skipping position {position.id}")
+                    logger.warning(f"[FAST] No price for {position.symbol}, skipping position {position.id}")
                     continue
 
                 self._process_position(position, price)
                 updated_count += 1
 
             except Exception as e:
-                logger.error(f"Error processing position {position.id}: {e}")
+                logger.error(f"[FAST] Error processing position {position.id}: {e}")
 
-        if updated_count > 0:
-            logger.debug(f"Fast loop: Updated {updated_count}/{len(positions)} positions")
+        logger.info(f"[FAST] Updated {updated_count}/{len(positions)} positions")
 
     def _slow_loop(self) -> None:
         """
@@ -568,11 +570,8 @@ class ArenaSimulator:
 
     def _get_prices(self, symbols: List[str]) -> Dict[str, float]:
         """Get current prices for symbols."""
-        # This would connect to HyperLiquid API in production
-        # For now, we'll use a placeholder that the integration will provide
-
         try:
-            # Try to import from existing system
+            # Import HyperLiquid API
             import sys
             sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -582,22 +581,30 @@ class ArenaSimulator:
             info = Info(constants.MAINNET_API_URL)
             all_mids = info.all_mids()
 
+            if not all_mids:
+                logger.error("[PRICES] HyperLiquid API returned empty mids!")
+                return {}
+
             prices = {}
             for symbol in symbols:
                 if symbol in all_mids:
                     prices[symbol] = float(all_mids[symbol])
                 else:
-                    logger.warning(f"Price not found for {symbol}")
-
-            if not prices:
-                logger.warning(f"No prices fetched for symbols: {symbols}")
-            else:
-                logger.debug(f"Fetched prices: {prices}")
+                    # Try common variations
+                    for key in all_mids.keys():
+                        if key.upper() == symbol.upper() or key == f"{symbol}-USD" or key == f"{symbol}USDT":
+                            prices[symbol] = float(all_mids[key])
+                            break
+                    if symbol not in prices:
+                        logger.warning(f"[PRICES] Symbol {symbol} not found in API response. Available: {list(all_mids.keys())[:10]}...")
 
             return prices
 
+        except ImportError as e:
+            logger.error(f"[PRICES] HyperLiquid library not installed: {e}")
+            return {}
         except Exception as e:
-            logger.error(f"Could not get prices: {e}", exc_info=True)
+            logger.error(f"[PRICES] API error: {e}", exc_info=True)
             return {}
 
     def _get_market_data(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
