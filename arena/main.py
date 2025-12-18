@@ -78,10 +78,8 @@ def main():
     dashboard_port = int(os.environ.get("ARENA_DASHBOARD_PORT", 5050))
 
     if dashboard_enabled:
-        # Start simulator in background thread
-        simulator_thread = threading.Thread(target=simulator.start, kwargs={"blocking": True})
-        simulator_thread.daemon = True
-        simulator_thread.start()
+        # Start simulator with separate fast/slow threads (non-blocking)
+        simulator.start(blocking=False)
         logger.info("Simulator started in background")
 
         # Run dashboard in main thread (blocking)
