@@ -1077,8 +1077,8 @@ DASHBOARD_HTML = """
 
             <!-- GO LIVE Section -->
             <div class="go-live-container">
-                <h2>🚀 GO LIVE - Deploy to Production</h2>
-                <p>Deploy the best performing AI model to RIZZO (production bot).</p>
+                <h2>🚀 GO LIVE - Deploy to Botone Baseline</h2>
+                <p>Deploy the best performing AI model + config to BOTONE (production bot).</p>
 
                 {% if best_v6_model %}
                 <div class="go-live-winner">
@@ -1091,19 +1091,50 @@ DASHBOARD_HTML = """
                             ${{ "%.2f"|format(best_v6_model.pnl) }}
                         </span>
                     </div>
+                    {% if best_v6_model.variant_id %}
+                    <div class="winner-variant" style="color: #888; font-size: 0.9em; margin-top: 5px;">
+                        Variant: {{ best_v6_model.variant_id }} | Style: {{ best_v6_model.prompt_style or 'N/A' }}
+                    </div>
+                    {% endif %}
                 </div>
-                <button class="go-live-btn" onclick="showGoLiveModal('{{ best_v6_model.id }}', '{{ best_v6_model.name }}')"
-                        {% if best_v6_model.trades < 10 %}disabled title="Need at least 10 trades"{% endif %}>
-                    🎯 GO LIVE with {{ best_v6_model.name }}
-                </button>
-                {% if best_v6_model.trades < 10 %}
+
+                <div class="go-live-buttons" style="display: flex; gap: 15px; margin-top: 20px; flex-wrap: wrap;">
+                    <button class="go-live-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);"
+                            onclick="copyToBaseline('{{ best_v6_model.id }}', '{{ best_v6_model.variant_id }}')"
+                            {% if best_v6_model.trades < 5 %}disabled title="Need at least 5 trades"{% endif %}>
+                        📋 Copy to .env.baseline
+                    </button>
+                    <button class="go-live-btn" style="background: linear-gradient(135deg, #27ae60, #1e8449);"
+                            onclick="startBotone()">
+                        🚀 Start Botone Containers
+                    </button>
+                    <button class="go-live-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);"
+                            onclick="stopBotone()">
+                        ⏹️ Stop Botone
+                    </button>
+                </div>
+
+                {% if best_v6_model.trades < 5 %}
                 <p style="color: #888; margin-top: 10px; font-size: 0.85em;">
-                    ⚠️ Minimum 10 trades required. Current: {{ best_v6_model.trades }}
+                    ⚠️ Minimum 5 trades required for Copy. Current: {{ best_v6_model.trades }}
                 </p>
                 {% endif %}
+
+                <div id="go-live-status" style="margin-top: 15px; padding: 10px; border-radius: 8px; display: none;"></div>
+
                 {% else %}
                 <p style="color: #666;">No V6 trades yet. Start the simulation to collect data.</p>
-                <button class="go-live-btn" disabled>🎯 GO LIVE</button>
+                <div class="go-live-buttons" style="display: flex; gap: 15px; margin-top: 20px;">
+                    <button class="go-live-btn" disabled>📋 Copy to .env.baseline</button>
+                    <button class="go-live-btn" style="background: linear-gradient(135deg, #27ae60, #1e8449);"
+                            onclick="startBotone()">
+                        🚀 Start Botone Containers
+                    </button>
+                    <button class="go-live-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);"
+                            onclick="stopBotone()">
+                        ⏹️ Stop Botone
+                    </button>
+                </div>
                 {% endif %}
             </div>
         </div>
@@ -1654,6 +1685,70 @@ DASHBOARD_HTML = """
                 closeGoLiveModal();
                 alert('❌ Connection error');
             });
+        }
+
+        // Botone Baseline Functions
+        function showStatus(message, isError = false) {
+            const status = document.getElementById('go-live-status');
+            status.style.display = 'block';
+            status.style.background = isError ? '#c0392b' : '#27ae60';
+            status.style.color = 'white';
+            status.innerHTML = message;
+        }
+
+        function copyToBaseline(modelId, variantId) {
+            if (!confirm('Copiare la configurazione in .env.baseline?\\n\\nModel: ' + modelId + '\\nVariant: ' + variantId)) return;
+
+            showStatus('⏳ Copiando configurazione...');
+
+            fetch('/api/copy-to-baseline', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_id: modelId, variant_id: variantId })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    showStatus('✅ ' + d.message + '<br><small>Parametri copiati: ' + d.params_copied + '</small>');
+                } else {
+                    showStatus('❌ Errore: ' + d.error, true);
+                }
+            })
+            .catch(e => showStatus('❌ Errore di connessione', true));
+        }
+
+        function startBotone() {
+            if (!confirm('Avviare i container Botone Baseline?\\n\\n• botone_baseline_slow\\n• botone_baseline_fast')) return;
+
+            showStatus('⏳ Avviando containers...');
+
+            fetch('/api/botone/start', { method: 'POST' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    showStatus('✅ ' + d.message);
+                } else {
+                    showStatus('❌ Errore: ' + d.error, true);
+                }
+            })
+            .catch(e => showStatus('❌ Errore di connessione', true));
+        }
+
+        function stopBotone() {
+            if (!confirm('Fermare i container Botone Baseline?')) return;
+
+            showStatus('⏳ Fermando containers...');
+
+            fetch('/api/botone/stop', { method: 'POST' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    showStatus('✅ ' + d.message);
+                } else {
+                    showStatus('❌ Errore: ' + d.error, true);
+                }
+            })
+            .catch(e => showStatus('❌ Errore di connessione', true));
         }
 
         // Close modal on overlay click
@@ -2443,6 +2538,190 @@ def api_go_live():
         return jsonify({"success": False, "error": str(e)})
 
 
+@app.route('/api/copy-to-baseline', methods=['POST'])
+def api_copy_to_baseline():
+    """Copy winning variant config to .env.baseline for Botone."""
+    import logging
+    import re
+    logger = logging.getLogger("arena.dashboard")
+
+    data = request.get_json() or {}
+    model_id = data.get('model_id')
+    variant_id = data.get('variant_id')
+
+    if not model_id or not variant_id:
+        return jsonify({"success": False, "error": "Missing model_id or variant_id"})
+
+    try:
+        # Load variant config from variants.json
+        variants_path = os.path.join(os.path.dirname(__file__), "variants.json")
+        with open(variants_path, 'r') as f:
+            variants_data = json.load(f)
+
+        # Find the variant
+        variant_config = None
+        for v in variants_data.get("variants", []):
+            if v.get("id") == variant_id:
+                variant_config = v
+                break
+
+        if not variant_config:
+            return jsonify({"success": False, "error": f"Variant {variant_id} not found"})
+
+        # Get trading params
+        params = variant_config.get("trading_params", {})
+        prompt_style = variant_config.get("prompt_style", "moderate")
+
+        # Build .env.baseline content
+        baseline_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env.baseline")
+
+        # Read existing or create new
+        if os.path.exists(baseline_path):
+            with open(baseline_path, 'r') as f:
+                env_content = f.read()
+        else:
+            env_content = "# Botone Baseline Configuration\n# Auto-generated from Arena\n\n"
+
+        # Parameters to update
+        updates = {
+            "OPENROUTER_MODEL": model_id,
+            "TRADING_STYLE": prompt_style.lower(),
+            "LEVERAGE": str(params.get("leverage", 5)),
+            "STOP_LOSS_PCT": str(params.get("stop_loss_pct", 4.0)),
+            "TAKE_PROFIT_PCT": str(params.get("take_profit_pct", 8.0)),
+            "TRAILING_ENABLED": str(params.get("trailing_enabled", True)).lower(),
+            "TRAILING_STEPS": params.get("trailing_steps", "3.0:0.0,6.0:2.5,9.0:5.0"),
+            "SMART_SL_ENABLED": str(params.get("smart_sl_enabled", False)).lower(),
+            "SMART_SL_EXTENSION_PCT": str(params.get("smart_sl_extension_pct", 1.5)),
+            "SMART_SL_MAX_EXTENSIONS": str(params.get("smart_sl_max_extensions", 2)),
+            "POSITION_SIZE_USD": str(params.get("position_size_usd", 25)),
+            "SCORE_THRESHOLD_OPEN": str(params.get("score_threshold_open", 0)),
+            "DOUBLE_CHECK_AI_ENABLED": str(params.get("double_check_ai_enabled", False)).lower(),
+            "ARENA_SOURCE_VARIANT": variant_id,
+            "ARENA_SOURCE_MODEL": model_id,
+        }
+
+        # Update or add each parameter
+        for key, value in updates.items():
+            pattern = rf'^{key}=.*$'
+            if re.search(pattern, env_content, re.MULTILINE):
+                env_content = re.sub(pattern, f'{key}={value}', env_content, flags=re.MULTILINE)
+            else:
+                env_content += f'{key}={value}\n'
+
+        # Write updated .env.baseline
+        with open(baseline_path, 'w') as f:
+            f.write(env_content)
+
+        logger.info(f"COPY TO BASELINE: {model_id} from {variant_id}")
+
+        return jsonify({
+            "success": True,
+            "message": f"Config copiata in .env.baseline",
+            "params_copied": len(updates),
+            "variant_id": variant_id,
+            "model_id": model_id
+        })
+
+    except Exception as e:
+        logger.error(f"Copy to baseline error: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/botone/start', methods=['POST'])
+def api_botone_start():
+    """Start Botone Baseline containers."""
+    import logging
+    import subprocess
+    logger = logging.getLogger("arena.dashboard")
+
+    try:
+        # Stop existing containers (ignore errors if not running)
+        subprocess.run(["docker", "stop", "botone_baseline_slow", "botone_baseline_fast"],
+                      capture_output=True, timeout=30)
+        subprocess.run(["docker", "rm", "botone_baseline_slow", "botone_baseline_fast"],
+                      capture_output=True, timeout=10)
+
+        # Start SLOW container
+        slow_result = subprocess.run([
+            "docker", "run", "-d",
+            "--name", "botone_baseline_slow",
+            "--env-file", "/home/user/trading-bots/rizzo-trading-agent/.env.baseline",
+            "-e", "PYTHONUNBUFFERED=1",
+            "--network", "unified-memory-stack_memory-net",
+            "--restart", "unless-stopped",
+            "--entrypoint", "python",
+            "botone-baseline",
+            "sentinel.py", "--mode", "slow", "--loop"
+        ], capture_output=True, text=True, timeout=60)
+
+        if slow_result.returncode != 0:
+            return jsonify({"success": False, "error": f"SLOW start failed: {slow_result.stderr}"})
+
+        # Start FAST container
+        fast_result = subprocess.run([
+            "docker", "run", "-d",
+            "--name", "botone_baseline_fast",
+            "--env-file", "/home/user/trading-bots/rizzo-trading-agent/.env.baseline",
+            "-e", "PYTHONUNBUFFERED=1",
+            "--network", "unified-memory-stack_memory-net",
+            "--restart", "unless-stopped",
+            "--entrypoint", "python",
+            "botone-baseline",
+            "sentinel.py", "--mode", "fast", "--loop"
+        ], capture_output=True, text=True, timeout=60)
+
+        if fast_result.returncode != 0:
+            return jsonify({"success": False, "error": f"FAST start failed: {fast_result.stderr}"})
+
+        logger.info("BOTONE START: Both containers started successfully")
+
+        return jsonify({
+            "success": True,
+            "message": "Botone containers avviati: slow + fast"
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Timeout starting containers"})
+    except Exception as e:
+        logger.error(f"Botone start error: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/botone/stop', methods=['POST'])
+def api_botone_stop():
+    """Stop Botone Baseline containers."""
+    import logging
+    import subprocess
+    logger = logging.getLogger("arena.dashboard")
+
+    try:
+        # Stop containers
+        stop_result = subprocess.run(
+            ["docker", "stop", "botone_baseline_slow", "botone_baseline_fast"],
+            capture_output=True, text=True, timeout=30
+        )
+
+        # Remove containers
+        subprocess.run(
+            ["docker", "rm", "botone_baseline_slow", "botone_baseline_fast"],
+            capture_output=True, timeout=10
+        )
+
+        logger.info("BOTONE STOP: Containers stopped")
+
+        return jsonify({
+            "success": True,
+            "message": "Botone containers fermati"
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Timeout stopping containers"})
+    except Exception as e:
+        logger.error(f"Botone stop error: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+
 # ==================== Data Functions ====================
 
 def get_dashboard_stats() -> Dict[str, Any]:
@@ -2981,16 +3260,44 @@ def get_best_v6_model() -> Optional[Dict[str, Any]]:
 
     best = leaderboard[0]
 
-    # Find the model ID
+    # Find the model ID and best variant for this model
     model_id = None
+    best_variant_id = None
+    best_prompt_style = None
+
+    # Load variants.json to get prompt_style
+    variants_path = os.path.join(os.path.dirname(__file__), "variants.json")
+    variants_json = {}
+    try:
+        with open(variants_path, 'r') as f:
+            variants_json = json.load(f)
+    except:
+        pass
+
+    # Find model_id and best performing variant for this model
+    best_variant_pnl = float('-inf')
+
     for v in load_variants(db):
         if v.id.startswith("V6_"):
             for m in v.ai_models:
                 if m.split("/")[-1] == best["ai_model"]:
-                    model_id = m
+                    if model_id is None:
+                        model_id = m
+
+                    # Check PnL for this model in this specific variant
+                    for sv in v.sub_variants:
+                        if sv.ai_model == m:
+                            trades = db.get_trades_for_sub_variant(sv.id, limit=1000)
+                            variant_pnl = sum(t.pnl_usd for t in trades if t.pnl_usd)
+                            if variant_pnl > best_variant_pnl:
+                                best_variant_pnl = variant_pnl
+                                best_variant_id = v.id
+                                # Get prompt_style from JSON
+                                for vj in variants_json.get("variants", []):
+                                    if vj.get("id") == v.id:
+                                        best_prompt_style = vj.get("prompt_style", "moderate")
+                                        break
                     break
-            if model_id:
-                break
 
     return {
         "id": model_id or best["ai_model"],
@@ -2998,6 +3305,8 @@ def get_best_v6_model() -> Optional[Dict[str, Any]]:
         "trades": best["total_trades"],
         "win_rate": best["win_rate"],
         "pnl": best["total_pnl_usd"],
+        "variant_id": best_variant_id,
+        "prompt_style": best_prompt_style,
     }
 
 
