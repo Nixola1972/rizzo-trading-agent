@@ -1163,21 +1163,41 @@ class ArenaDB:
             if hours:
                 time_filter = f"AND exit_time >= datetime('now', '-{hours} hours')"
 
-            # Get all closed trades with fees
-            cursor.execute(f"""
-                SELECT
-                    ai_model,
-                    variant_id,
-                    pnl_usd,
-                    pnl_pct,
-                    fee_usd,
-                    net_pnl_usd,
-                    duration_seconds,
-                    duration_minutes,
-                    exit_reason
-                FROM arena_trades
-                WHERE exit_time IS NOT NULL {time_filter}
-            """)
+            # Check which columns exist (for backwards compatibility)
+            cursor.execute("PRAGMA table_info(arena_trades)")
+            columns = {row[1] for row in cursor.fetchall()}
+            has_fee_columns = "fee_usd" in columns
+
+            # Build query based on available columns
+            if has_fee_columns:
+                query = f"""
+                    SELECT
+                        ai_model,
+                        variant_id,
+                        pnl_usd,
+                        pnl_pct,
+                        fee_usd,
+                        net_pnl_usd,
+                        duration_seconds,
+                        duration_minutes,
+                        exit_reason
+                    FROM arena_trades
+                    WHERE exit_time IS NOT NULL {time_filter}
+                """
+            else:
+                query = f"""
+                    SELECT
+                        ai_model,
+                        variant_id,
+                        pnl_usd,
+                        pnl_pct,
+                        duration_minutes,
+                        exit_reason
+                    FROM arena_trades
+                    WHERE exit_time IS NOT NULL {time_filter}
+                """
+
+            cursor.execute(query)
 
             rows = cursor.fetchall()
 
@@ -1194,9 +1214,18 @@ class ArenaDB:
                 variant_id = row["variant_id"] or ""
                 pnl_usd = row["pnl_usd"] or 0.0
                 pnl_pct = row["pnl_pct"] or 0.0
-                fee_usd = row["fee_usd"] if "fee_usd" in row.keys() else 0.0
-                net_pnl_usd = row["net_pnl_usd"] if "net_pnl_usd" in row.keys() else pnl_usd
-                duration_sec = row["duration_seconds"] if "duration_seconds" in row.keys() else (row["duration_minutes"] or 0) * 60
+
+                # Handle fee columns (may not exist in older databases)
+                if has_fee_columns:
+                    fee_usd = row["fee_usd"] or 0.0
+                    net_pnl_usd = row["net_pnl_usd"] or pnl_usd
+                    duration_sec = row["duration_seconds"] or (row["duration_minutes"] or 0) * 60
+                else:
+                    # Estimate fees if columns don't exist
+                    fee_usd = 0.0
+                    net_pnl_usd = pnl_usd
+                    duration_sec = (row["duration_minutes"] or 0) * 60
+
                 is_winner = pnl_usd > 0
 
                 # Extract style and timeframe from variant_id
