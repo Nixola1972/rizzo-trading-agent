@@ -1065,7 +1065,7 @@ DASHBOARD_HTML = """
                             </div>
                             <label class="toggle-switch">
                                 <input type="checkbox" {{ 'checked' if model.enabled else '' }}
-                                       onchange="toggleV6Model('{{ family.variant_id }}', '{{ model.id }}', this.checked)">
+                                       onchange="toggleV6Model('{{ family.family }}', '{{ model.id }}', this.checked)">
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
@@ -1596,11 +1596,11 @@ DASHBOARD_HTML = """
         }
 
         // V6 Model Toggle
-        function toggleV6Model(variantId, modelId, enabled) {
+        function toggleV6Model(family, modelId, enabled) {
             fetch(`/api/v6/model/toggle`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ variant_id: variantId, model_id: modelId, enabled: enabled })
+                body: JSON.stringify({ family: family, model_id: modelId, enabled: enabled })
             })
             .then(r => r.json())
             .then(d => {
@@ -2341,51 +2341,47 @@ def api_get_last_ai_analysis():
 
 @app.route('/api/v6/model/toggle', methods=['POST'])
 def api_toggle_v6_model():
-    """Toggle a specific AI model on/off for a V6 variant."""
+    """Toggle a specific AI model on/off for a V6 variant family."""
     import logging
     logger = logging.getLogger("arena.dashboard")
 
     data = request.get_json() or {}
-    variant_id = data.get('variant_id')
+    family = data.get('family')  # FAST, MEDIUM, MACRO
     model_id = data.get('model_id')
     enabled = data.get('enabled', True)
 
-    if not variant_id or not model_id:
-        return jsonify({"success": False, "error": "Missing variant_id or model_id"})
+    if not model_id:
+        return jsonify({"success": False, "error": "Missing model_id"})
 
     try:
-        # Load variants.json
-        variants_path = os.path.join(os.path.dirname(__file__), "variants.json")
+        # Get model name for sub_variant lookup
+        model_name = model_id.split("/")[-1]
 
-        with open(variants_path, 'r') as f:
-            variants_data = json.load(f)
+        # Define variant families
+        families = {
+            "FAST": ["V6_FAST_PRUDENT", "V6_FAST_MODERATE", "V6_FAST_AGGRESSIVE"],
+            "MEDIUM": ["V6_MEDIUM_PRUDENT", "V6_MEDIUM_MODERATE", "V6_MEDIUM_AGGRESSIVE"],
+            "MACRO": ["V6_MACRO_TREND"],
+        }
 
-        # Find and update the variant
-        updated = False
-        for v in variants_data.get("variants", []):
-            if v.get("id") == variant_id:
-                disabled_models = v.get("disabled_models", [])
+        # Get variants for this family (or all if no family specified)
+        if family and family in families:
+            target_variants = families[family]
+        else:
+            # If no family, update all V6 variants
+            target_variants = []
+            for variants_list in families.values():
+                target_variants.extend(variants_list)
 
-                if enabled:
-                    # Remove from disabled list
-                    if model_id in disabled_models:
-                        disabled_models.remove(model_id)
-                        updated = True
-                else:
-                    # Add to disabled list
-                    if model_id not in disabled_models:
-                        disabled_models.append(model_id)
-                        updated = True
+        # Update all sub_variants in the database for this model
+        updated_count = 0
+        for variant_id in target_variants:
+            sub_variant_id = f"{variant_id}_{model_name}"
+            if db.toggle_sub_variant(sub_variant_id, enabled):
+                updated_count += 1
+                logger.info(f"V6 Model toggle: {sub_variant_id} = {enabled}")
 
-                v["disabled_models"] = disabled_models
-                break
-
-        if updated:
-            with open(variants_path, 'w') as f:
-                json.dump(variants_data, f, indent=2)
-            logger.info(f"V6 Model toggle: {variant_id} - {model_id} = {enabled}")
-
-        return jsonify({"success": True, "enabled": enabled})
+        return jsonify({"success": True, "enabled": enabled, "updated": updated_count})
 
     except Exception as e:
         logger.error(f"Error toggling V6 model: {e}")
@@ -2929,8 +2925,6 @@ def get_v6_model_controls() -> List[Dict[str, Any]]:
 
         for v in load_variants(db):
             if v.id in family_info["variants"]:
-                disabled_models = getattr(v, 'disabled_models', []) or []
-
                 for model_id in v.ai_models:
                     model_name = model_id.split("/")[-1]
 
@@ -2938,14 +2932,16 @@ def get_v6_model_controls() -> List[Dict[str, Any]]:
                         model_data[model_id] = {
                             "id": model_id,
                             "name": model_name,
-                            "enabled": model_id not in disabled_models,
+                            "enabled": True,  # Default, will be updated from DB
                             "trades": 0,
                             "wins": 0,
                         }
 
-                    # Get stats from sub_variants
+                    # Get stats and enabled state from sub_variants (from DB)
                     for sv in v.sub_variants:
                         if sv.ai_model == model_id:
+                            # Read enabled state from database (sv comes from DB)
+                            model_data[model_id]["enabled"] = sv.enabled
                             trades = db.get_trades_for_sub_variant(sv.id, limit=1000)
                             model_data[model_id]["trades"] += len(trades)
                             model_data[model_id]["wins"] += sum(1 for t in trades if t.pnl_usd > 0)
