@@ -1,6 +1,6 @@
 {
-  "version": "2.1",
-  "description": "Arena variant configurations - Legacy + V6 AI Battle System",
+  "version": "2.2",
+  "description": "Arena variant configurations - All disabled by default for manual control",
   "ai_models_registry": {
     "chimera_free": {
       "id": "tngtech/deepseek-r1t2-chimera:free",
@@ -48,7 +48,7 @@
       "id": "anthropic/claude-haiku-4.5",
       "name": "Claude Haiku 4.5",
       "cost_tier": "high",
-      "default_enabled": false
+      "default_enabled": true
     }
   },
   "variants": [
@@ -139,10 +139,11 @@
       "id": "V6_FAST_PRUDENT",
       "name": "V6 Fast Prudente (5min)",
       "description": "AI Battle - Check ogni 5min, strategia prudente (WR alto)",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "PRUDENT",
       "ai_models": [
+        "deepseek/deepseek-v3.2-speciale",
         "tngtech/deepseek-r1t2-chimera:free",
         "qwen/qwen3-235b-a22b:free",
         "deepseek/deepseek-chat",
@@ -151,7 +152,7 @@
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5"
       ],
-      "disabled_models": ["anthropic/claude-haiku-4.5"],
+      "disabled_models": [],
       "trading_params": {
         "position_size_usd": 25.0,
         "leverage": 3,
@@ -176,10 +177,11 @@
       "id": "V6_FAST_MODERATE",
       "name": "V6 Fast Moderato (5min)",
       "description": "AI Battle - Check ogni 5min, strategia moderata (bilanciato)",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "MODERATE",
       "ai_models": [
+        "deepseek/deepseek-v3.2-speciale",
         "tngtech/deepseek-r1t2-chimera:free",
         "qwen/qwen3-235b-a22b:free",
         "deepseek/deepseek-chat",
@@ -188,7 +190,7 @@
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5"
       ],
-      "disabled_models": ["anthropic/claude-haiku-4.5"],
+      "disabled_models": [],
       "trading_params": {
         "position_size_usd": 25.0,
         "leverage": 5,
@@ -213,10 +215,11 @@
       "id": "V6_FAST_AGGRESSIVE",
       "name": "V6 Fast Aggressivo (5min)",
       "description": "AI Battle - Check ogni 5min, strategia aggressiva (più trade)",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "AGGRESSIVE",
       "ai_models": [
+        "deepseek/deepseek-v3.2-speciale",
         "tngtech/deepseek-r1t2-chimera:free",
         "qwen/qwen3-235b-a22b:free",
         "deepseek/deepseek-chat",
@@ -225,7 +228,7 @@
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5"
       ],
-      "disabled_models": ["anthropic/claude-haiku-4.5"],
+      "disabled_models": [],
       "trading_params": {
         "position_size_usd": 25.0,
         "leverage": 10,
@@ -250,10 +253,11 @@
       "id": "V6_MEDIUM_PRUDENT",
       "name": "V6 Medium Prudente (15min)",
       "description": "AI Battle - Check ogni 15min, strategia prudente",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "PRUDENT",
       "ai_models": [
+        "deepseek/deepseek-v3.2-speciale",
         "tngtech/deepseek-r1t2-chimera:free",
         "qwen/qwen3-235b-a22b:free",
         "deepseek/deepseek-chat",
@@ -262,7 +266,7 @@
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5"
       ],
-      "disabled_models": ["anthropic/claude-haiku-4.5"],
+      "disabled_models": [],
       "trading_params": {
         "position_size_usd": 25.0,
         "leverage": 3,
@@ -287,10 +291,11 @@
       "id": "V6_MEDIUM_MODERATE",
       "name": "V6 Medium Moderato (15min)",
       "description": "AI Battle - Check ogni 15min, strategia moderata",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "MODERATE",
       "ai_models": [
+        "deepseek/deepseek-v3.2-speciale",
         "tngtech/deepseek-r1t2-chimera:free",
         "qwen/qwen3-235b-a22b:free",
         "deepseek/deepseek-chat",
@@ -299,7 +304,7 @@
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5"
       ],
-      "disabled_models": ["anthropic/claude-haiku-4.5"],
+      "disabled_models": [],
       "trading_params": {
         "position_size_usd": 25.0,
         "leverage": 5,
@@ -324,10 +329,11 @@
       "id": "V6_MEDIUM_AGGRESSIVE",
       "name": "V6 Medium Aggressivo (15min)",
       "description": "AI Battle - Check ogni 15min, strategia aggressiva",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "AGGRESSIVE",
       "ai_models": [
+        "deepseek/deepseek-v3.2-speciale",
         "tngtech/deepseek-r1t2-chimera:free",
         "qwen/qwen3-235b-a22b:free",
         "deepseek/deepseek-chat",
@@ -336,7 +342,7 @@
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5"
       ],
-      "disabled_models": ["anthropic/claude-haiku-4.5"],
+      "disabled_models": [],
       "trading_params": {
         "position_size_usd": 25.0,
         "leverage": 10,
@@ -361,10 +367,11 @@
       "id": "V6_MACRO_TREND",
       "name": "V6 Macro Trend (1h)",
       "description": "AI Battle - Check ogni 1h, trend lungo, ultra-prudente",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "AI_INDEPENDENT",
       "prompt_style": "MACRO",
       "ai_models": [
+        "deepseek/deepseek-v3.2-speciale",
         "tngtech/deepseek-r1t2-chimera:free",
         "qwen/qwen3-235b-a22b:free",
         "deepseek/deepseek-chat",
@@ -373,7 +380,7 @@
         "x-ai/grok-4.1-fast",
         "anthropic/claude-haiku-4.5"
       ],
-      "disabled_models": ["anthropic/claude-haiku-4.5"],
+      "disabled_models": [],
       "trading_params": {
         "position_size_usd": 25.0,
         "leverage": 2,

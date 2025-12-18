@@ -1016,7 +1016,7 @@ DASHBOARD_HTML = """
                     <h3>🏆 V6 AI Leaderboard (All Strategies)</h3>
                     <table>
                         <thead>
-                            <tr><th>#</th><th>AI Model</th><th>Trades</th><th>Win%</th><th>P&L</th></tr>
+                            <tr><th>#</th><th>AI Model</th><th>Trades</th><th>Win%</th><th>W/L</th><th>P&L</th><th>API Calls</th></tr>
                         </thead>
                         <tbody>
                             {% for entry in v6_leaderboard %}
@@ -1030,13 +1030,15 @@ DASHBOARD_HTML = """
                                 <td>{{ entry.ai_model }}</td>
                                 <td>{{ entry.total_trades }}</td>
                                 <td>{{ "%.1f"|format(entry.win_rate) }}%</td>
+                                <td><span style="color: #27ae60;">{{ entry.wins }}W</span> / <span style="color: #e74c3c;">{{ entry.losses }}L</span></td>
                                 <td class="{{ 'pnl-positive' if entry.total_pnl_usd >= 0 else 'pnl-negative' }}">
                                     ${{ "%.2f"|format(entry.total_pnl_usd) }}
                                 </td>
+                                <td>{{ entry.api_calls }} <span style="color: #e74c3c;">({{ entry.api_errors }} err)</span></td>
                             </tr>
                             {% endfor %}
                             {% if not v6_leaderboard %}
-                            <tr><td colspan="5" style="text-align: center; color: #666;">No V6 trades yet</td></tr>
+                            <tr><td colspan="7" style="text-align: center; color: #666;">No V6 trades yet</td></tr>
                             {% endif %}
                         </tbody>
                     </table>
@@ -1151,7 +1153,8 @@ DASHBOARD_HTML = """
                         <div class="model-info">
                             <div class="model-name">{{ model.ai_model_name }}</div>
                             <div class="model-stats">
-                                API Calls: {{ model.api_calls }} | Errors: {{ model.api_errors }}
+                                📊 WR: {{ "%.1f"|format(model.win_rate) }}% ({{ model.winning_trades }}W / {{ model.losing_trades }}L) |
+                                📞 API: {{ model.api_calls }} | ❌ Err: {{ model.api_errors }}
                             </div>
                         </div>
                         <div class="model-controls">
@@ -2509,6 +2512,13 @@ def get_ai_models_data() -> List[Dict[str, Any]]:
             for sv in v.sub_variants:
                 sv_db = db.get_sub_variant(sv.id)
                 if sv_db:
+                    # Get trade stats for this model
+                    trades = db.get_trades_for_sub_variant(sv.id, limit=1000)
+                    total_trades = len(trades)
+                    winning_trades = len([t for t in trades if t.pnl_usd and t.pnl_usd > 0])
+                    losing_trades = total_trades - winning_trades
+                    win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+
                     models.append({
                         "id": sv_db.id,
                         "ai_model": sv_db.ai_model,
@@ -2516,6 +2526,10 @@ def get_ai_models_data() -> List[Dict[str, Any]]:
                         "enabled": sv_db.enabled,
                         "api_calls": sv_db.api_calls,
                         "api_errors": sv_db.api_errors,
+                        "total_trades": total_trades,
+                        "winning_trades": winning_trades,
+                        "losing_trades": losing_trades,
+                        "win_rate": win_rate,
                     })
     return models
 
@@ -2848,7 +2862,7 @@ def get_strategy_chart_data() -> Dict[str, Any]:
 def get_v6_leaderboard() -> List[Dict[str, Any]]:
     """Get combined AI model leaderboard for all V6 variants."""
     # Aggregate trades by AI model across all V6 variants
-    model_stats = {}  # model_id -> {trades, wins, pnl}
+    model_stats = {}  # model_id -> {trades, wins, pnl, api_calls, api_errors}
 
     for v in load_variants(db):
         if v.id.startswith("V6_"):
@@ -2857,13 +2871,21 @@ def get_v6_leaderboard() -> List[Dict[str, Any]]:
                 model_name = sv.ai_model_name
 
                 if model_name not in model_stats:
-                    model_stats[model_name] = {"trades": 0, "wins": 0, "pnl": 0.0}
+                    model_stats[model_name] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "api_calls": 0, "api_errors": 0}
+
+                # Get API stats from sub_variant
+                sv_db = db.get_sub_variant(sv.id)
+                if sv_db:
+                    model_stats[model_name]["api_calls"] += sv_db.api_calls or 0
+                    model_stats[model_name]["api_errors"] += sv_db.api_errors or 0
 
                 for t in trades:
                     model_stats[model_name]["trades"] += 1
                     model_stats[model_name]["pnl"] += t.pnl_usd
                     if t.pnl_usd > 0:
                         model_stats[model_name]["wins"] += 1
+                    else:
+                        model_stats[model_name]["losses"] += 1
 
     # Convert to leaderboard format
     leaderboard = []
@@ -2872,8 +2894,12 @@ def get_v6_leaderboard() -> List[Dict[str, Any]]:
         leaderboard.append({
             "ai_model": model,
             "total_trades": stats["trades"],
+            "wins": stats["wins"],
+            "losses": stats["losses"],
             "win_rate": win_rate,
             "total_pnl_usd": stats["pnl"],
+            "api_calls": stats["api_calls"],
+            "api_errors": stats["api_errors"],
         })
 
     # Sort by P&L
