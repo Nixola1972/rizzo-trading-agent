@@ -754,14 +754,14 @@ Il sistema V6 è la nuova architettura per testare AI models su diverse strategi
 
 | AI Model | Provider | Note |
 |----------|----------|------|
-| `deepseek/deepseek-v3.2-speciale` | DeepSeek | Principale, ottimizzato |
-| `deepseek/deepseek-r1t2-chimera:free` | DeepSeek | Gratuito |
-| `qwen/qwen3-235b-a22b:free` | Alibaba | Qwen gratuito |
+| `deepseek/deepseek-v3.2-exp` | DeepSeek | Principale, experimental |
+| `tngtech/deepseek-r1t2-chimera:free` | DeepSeek | Gratuito |
+| `z-ai/glm-4.6:exacto` | Z-AI | GLM Exacto |
 | `deepseek/deepseek-chat` | DeepSeek | Chat model |
 | `openai/gpt-oss-120b` | OpenAI | GPT open source |
-| `qwen/qwen3-max` | Alibaba | Qwen premium |
+| `qwen/qwen3-235b-a22b-2507` | Alibaba | Qwen premium 2507 |
 | `x-ai/grok-4.1-fast` | xAI | Grok veloce |
-| `anthropic/claude-haiku-4.5` | Anthropic | Claude economico |
+| `moonshotai/kimi-k2-0905` | Moonshot | Kimi K2 |
 
 #### Configurazione Default
 
@@ -995,6 +995,57 @@ ARENA_ANALYTICS_INTERVAL=3600    # Secondi tra analisi (default: 1 ora)
    Best AI: deepseek/deepseek-v3.2-speciale
    Recommendations: 3
 ```
+
+### Detailed Analytics (Fee Tracking)
+
+Il sistema calcola automaticamente le trading fees e fornisce breakdown dettagliati per analisi.
+
+#### Calcolo Fees
+
+```
+Fee = Volume × 0.000432 (0.0432% taker fee)
+Volume = Position Size × Leverage × 2 (open + close)
+
+Esempio:
+- Position: $25 USD
+- Leverage: 5x
+- Volume: $25 × 5 × 2 = $250
+- Fee: $250 × 0.000432 = $0.108
+
+Per ogni trade il sistema salva:
+- fee_usd: Trading fees (USD)
+- net_pnl_usd: P&L netto dopo fees
+- duration_seconds: Durata del trade
+```
+
+#### API Endpoint
+
+```
+GET /api/analytics/detailed?hours=24
+```
+
+Restituisce breakdown per:
+- **by_model**: Aggregato per AI Model
+- **by_style**: Per stile trading (PRUDENT, MODERATE, AGGRESSIVE)
+- **by_timeframe**: Per timeframe (FAST, MEDIUM, MACRO)
+- **by_model_style**: Matrice Model × Style
+- **by_model_style_timeframe**: Matrice completa Model × Style × Timeframe
+- **totals**: Totali globali
+
+Ogni breakdown include:
+- trades, wins, losses
+- gross_pnl_usd, total_fees_usd, net_pnl_usd
+- win_rate, avg_pnl_pct, avg_duration_min
+
+#### Dashboard Section
+
+Nella tab "🎯 Analytics" è stata aggiunta la sezione "📊 Detailed Breakdown (with Fees)" che mostra:
+
+1. **Summary**: Totali con Gross P&L, Fees, Net P&L
+2. **Per AI Model**: Tabella con tutte le metriche per modello
+3. **Per Stile**: PRUDENT 🛡️, MODERATE ⚖️, AGGRESSIVE 🔥
+4. **Per Timeframe**: FAST ⚡, MEDIUM 🕐, MACRO 📊
+5. **Matrice Model × Stile**: Espandibile con click
 
 ### Files Reference (Arena)
 

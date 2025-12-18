@@ -215,6 +215,20 @@ class ArenaDB:
                 ON arena_positions(sub_variant_id)
             """)
 
+            # Add fee/net_pnl columns to trades table (migration)
+            try:
+                cursor.execute("ALTER TABLE arena_trades ADD COLUMN fee_usd REAL DEFAULT 0.0")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE arena_trades ADD COLUMN net_pnl_usd REAL DEFAULT 0.0")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cursor.execute("ALTER TABLE arena_trades ADD COLUMN duration_seconds INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
             conn.commit()
 
     # ==================== Variant Operations ====================
@@ -776,8 +790,9 @@ class ArenaDB:
                     exit_price, exit_time, exit_reason,
                     pnl_pct, pnl_usd, peak_pnl_pct, duration_minutes,
                     smart_sl_extensions, final_sl_price,
-                    ai_model, ai_confidence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ai_model, ai_confidence,
+                    fee_usd, net_pnl_usd, duration_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 trade.id,
                 trade.sub_variant_id,
@@ -801,6 +816,9 @@ class ArenaDB:
                 trade.final_sl_price,
                 trade.ai_model,
                 trade.ai_confidence,
+                trade.fee_usd,
+                trade.net_pnl_usd,
+                trade.duration_seconds,
             ))
 
             conn.commit()
@@ -943,8 +961,11 @@ class ArenaDB:
             exit_reason=TradeStatus(row["exit_reason"]) if row["exit_reason"] else TradeStatus.OPEN,
             pnl_pct=row["pnl_pct"] or 0.0,
             pnl_usd=row["pnl_usd"] or 0.0,
+            fee_usd=row["fee_usd"] if "fee_usd" in row.keys() else 0.0,
+            net_pnl_usd=row["net_pnl_usd"] if "net_pnl_usd" in row.keys() else (row["pnl_usd"] or 0.0),
             peak_pnl_pct=row["peak_pnl_pct"] or 0.0,
             duration_minutes=row["duration_minutes"] or 0,
+            duration_seconds=row["duration_seconds"] if "duration_seconds" in row.keys() else 0,
             smart_sl_extensions=row["smart_sl_extensions"] or 0,
             final_sl_price=row["final_sl_price"] or 0.0,
             ai_model=row["ai_model"] or "",
@@ -1117,3 +1138,196 @@ class ArenaDB:
             """, (f"-{days}",))
             conn.commit()
             return cursor.rowcount
+
+    # ==================== Detailed Analytics ====================
+
+    def get_detailed_analytics(self, hours: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Get detailed analytics with breakdown by AI Model, Style, and Timeframe.
+
+        Returns:
+        {
+            "by_model": { "deepseek-v3.2-exp": {...}, ... },
+            "by_style": { "PRUDENT": {...}, "MODERATE": {...}, "AGGRESSIVE": {...} },
+            "by_timeframe": { "FAST": {...}, "MEDIUM": {...}, "MACRO": {...} },
+            "by_model_style": { "deepseek-v3.2-exp|PRUDENT": {...}, ... },
+            "by_model_style_timeframe": { "deepseek-v3.2-exp|PRUDENT|FAST": {...}, ... },
+            "totals": {...}
+        }
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Build time filter
+            time_filter = ""
+            if hours:
+                time_filter = f"AND exit_time >= datetime('now', '-{hours} hours')"
+
+            # Get all closed trades with fees
+            cursor.execute(f"""
+                SELECT
+                    ai_model,
+                    variant_id,
+                    pnl_usd,
+                    pnl_pct,
+                    fee_usd,
+                    net_pnl_usd,
+                    duration_seconds,
+                    duration_minutes,
+                    exit_reason
+                FROM arena_trades
+                WHERE exit_time IS NOT NULL {time_filter}
+            """)
+
+            rows = cursor.fetchall()
+
+            # Initialize aggregation dicts
+            by_model: Dict[str, Dict] = {}
+            by_style: Dict[str, Dict] = {}
+            by_timeframe: Dict[str, Dict] = {}
+            by_model_style: Dict[str, Dict] = {}
+            by_model_style_timeframe: Dict[str, Dict] = {}
+            totals = self._empty_stats()
+
+            for row in rows:
+                ai_model = row["ai_model"] or "Unknown"
+                variant_id = row["variant_id"] or ""
+                pnl_usd = row["pnl_usd"] or 0.0
+                pnl_pct = row["pnl_pct"] or 0.0
+                fee_usd = row["fee_usd"] if "fee_usd" in row.keys() else 0.0
+                net_pnl_usd = row["net_pnl_usd"] if "net_pnl_usd" in row.keys() else pnl_usd
+                duration_sec = row["duration_seconds"] if "duration_seconds" in row.keys() else (row["duration_minutes"] or 0) * 60
+                is_winner = pnl_usd > 0
+
+                # Extract style and timeframe from variant_id
+                # Format: V6_FAST_PRUDENT, V6_MEDIUM_MODERATE, V6_MACRO_TREND, etc.
+                style = "UNKNOWN"
+                timeframe = "UNKNOWN"
+
+                if variant_id.startswith("V6_"):
+                    parts = variant_id.replace("V6_", "").split("_")
+                    if len(parts) >= 1:
+                        timeframe = parts[0]  # FAST, MEDIUM, MACRO
+                    if len(parts) >= 2:
+                        style = parts[1]  # PRUDENT, MODERATE, AGGRESSIVE, TREND
+                elif variant_id in ("V1_BASELINE", "V2_MULTI_AI"):
+                    style = "MODERATE"  # Legacy variants use moderate
+                    timeframe = "LEGACY"
+
+                # Short model name for display
+                model_short = ai_model.split("/")[-1] if "/" in ai_model else ai_model
+
+                # Update totals
+                self._update_stats(totals, pnl_usd, pnl_pct, fee_usd, net_pnl_usd, duration_sec, is_winner)
+
+                # By Model
+                if model_short not in by_model:
+                    by_model[model_short] = self._empty_stats()
+                self._update_stats(by_model[model_short], pnl_usd, pnl_pct, fee_usd, net_pnl_usd, duration_sec, is_winner)
+
+                # By Style
+                if style not in by_style:
+                    by_style[style] = self._empty_stats()
+                self._update_stats(by_style[style], pnl_usd, pnl_pct, fee_usd, net_pnl_usd, duration_sec, is_winner)
+
+                # By Timeframe
+                if timeframe not in by_timeframe:
+                    by_timeframe[timeframe] = self._empty_stats()
+                self._update_stats(by_timeframe[timeframe], pnl_usd, pnl_pct, fee_usd, net_pnl_usd, duration_sec, is_winner)
+
+                # By Model × Style
+                key_ms = f"{model_short}|{style}"
+                if key_ms not in by_model_style:
+                    by_model_style[key_ms] = self._empty_stats()
+                self._update_stats(by_model_style[key_ms], pnl_usd, pnl_pct, fee_usd, net_pnl_usd, duration_sec, is_winner)
+
+                # By Model × Style × Timeframe
+                key_mst = f"{model_short}|{style}|{timeframe}"
+                if key_mst not in by_model_style_timeframe:
+                    by_model_style_timeframe[key_mst] = self._empty_stats()
+                self._update_stats(by_model_style_timeframe[key_mst], pnl_usd, pnl_pct, fee_usd, net_pnl_usd, duration_sec, is_winner)
+
+            # Finalize all stats (calculate averages, win rates)
+            self._finalize_stats(totals)
+            for stats in by_model.values():
+                self._finalize_stats(stats)
+            for stats in by_style.values():
+                self._finalize_stats(stats)
+            for stats in by_timeframe.values():
+                self._finalize_stats(stats)
+            for stats in by_model_style.values():
+                self._finalize_stats(stats)
+            for stats in by_model_style_timeframe.values():
+                self._finalize_stats(stats)
+
+            return {
+                "by_model": by_model,
+                "by_style": by_style,
+                "by_timeframe": by_timeframe,
+                "by_model_style": by_model_style,
+                "by_model_style_timeframe": by_model_style_timeframe,
+                "totals": totals,
+            }
+
+    def _empty_stats(self) -> Dict[str, Any]:
+        """Return empty stats dict."""
+        return {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "gross_pnl_usd": 0.0,
+            "total_fees_usd": 0.0,
+            "net_pnl_usd": 0.0,
+            "total_pnl_pct": 0.0,
+            "total_duration_sec": 0,
+            "win_rate": 0.0,
+            "avg_pnl_pct": 0.0,
+            "avg_duration_min": 0.0,
+            "profit_factor": 0.0,
+        }
+
+    def _update_stats(
+        self,
+        stats: Dict[str, Any],
+        pnl_usd: float,
+        pnl_pct: float,
+        fee_usd: float,
+        net_pnl_usd: float,
+        duration_sec: int,
+        is_winner: bool
+    ) -> None:
+        """Update stats with a trade."""
+        stats["trades"] += 1
+        stats["wins"] += 1 if is_winner else 0
+        stats["losses"] += 0 if is_winner else 1
+        stats["gross_pnl_usd"] += pnl_usd
+        stats["total_fees_usd"] += fee_usd
+        stats["net_pnl_usd"] += net_pnl_usd
+        stats["total_pnl_pct"] += pnl_pct
+        stats["total_duration_sec"] += duration_sec
+
+    def _finalize_stats(self, stats: Dict[str, Any]) -> None:
+        """Finalize stats by calculating averages and ratios."""
+        if stats["trades"] > 0:
+            stats["win_rate"] = round(stats["wins"] / stats["trades"] * 100, 1)
+            stats["avg_pnl_pct"] = round(stats["total_pnl_pct"] / stats["trades"], 2)
+            stats["avg_duration_min"] = round(stats["total_duration_sec"] / stats["trades"] / 60, 1)
+
+            # Profit factor: gross wins / gross losses
+            gross_wins = sum_wins = 0.0
+            gross_losses = 0.0
+            # We don't have individual trade data here, so estimate from net
+            if stats["wins"] > 0 and stats["losses"] > 0:
+                # Rough estimate
+                avg_win = stats["gross_pnl_usd"] / stats["trades"] if stats["gross_pnl_usd"] > 0 else 0
+                if stats["losses"] > 0:
+                    stats["profit_factor"] = round(abs(stats["wins"] * avg_win / (stats["losses"] * avg_win)) if avg_win != 0 else 0, 2)
+            elif stats["wins"] > 0 and stats["losses"] == 0:
+                stats["profit_factor"] = 999.99  # All winners
+            else:
+                stats["profit_factor"] = 0.0
+
+        # Round USD values
+        stats["gross_pnl_usd"] = round(stats["gross_pnl_usd"], 2)
+        stats["total_fees_usd"] = round(stats["total_fees_usd"], 2)
+        stats["net_pnl_usd"] = round(stats["net_pnl_usd"], 2)

@@ -1537,6 +1537,189 @@ DASHBOARD_HTML = """
                         </div>
                     </div>
                 </div>
+
+                <!-- Detailed Analytics Breakdown Section -->
+                <div class="section" style="margin-top: 30px; grid-column: span 2;">
+                    <h2>📊 Detailed Breakdown (with Fees)</h2>
+                    <p style="color: #888; margin-bottom: 15px;">
+                        Analisi dettagliata per AI Model, Stile e Timeframe. Include calcolo fees (0.0432% taker).
+                    </p>
+
+                    <!-- Totals Summary -->
+                    <div class="analytics-stats" style="margin-bottom: 25px;">
+                        <div class="stat-box">
+                            <div class="stat-label">Total Trades</div>
+                            <div class="stat-value">{{ detailed_analytics.totals.trades or 0 }}</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Gross P&L</div>
+                            <div class="stat-value {{ 'positive' if (detailed_analytics.totals.gross_pnl_usd or 0) >= 0 else 'negative' }}">
+                                ${{ "%.2f"|format(detailed_analytics.totals.gross_pnl_usd or 0) }}
+                            </div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Total Fees</div>
+                            <div class="stat-value" style="color: #ff6666;">
+                                -${{ "%.2f"|format(detailed_analytics.totals.total_fees_usd or 0) }}
+                            </div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Net P&L</div>
+                            <div class="stat-value {{ 'positive' if (detailed_analytics.totals.net_pnl_usd or 0) >= 0 else 'negative' }}">
+                                ${{ "%.2f"|format(detailed_analytics.totals.net_pnl_usd or 0) }}
+                            </div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Win Rate</div>
+                            <div class="stat-value">{{ "%.1f"|format(detailed_analytics.totals.win_rate or 0) }}%</div>
+                        </div>
+                    </div>
+
+                    <!-- By AI Model -->
+                    <h3 style="color: #00d4ff; margin-bottom: 10px;">🤖 Per AI Model</h3>
+                    <table style="margin-bottom: 25px;">
+                        <thead>
+                            <tr>
+                                <th>AI Model</th>
+                                <th>Trades</th>
+                                <th>W/L</th>
+                                <th>Win%</th>
+                                <th>Gross P&L</th>
+                                <th>Fees</th>
+                                <th>Net P&L</th>
+                                <th>Avg Duration</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for model, stats in detailed_analytics.by_model.items() %}
+                            <tr>
+                                <td>{{ model }}</td>
+                                <td>{{ stats.trades }}</td>
+                                <td>{{ stats.wins }}/{{ stats.losses }}</td>
+                                <td>{{ "%.1f"|format(stats.win_rate) }}%</td>
+                                <td class="{{ 'pnl-positive' if stats.gross_pnl_usd >= 0 else 'pnl-negative' }}">
+                                    ${{ "%.2f"|format(stats.gross_pnl_usd) }}
+                                </td>
+                                <td style="color: #ff6666;">-${{ "%.2f"|format(stats.total_fees_usd) }}</td>
+                                <td class="{{ 'pnl-positive' if stats.net_pnl_usd >= 0 else 'pnl-negative' }}">
+                                    ${{ "%.2f"|format(stats.net_pnl_usd) }}
+                                </td>
+                                <td>{{ "%.1f"|format(stats.avg_duration_min) }}m</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="8" style="text-align: center; color: #666;">Nessun trade</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+
+                    <!-- By Style -->
+                    <h3 style="color: #00ff88; margin-bottom: 10px;">🎯 Per Stile</h3>
+                    <table style="margin-bottom: 25px;">
+                        <thead>
+                            <tr>
+                                <th>Stile</th>
+                                <th>Trades</th>
+                                <th>W/L</th>
+                                <th>Win%</th>
+                                <th>Gross P&L</th>
+                                <th>Fees</th>
+                                <th>Net P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for style, stats in detailed_analytics.by_style.items() %}
+                            <tr>
+                                <td>
+                                    {% if style == 'PRUDENT' %}🛡️{% elif style == 'MODERATE' %}⚖️{% elif style == 'AGGRESSIVE' %}🔥{% elif style == 'TREND' %}📈{% else %}❓{% endif %}
+                                    {{ style }}
+                                </td>
+                                <td>{{ stats.trades }}</td>
+                                <td>{{ stats.wins }}/{{ stats.losses }}</td>
+                                <td>{{ "%.1f"|format(stats.win_rate) }}%</td>
+                                <td class="{{ 'pnl-positive' if stats.gross_pnl_usd >= 0 else 'pnl-negative' }}">
+                                    ${{ "%.2f"|format(stats.gross_pnl_usd) }}
+                                </td>
+                                <td style="color: #ff6666;">-${{ "%.2f"|format(stats.total_fees_usd) }}</td>
+                                <td class="{{ 'pnl-positive' if stats.net_pnl_usd >= 0 else 'pnl-negative' }}">
+                                    ${{ "%.2f"|format(stats.net_pnl_usd) }}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="7" style="text-align: center; color: #666;">Nessun trade</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+
+                    <!-- By Timeframe -->
+                    <h3 style="color: #ffaa00; margin-bottom: 10px;">⏱️ Per Timeframe</h3>
+                    <table style="margin-bottom: 25px;">
+                        <thead>
+                            <tr>
+                                <th>Timeframe</th>
+                                <th>Trades</th>
+                                <th>W/L</th>
+                                <th>Win%</th>
+                                <th>Gross P&L</th>
+                                <th>Fees</th>
+                                <th>Net P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for tf, stats in detailed_analytics.by_timeframe.items() %}
+                            <tr>
+                                <td>
+                                    {% if tf == 'FAST' %}⚡{% elif tf == 'MEDIUM' %}🕐{% elif tf == 'MACRO' %}📊{% else %}📁{% endif %}
+                                    {{ tf }}
+                                </td>
+                                <td>{{ stats.trades }}</td>
+                                <td>{{ stats.wins }}/{{ stats.losses }}</td>
+                                <td>{{ "%.1f"|format(stats.win_rate) }}%</td>
+                                <td class="{{ 'pnl-positive' if stats.gross_pnl_usd >= 0 else 'pnl-negative' }}">
+                                    ${{ "%.2f"|format(stats.gross_pnl_usd) }}
+                                </td>
+                                <td style="color: #ff6666;">-${{ "%.2f"|format(stats.total_fees_usd) }}</td>
+                                <td class="{{ 'pnl-positive' if stats.net_pnl_usd >= 0 else 'pnl-negative' }}">
+                                    ${{ "%.2f"|format(stats.net_pnl_usd) }}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="7" style="text-align: center; color: #666;">Nessun trade</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+
+                    <!-- Matrix View: Model × Style (Collapsible) -->
+                    <details style="margin-bottom: 20px;">
+                        <summary style="cursor: pointer; color: #aa44ff; font-size: 1.1em; margin-bottom: 10px;">
+                            🔮 Matrice AI Model × Stile (click per espandere)
+                        </summary>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Model | Style</th>
+                                    <th>Trades</th>
+                                    <th>Win%</th>
+                                    <th>Net P&L</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for key, stats in detailed_analytics.by_model_style.items() %}
+                                {% set parts = key.split('|') %}
+                                <tr>
+                                    <td>{{ parts[0] }} × {{ parts[1] }}</td>
+                                    <td>{{ stats.trades }}</td>
+                                    <td>{{ "%.1f"|format(stats.win_rate) }}%</td>
+                                    <td class="{{ 'pnl-positive' if stats.net_pnl_usd >= 0 else 'pnl-negative' }}">
+                                        ${{ "%.2f"|format(stats.net_pnl_usd) }}
+                                    </td>
+                                </tr>
+                                {% else %}
+                                <tr><td colspan="4" style="text-align: center; color: #666;">Nessun trade</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </details>
+                </div>
             </div>
         </div>
 
@@ -2060,6 +2243,7 @@ def dashboard():
     ai_chart_data = sanitize_for_json(get_ai_chart_data())
     strategy_chart_data = sanitize_for_json(get_strategy_chart_data())
     analytics = sanitize_for_json(get_analytics_data())
+    detailed_analytics = sanitize_for_json(db.get_detailed_analytics())
 
     # V6 specific data
     v6_leaderboard = sanitize_for_json(get_v6_leaderboard())
@@ -2080,6 +2264,7 @@ def dashboard():
         ai_chart_data=ai_chart_data,
         strategy_chart_data=strategy_chart_data,
         analytics=analytics,
+        detailed_analytics=detailed_analytics,
         available_models=AVAILABLE_AI_MODELS,
         paused=simulation_paused,
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2370,6 +2555,19 @@ def api_get_recommendations():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e), "recommendations": []})
+
+
+@app.route('/api/analytics/detailed')
+def api_detailed_analytics():
+    """
+    Get detailed analytics with breakdown by AI Model, Style, and Timeframe.
+
+    Query params:
+    - hours: Optional, filter to last N hours (default: all time)
+    """
+    hours = request.args.get('hours', type=int)
+    data = db.get_detailed_analytics(hours=hours)
+    return jsonify(sanitize_for_json(data))
 
 
 # AI Analysis cache

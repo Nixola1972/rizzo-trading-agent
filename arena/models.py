@@ -488,6 +488,11 @@ class SimulatedTrade:
     peak_pnl_pct: float = 0.0
     duration_minutes: int = 0
 
+    # Fees and Net P&L
+    fee_usd: float = 0.0
+    net_pnl_usd: float = 0.0
+    duration_seconds: int = 0
+
     # Smart SL info
     smart_sl_extensions: int = 0
     final_sl_price: float = 0.0
@@ -509,8 +514,17 @@ class SimulatedTrade:
 
         self.pnl_usd = (self.pnl_pct / 100) * self.position_size_usd
 
+        # Calculate fees: Taker 0.0432% on volume (open + close)
+        # Volume = position_size × leverage × 2 (entry + exit)
+        volume = self.position_size_usd * self.leverage * 2
+        self.fee_usd = volume * 0.000432  # 0.0432%
+
+        # Net P&L after fees
+        self.net_pnl_usd = self.pnl_usd - self.fee_usd
+
         if self.entry_time and self.exit_time:
             self.duration_minutes = int((self.exit_time - self.entry_time).total_seconds() / 60)
+            self.duration_seconds = int((self.exit_time - self.entry_time).total_seconds())
 
     @property
     def is_winner(self) -> bool:
@@ -536,8 +550,11 @@ class SimulatedTrade:
             "exit_reason": self.exit_reason.value,
             "pnl_pct": self.pnl_pct,
             "pnl_usd": self.pnl_usd,
+            "fee_usd": self.fee_usd,
+            "net_pnl_usd": self.net_pnl_usd,
             "peak_pnl_pct": self.peak_pnl_pct,
             "duration_minutes": self.duration_minutes,
+            "duration_seconds": self.duration_seconds,
             "smart_sl_extensions": self.smart_sl_extensions,
             "final_sl_price": self.final_sl_price,
             "ai_model": self.ai_model,
