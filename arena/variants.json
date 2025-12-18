@@ -80,7 +80,7 @@
       "id": "V2_MULTI_AI",
       "name": "V2 Multi AI Battle",
       "description": "Battle tra 6 modelli AI con score threshold",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "SCORE_TRIGGERED",
       "ai_models": [
         "deepseek/deepseek-v3.2-speciale",
@@ -111,7 +111,7 @@
       "id": "V5_AI_FREE",
       "name": "V5 AI Free (Independent)",
       "description": "AI decide liberamente ogni check, no score threshold",
-      "enabled": true,
+      "enabled": false,
       "operation_mode": "AI_INDEPENDENT",
       "ai_models": ["tngtech/deepseek-r1t2-chimera:free"],
       "trading_params": {
