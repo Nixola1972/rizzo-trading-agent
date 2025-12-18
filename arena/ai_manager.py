@@ -443,6 +443,14 @@ Respond with JSON:
         variant: Variant,
     ) -> str:
         """Build prompt for independent decision with position context."""
+        # Check if this is a V6 variant with prompt_style
+        prompt_style = getattr(variant, 'prompt_style', None)
+        if prompt_style:
+            return self._build_v6_prompt(
+                symbol, market_data, has_position, current_direction, variant, prompt_style
+            )
+
+        # Legacy prompt for non-V6 variants
         position_info = ""
         if has_position and current_direction:
             position_info = f"""
@@ -451,7 +459,7 @@ CURRENT POSITION:
 - P&L: {market_data.get('current_pnl_pct', 0):.2f}%
 """
 
-        max_leverage = variant.trading_params.leverage  # This is now max_leverage
+        max_leverage = variant.trading_params.leverage
 
         return f"""ARENA SIMULATION - AI Free Decision
 Interval: Every {variant.ai_check_interval_minutes} minutes
@@ -479,6 +487,199 @@ LEVERAGE: Choose 1-{max_leverage}x based on:
 
 Respond with JSON:
 {{"action": "open/close/hold", "direction": "LONG/SHORT" (if open), "leverage": 1-{max_leverage} (if open), "confidence": 0.0-1.0, "reason": "brief analysis"}}"""
+
+    def _build_v6_prompt(
+        self,
+        symbol: str,
+        market_data: Dict[str, Any],
+        has_position: bool,
+        current_direction: Optional[TradeDirection],
+        variant: Variant,
+        prompt_style: str,
+    ) -> str:
+        """Build V6 AI Battle prompt with enhanced market data and style-specific rules."""
+
+        # Position info
+        position_info = ""
+        if has_position and current_direction:
+            position_info = f"""
+CURRENT POSITION:
+- Direction: {current_direction.value}
+- P&L: {market_data.get('current_pnl_pct', 0):.2f}%
+- Entry Price: ${market_data.get('entry_price', 0):,.2f}
+"""
+
+        max_leverage = variant.trading_params.leverage
+
+        # Enhanced market data section
+        market_section = f"""
+PRICE DATA:
+- Current: ${market_data.get('price', 0):,.2f}
+- Change 1h: {market_data.get('change_1h', 0):+.2f}%
+- Change 24h: {market_data.get('change_24h', 0):+.2f}%
+
+TECHNICAL INDICATORS:
+- MACD: {market_data.get('macd', 0):.4f} ({self._macd_signal(market_data.get('macd', 0))})
+- RSI: {market_data.get('rsi', 50):.1f} ({self._rsi_signal(market_data.get('rsi', 50))})
+- ADX: {market_data.get('adx', 0):.1f} ({self._adx_signal(market_data.get('adx', 0))})
+- EMA Stack: Price vs EMA9 vs EMA21 = {market_data.get('ema_stack', 'neutral')}
+- ATR (Volatility): {market_data.get('atr', 0):.2f} ({market_data.get('volatility_level', 'normal')})
+
+VOLUME & LIQUIDITY:
+- Volume 24h: ${market_data.get('volume_24h', 0):,.0f}
+- Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x average
+- Open Interest: ${market_data.get('open_interest', 0):,.0f}
+- OI Change 24h: {market_data.get('oi_change_24h', 0):+.2f}%
+
+MULTI-TIMEFRAME TREND:
+- 15min: {market_data.get('trend_15m', 'neutral')}
+- 1h: {market_data.get('trend_1h', 'neutral')}
+- 4h: {market_data.get('trend_4h', 'neutral')}
+- 1D: {market_data.get('trend_1d', 'neutral')}
+
+PATTERNS:
+- Double Bottom: {market_data.get('double_bottom', False)} (conf: {market_data.get('double_bottom_conf', 0):.0%})
+- Double Top: {market_data.get('double_top', False)} (conf: {market_data.get('double_top_conf', 0):.0%})
+
+SENTIMENT:
+- Fear & Greed Index: {market_data.get('fear_greed', 50)} ({self._fg_signal(market_data.get('fear_greed', 50))})
+- Funding Rate: {market_data.get('funding_rate', 0):.4%} ({self._funding_signal(market_data.get('funding_rate', 0))})
+- Whale Activity: {market_data.get('whale_activity', 'none')}
+"""
+
+        # Style-specific rules
+        if prompt_style == "PRUDENT":
+            rules = self._get_prudent_rules(max_leverage)
+        elif prompt_style == "AGGRESSIVE":
+            rules = self._get_aggressive_rules(max_leverage)
+        elif prompt_style == "MACRO":
+            rules = self._get_macro_rules(max_leverage)
+        else:  # MODERATE (default)
+            rules = self._get_moderate_rules(max_leverage)
+
+        return f"""V6 AI BATTLE - {prompt_style} Strategy
+Interval: Every {variant.ai_check_interval_minutes} minutes
+Analysis Timeframe: {variant.ai_independent_timeframe}
+
+SYMBOL: {symbol}
+{position_info}
+{market_section}
+{rules}
+
+Respond with JSON:
+{{"action": "open/close/hold", "direction": "LONG/SHORT" (if open), "leverage": 1-{max_leverage} (if open), "confidence": 0.0-1.0, "reason": "detailed analysis"}}"""
+
+    def _get_prudent_rules(self, max_leverage: int) -> str:
+        """Get rules for PRUDENT trading style."""
+        return f"""
+TRADING STYLE: PRUDENT (Capital Preservation)
+Goal: High win rate, fewer trades, protect capital
+
+RULES YOU MUST FOLLOW:
+1. ONLY open if confidence > 80%
+2. Require at least 3 aligned indicators (MACD + RSI + Trend)
+3. MAX leverage: {min(3, max_leverage)}x
+4. PREFER HOLD when uncertain - patience is key
+5. AVOID trading when ADX < 20 (no clear trend)
+6. AVOID trading when volatility is high (ATR above normal)
+7. Take profit early (> 2%) - don't get greedy
+8. If funding rate is extreme (>0.05% or <-0.05%), be extra cautious
+
+DECISION PRIORITY: Safety > Profit
+When in doubt → HOLD"""
+
+    def _get_moderate_rules(self, max_leverage: int) -> str:
+        """Get rules for MODERATE trading style."""
+        return f"""
+TRADING STYLE: MODERATE (Balanced)
+Goal: Balance between opportunities and risk management
+
+RULES YOU MUST FOLLOW:
+1. Open if confidence > 60%
+2. Need at least 2 aligned indicators
+3. Leverage 1-{max_leverage}x based on confidence:
+   - 60-70% confidence → 2-3x
+   - 70-80% confidence → 3-5x
+   - 80%+ confidence → up to {max_leverage}x
+4. Close position when indicators flip against you
+5. Consider volume confirmation for entries
+6. Respect multi-timeframe alignment
+
+DECISION PRIORITY: Risk-adjusted returns"""
+
+    def _get_aggressive_rules(self, max_leverage: int) -> str:
+        """Get rules for AGGRESSIVE trading style."""
+        return f"""
+TRADING STYLE: AGGRESSIVE (Maximum Opportunities)
+Goal: Capture more moves, accept higher risk for higher rewards
+
+RULES YOU MUST FOLLOW:
+1. Open if confidence > 50%
+2. Use higher leverage (5-{max_leverage}x) on strong signals
+3. Trade even in moderate volatility
+4. Hold positions longer for bigger targets
+5. One strong indicator can be enough to enter
+6. Volume spike = potential opportunity
+7. Against-trend trades OK if reversal signals strong
+
+DECISION PRIORITY: Opportunity capture
+Be decisive - markets reward action"""
+
+    def _get_macro_rules(self, max_leverage: int) -> str:
+        """Get rules for MACRO trading style."""
+        return f"""
+TRADING STYLE: MACRO TREND FOLLOWER (Big Moves Only)
+Goal: Catch major trend moves on daily timeframe
+
+RULES YOU MUST FOLLOW:
+1. ONLY open if confidence > 85%
+2. REQUIRE trend alignment on 4h AND 1D timeframes
+3. MAX leverage: {min(2, max_leverage)}x (protect capital for big moves)
+4. Target: 5-10% profit (let winners run)
+5. IGNORE short-term noise and minor fluctuations
+6. Wait for PERFECT setups - patience is critical
+7. Only 1-3 trades per week expected
+8. RSI extremes matter more on daily timeframe
+
+MULTI-TIMEFRAME REQUIREMENT:
+- 4h and 1D must agree on direction
+- If conflict → HOLD
+
+DECISION PRIORITY: Quality over quantity
+Think like an investor, not a scalper"""
+
+    # Helper methods for signal interpretation
+    def _macd_signal(self, macd: float) -> str:
+        if macd > 0.2: return "strong bullish"
+        elif macd > 0: return "bullish"
+        elif macd < -0.2: return "strong bearish"
+        elif macd < 0: return "bearish"
+        return "neutral"
+
+    def _rsi_signal(self, rsi: float) -> str:
+        if rsi > 70: return "overbought"
+        elif rsi > 60: return "bullish"
+        elif rsi < 30: return "oversold"
+        elif rsi < 40: return "bearish"
+        return "neutral"
+
+    def _adx_signal(self, adx: float) -> str:
+        if adx > 40: return "very strong trend"
+        elif adx > 25: return "strong trend"
+        elif adx > 20: return "trend developing"
+        return "weak/no trend"
+
+    def _fg_signal(self, fg: int) -> str:
+        if fg > 75: return "extreme greed"
+        elif fg > 55: return "greed"
+        elif fg < 25: return "extreme fear"
+        elif fg < 45: return "fear"
+        return "neutral"
+
+    def _funding_signal(self, rate: float) -> str:
+        if rate > 0.01: return "longs paying - crowded long"
+        elif rate < -0.01: return "shorts paying - crowded short"
+        return "neutral"
 
     def _build_smart_sl_prompt(
         self,

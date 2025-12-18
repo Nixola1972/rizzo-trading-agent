@@ -1,25 +1,34 @@
 """
-Arena Dashboard - Interactive Web Interface
+Arena Dashboard - Interactive Web Interface V6
 
 Features:
-- 3 Tabs: AI Battle, Strategies, Live Positions
+- Login system with session management
+- V6 AI Battle with multiple charts per strategy family
 - Toggle controls for variants and AI models
 - Real-time equity curves
 - API call tracking
+- GO LIVE button to deploy winning model to production
 - Pause/Resume simulation
 """
 
 import os
 import json
 import math
+import secrets
+import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
-from flask import Flask, render_template_string, jsonify, request
+from functools import wraps
+from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
 
 from .db import ArenaDB
 from .config_loader import load_variants
 from .metrics import calculate_metrics, get_leaderboard
 from .models import TradeDirection
+
+# Login credentials
+LOGIN_USERNAME = os.environ.get("ARENA_USERNAME", "nico")
+LOGIN_PASSWORD = os.environ.get("ARENA_PASSWORD", "Trade@2025")
 
 
 def sanitize_for_json(obj):
@@ -60,6 +69,17 @@ def sanitize_for_json(obj):
 
 # Flask app
 app = Flask(__name__)
+app.secret_key = os.environ.get("ARENA_SECRET_KEY", secrets.token_hex(32))
+
+
+def login_required(f):
+    """Decorator to require login for routes."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 
 def safe_json_filter(obj):
@@ -105,7 +125,127 @@ def init_dashboard(database: Optional[ArenaDB] = None):
     db = database or ArenaDB()
 
 
-# ==================== HTML Template ====================
+# ==================== HTML Templates ====================
+
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🏟️ Arena - Login</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 100%);
+            color: #cccccc;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-container {
+            background: #1a1a3e;
+            border-radius: 15px;
+            padding: 40px;
+            border: 1px solid #333;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .login-header h1 {
+            color: #00d4ff;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        .login-header p {
+            color: #888;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #888;
+            font-size: 0.9em;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px 15px;
+            background: #0f0f23;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 1em;
+            transition: border-color 0.2s;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        .login-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #00d4ff, #0099cc);
+            border: none;
+            border-radius: 8px;
+            color: #000;
+            font-weight: 600;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 212, 255, 0.4);
+        }
+        .error-message {
+            background: #ff444433;
+            color: #ff4444;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .version-badge {
+            text-align: center;
+            margin-top: 20px;
+            color: #666;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h1>🏟️ Arena V6</h1>
+            <p>AI Battle Trading System</p>
+        </div>
+        {% if error %}
+        <div class="error-message">{{ error }}</div>
+        {% endif %}
+        <form method="POST" action="/login">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password">
+            </div>
+            <button type="submit" class="login-btn">🚀 Enter Arena</button>
+        </form>
+        <div class="version-badge">Arena V6 AI Battle System</div>
+    </div>
+</body>
+</html>
+"""
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -587,11 +727,202 @@ DASHBOARD_HTML = """
         .ai-action-item .priority-high { color: #ff4444; }
         .ai-action-item .priority-medium { color: #ffaa00; }
         .ai-action-item .priority-low { color: #00ff88; }
+
+        /* V6 Grid Layout */
+        .v6-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+        @media (max-width: 1200px) {
+            .v6-grid { grid-template-columns: 1fr; }
+        }
+        .v6-chart-box {
+            background: #1a1a3e;
+            border-radius: 10px;
+            padding: 20px;
+            border: 1px solid #333;
+        }
+        .v6-chart-box h3 {
+            color: #00d4ff;
+            margin-bottom: 15px;
+            font-size: 1em;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .v6-chart-box .interval-badge {
+            font-size: 0.75em;
+            padding: 4px 8px;
+            background: #252550;
+            border-radius: 4px;
+            color: #888;
+        }
+
+        /* V6 Model Toggle Grid */
+        .v6-models-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .v6-model-toggle {
+            background: #252550;
+            border-radius: 6px;
+            padding: 10px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .v6-model-toggle .model-name {
+            font-size: 0.85em;
+            color: #ccc;
+        }
+        .v6-model-toggle .model-stats {
+            font-size: 0.7em;
+            color: #666;
+        }
+
+        /* GO LIVE Button */
+        .go-live-container {
+            background: linear-gradient(135deg, #1a3a1a, #0f0f23);
+            border: 2px solid #00ff88;
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 30px;
+            text-align: center;
+        }
+        .go-live-container h2 {
+            color: #00ff88;
+            margin-bottom: 15px;
+        }
+        .go-live-container p {
+            color: #888;
+            margin-bottom: 20px;
+        }
+        .go-live-btn {
+            padding: 20px 50px;
+            background: linear-gradient(135deg, #00aa55, #00ff88);
+            border: none;
+            border-radius: 10px;
+            color: #000;
+            font-weight: 700;
+            font-size: 1.3em;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 5px 25px rgba(0, 255, 136, 0.3);
+        }
+        .go-live-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 35px rgba(0, 255, 136, 0.5);
+        }
+        .go-live-btn:disabled {
+            background: #444;
+            cursor: not-allowed;
+            box-shadow: none;
+            transform: none;
+        }
+        .go-live-winner {
+            background: #252550;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            display: inline-block;
+        }
+        .go-live-winner .winner-label {
+            color: #888;
+            font-size: 0.85em;
+        }
+        .go-live-winner .winner-name {
+            color: #00ff88;
+            font-size: 1.5em;
+            font-weight: 600;
+        }
+        .go-live-winner .winner-stats {
+            color: #ccc;
+            margin-top: 5px;
+        }
+
+        /* Confirmation Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-box {
+            background: #1a1a3e;
+            border-radius: 15px;
+            padding: 30px;
+            max-width: 500px;
+            border: 1px solid #333;
+            text-align: center;
+        }
+        .modal-box h2 {
+            color: #ffaa00;
+            margin-bottom: 15px;
+        }
+        .modal-box p {
+            color: #ccc;
+            margin-bottom: 20px;
+        }
+        .modal-buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+        }
+        .modal-btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .modal-btn-cancel {
+            background: #444;
+            color: #fff;
+        }
+        .modal-btn-confirm {
+            background: linear-gradient(135deg, #ff6600, #ff8800);
+            color: #fff;
+        }
+        .modal-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        /* Leaderboard highlight for best model */
+        .leaderboard-best {
+            background: linear-gradient(90deg, rgba(0, 255, 136, 0.1), transparent);
+            border-left: 3px solid #00ff88;
+        }
+
+        /* Logout button */
+        .logout-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 1px solid #666;
+            color: #888;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .logout-btn:hover {
+            border-color: #ff4444;
+            color: #ff4444;
+        }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🏟️ Arena Trading Simulation</h1>
+        <h1>🏟️ Arena V6 AI Battle</h1>
         <div class="header-stats">
             <div class="header-stat">
                 <div class="value {{ 'positive' if stats.total_pnl >= 0 else 'negative' }}">${{ "%.2f"|format(stats.current_equity) }}</div>
@@ -609,6 +940,9 @@ DASHBOARD_HTML = """
                 <div class="value">{{ "%.1f"|format(stats.win_rate) }}%</div>
                 <div class="label">Win Rate</div>
             </div>
+            <div class="header-stat">
+                <button class="logout-btn" onclick="window.location.href='/logout'">🚪 Logout</button>
+            </div>
         </div>
     </div>
 
@@ -625,15 +959,155 @@ DASHBOARD_HTML = """
     </div>
 
     <div class="tabs">
-        <div class="tab active" onclick="showTab('ai-battle')">🤖 AI Battle</div>
+        <div class="tab active" onclick="showTab('v6-battle')">⚔️ V6 Battle</div>
+        <div class="tab" onclick="showTab('ai-battle')">🤖 AI Models</div>
         <div class="tab" onclick="showTab('strategies')">📊 Strategies</div>
         <div class="tab" onclick="showTab('positions')">📍 Positions</div>
         <div class="tab" onclick="showTab('analytics')">🎯 Analytics</div>
     </div>
 
+    <!-- GO LIVE Confirmation Modal -->
+    <div id="golive-modal" class="modal-overlay">
+        <div class="modal-box">
+            <h2>⚠️ Conferma GO LIVE</h2>
+            <p>Stai per deployare <strong id="modal-model-name"></strong> in produzione.</p>
+            <p style="color: #ffaa00; font-size: 0.9em;">Questa azione modificherà la configurazione di RIZZO (produzione reale).</p>
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" onclick="closeGoLiveModal()">❌ Annulla</button>
+                <button class="modal-btn modal-btn-confirm" onclick="confirmGoLive()">✅ Conferma GO LIVE</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
-        <!-- AI Battle Tab -->
-        <div id="ai-battle" class="tab-content active">
+        <!-- V6 Battle Tab (NEW - Default) -->
+        <div id="v6-battle" class="tab-content active">
+            <!-- V6 Strategy Charts Grid -->
+            <div class="v6-grid">
+                <!-- V6 FAST (5min) Chart -->
+                <div class="v6-chart-box">
+                    <h3>
+                        🚀 V6 Fast Strategies
+                        <span class="interval-badge">5min check</span>
+                    </h3>
+                    <canvas id="v6FastChart" height="100"></canvas>
+                </div>
+
+                <!-- V6 MEDIUM (15min) Chart -->
+                <div class="v6-chart-box">
+                    <h3>
+                        ⚖️ V6 Medium Strategies
+                        <span class="interval-badge">15min check</span>
+                    </h3>
+                    <canvas id="v6MediumChart" height="100"></canvas>
+                </div>
+
+                <!-- V6 MACRO (1h) Chart -->
+                <div class="v6-chart-box">
+                    <h3>
+                        🌍 V6 Macro Trend
+                        <span class="interval-badge">1h check</span>
+                    </h3>
+                    <canvas id="v6MacroChart" height="100"></canvas>
+                </div>
+
+                <!-- V6 Combined Leaderboard -->
+                <div class="v6-chart-box">
+                    <h3>🏆 V6 AI Leaderboard (All Strategies)</h3>
+                    <table>
+                        <thead>
+                            <tr><th>#</th><th>AI Model</th><th>Trades</th><th>Win%</th><th>P&L</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for entry in v6_leaderboard %}
+                            <tr class="{{ 'leaderboard-best' if entry.rank == 1 else '' }}">
+                                <td>
+                                    {% if entry.rank == 1 %}<span class="medal">🥇</span>
+                                    {% elif entry.rank == 2 %}<span class="medal">🥈</span>
+                                    {% elif entry.rank == 3 %}<span class="medal">🥉</span>
+                                    {% else %}{{ entry.rank }}{% endif %}
+                                </td>
+                                <td>{{ entry.ai_model }}</td>
+                                <td>{{ entry.total_trades }}</td>
+                                <td>{{ "%.1f"|format(entry.win_rate) }}%</td>
+                                <td class="{{ 'pnl-positive' if entry.total_pnl_usd >= 0 else 'pnl-negative' }}">
+                                    ${{ "%.2f"|format(entry.total_pnl_usd) }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% if not v6_leaderboard %}
+                            <tr><td colspan="5" style="text-align: center; color: #666;">No V6 trades yet</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- V6 Model Controls per Strategy -->
+            <div class="section" style="margin-top: 20px;">
+                <h2>⚙️ V6 AI Model Controls</h2>
+                <p style="color: #888; margin-bottom: 15px;">Enable/disable AI models for each V6 strategy family.</p>
+
+                {% for family in v6_model_controls %}
+                <div style="margin-bottom: 20px;">
+                    <h3 style="color: #00d4ff; font-size: 0.95em; margin-bottom: 10px;">
+                        {{ family.name }}
+                        <span style="color: #666; font-weight: normal;">({{ family.description }})</span>
+                    </h3>
+                    <div class="v6-models-grid">
+                        {% for model in family.models %}
+                        <div class="v6-model-toggle">
+                            <div>
+                                <div class="model-name">{{ model.name }}</div>
+                                <div class="model-stats">{{ model.trades }} trades | {{ "%.1f"|format(model.win_rate) }}% WR</div>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" {{ 'checked' if model.enabled else '' }}
+                                       onchange="toggleV6Model('{{ family.variant_id }}', '{{ model.id }}', this.checked)">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- GO LIVE Section -->
+            <div class="go-live-container">
+                <h2>🚀 GO LIVE - Deploy to Production</h2>
+                <p>Deploy the best performing AI model to RIZZO (production bot).</p>
+
+                {% if best_v6_model %}
+                <div class="go-live-winner">
+                    <div class="winner-label">BEST PERFORMER</div>
+                    <div class="winner-name">{{ best_v6_model.name }}</div>
+                    <div class="winner-stats">
+                        {{ best_v6_model.trades }} trades |
+                        {{ "%.1f"|format(best_v6_model.win_rate) }}% WR |
+                        <span class="{{ 'pnl-positive' if best_v6_model.pnl >= 0 else 'pnl-negative' }}">
+                            ${{ "%.2f"|format(best_v6_model.pnl) }}
+                        </span>
+                    </div>
+                </div>
+                <button class="go-live-btn" onclick="showGoLiveModal('{{ best_v6_model.id }}', '{{ best_v6_model.name }}')"
+                        {% if best_v6_model.trades < 10 %}disabled title="Need at least 10 trades"{% endif %}>
+                    🎯 GO LIVE with {{ best_v6_model.name }}
+                </button>
+                {% if best_v6_model.trades < 10 %}
+                <p style="color: #888; margin-top: 10px; font-size: 0.85em;">
+                    ⚠️ Minimum 10 trades required. Current: {{ best_v6_model.trades }}
+                </p>
+                {% endif %}
+                {% else %}
+                <p style="color: #666;">No V6 trades yet. Start the simulation to collect data.</p>
+                <button class="go-live-btn" disabled>🎯 GO LIVE</button>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- AI Battle Tab (Legacy V2) -->
+        <div id="ai-battle" class="tab-content">
             <div class="chart-container">
                 <h2>📈 AI Models Equity Curve (V2 Battle)</h2>
                 <canvas id="aiBattleChart" height="80"></canvas>
@@ -1118,6 +1592,72 @@ DASHBOARD_HTML = """
             }
         }
 
+        // V6 Model Toggle
+        function toggleV6Model(variantId, modelId, enabled) {
+            fetch(`/api/v6/model/toggle`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ variant_id: variantId, model_id: modelId, enabled: enabled })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (!d.success) {
+                    alert('Error: ' + d.error);
+                    location.reload();
+                }
+            });
+        }
+
+        // GO LIVE Modal
+        let goLiveModelId = null;
+        let goLiveModelName = null;
+
+        function showGoLiveModal(modelId, modelName) {
+            goLiveModelId = modelId;
+            goLiveModelName = modelName;
+            document.getElementById('modal-model-name').textContent = modelName;
+            document.getElementById('golive-modal').classList.add('active');
+        }
+
+        function closeGoLiveModal() {
+            document.getElementById('golive-modal').classList.remove('active');
+            goLiveModelId = null;
+            goLiveModelName = null;
+        }
+
+        function confirmGoLive() {
+            if (!goLiveModelId) return;
+
+            const btn = document.querySelector('.modal-btn-confirm');
+            btn.disabled = true;
+            btn.textContent = '⏳ Deploying...';
+
+            fetch('/api/go-live', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_id: goLiveModelId, model_name: goLiveModelName })
+            })
+            .then(r => r.json())
+            .then(d => {
+                closeGoLiveModal();
+                if (d.success) {
+                    alert('✅ GO LIVE Success!\\n\\n' + d.message + '\\n\\nRizzo will use: ' + goLiveModelName);
+                    location.reload();
+                } else {
+                    alert('❌ GO LIVE Failed:\\n\\n' + d.error);
+                }
+            })
+            .catch(e => {
+                closeGoLiveModal();
+                alert('❌ Connection error');
+            });
+        }
+
+        // Close modal on overlay click
+        document.getElementById('golive-modal').addEventListener('click', function(e) {
+            if (e.target === this) closeGoLiveModal();
+        });
+
         function toggleDetails(index) {
             const details = document.getElementById('details-' + index);
             const btn = details.previousElementSibling;
@@ -1301,6 +1841,9 @@ DASHBOARD_HTML = """
         try {
             const aiData = {{ ai_chart_data | safejson }};
             const stratData = {{ strategy_chart_data | safejson }};
+            const v6FastData = {{ v6_fast_chart_data | safejson }};
+            const v6MediumData = {{ v6_medium_chart_data | safejson }};
+            const v6MacroData = {{ v6_macro_chart_data | safejson }};
 
             const chartOptions = {
                 responsive: true,
@@ -1312,18 +1855,58 @@ DASHBOARD_HTML = """
                 }
             };
 
-            if (typeof Chart !== 'undefined') {
-                new Chart(document.getElementById('aiBattleChart').getContext('2d'), {
-                    type: 'line',
-                    data: { labels: aiData.labels || [], datasets: aiData.datasets || [] },
-                    options: chartOptions
-                });
+            const v6ChartOptions = {
+                ...chartOptions,
+                plugins: {
+                    ...chartOptions.plugins,
+                    legend: { display: true, position: 'bottom', labels: { color: '#888', boxWidth: 12, padding: 8 } }
+                }
+            };
 
-                new Chart(document.getElementById('strategiesChart').getContext('2d'), {
-                    type: 'line',
-                    data: { labels: stratData.labels || [], datasets: stratData.datasets || [] },
-                    options: chartOptions
-                });
+            if (typeof Chart !== 'undefined') {
+                // V6 Fast Chart (5min strategies)
+                if (document.getElementById('v6FastChart')) {
+                    new Chart(document.getElementById('v6FastChart').getContext('2d'), {
+                        type: 'line',
+                        data: { labels: v6FastData.labels || [], datasets: v6FastData.datasets || [] },
+                        options: v6ChartOptions
+                    });
+                }
+
+                // V6 Medium Chart (15min strategies)
+                if (document.getElementById('v6MediumChart')) {
+                    new Chart(document.getElementById('v6MediumChart').getContext('2d'), {
+                        type: 'line',
+                        data: { labels: v6MediumData.labels || [], datasets: v6MediumData.datasets || [] },
+                        options: v6ChartOptions
+                    });
+                }
+
+                // V6 Macro Chart (1h strategy)
+                if (document.getElementById('v6MacroChart')) {
+                    new Chart(document.getElementById('v6MacroChart').getContext('2d'), {
+                        type: 'line',
+                        data: { labels: v6MacroData.labels || [], datasets: v6MacroData.datasets || [] },
+                        options: v6ChartOptions
+                    });
+                }
+
+                // Legacy charts
+                if (document.getElementById('aiBattleChart')) {
+                    new Chart(document.getElementById('aiBattleChart').getContext('2d'), {
+                        type: 'line',
+                        data: { labels: aiData.labels || [], datasets: aiData.datasets || [] },
+                        options: chartOptions
+                    });
+                }
+
+                if (document.getElementById('strategiesChart')) {
+                    new Chart(document.getElementById('strategiesChart').getContext('2d'), {
+                        type: 'line',
+                        data: { labels: stratData.labels || [], datasets: stratData.datasets || [] },
+                        options: chartOptions
+                    });
+                }
             } else {
                 console.warn('Chart.js not loaded - charts disabled');
             }
@@ -1338,7 +1921,32 @@ DASHBOARD_HTML = """
 
 # ==================== Routes ====================
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login page."""
+    if request.method == 'POST':
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+
+        if username == LOGIN_USERNAME and password == LOGIN_PASSWORD:
+            session['logged_in'] = True
+            session['username'] = username
+            return redirect(url_for('dashboard'))
+        else:
+            return render_template_string(LOGIN_HTML, error="Invalid credentials")
+
+    return render_template_string(LOGIN_HTML, error=None)
+
+
+@app.route('/logout')
+def logout():
+    """Logout and clear session."""
+    session.clear()
+    return redirect(url_for('login'))
+
+
 @app.route('/')
+@login_required
 def dashboard():
     """Main dashboard page."""
     global db, simulation_paused
@@ -1355,6 +1963,14 @@ def dashboard():
     strategy_chart_data = sanitize_for_json(get_strategy_chart_data())
     analytics = sanitize_for_json(get_analytics_data())
 
+    # V6 specific data
+    v6_leaderboard = sanitize_for_json(get_v6_leaderboard())
+    v6_model_controls = sanitize_for_json(get_v6_model_controls())
+    best_v6_model = sanitize_for_json(get_best_v6_model())
+    v6_fast_chart_data = sanitize_for_json(get_v6_chart_data('FAST'))
+    v6_medium_chart_data = sanitize_for_json(get_v6_chart_data('MEDIUM'))
+    v6_macro_chart_data = sanitize_for_json(get_v6_chart_data('MACRO'))
+
     return render_template_string(
         DASHBOARD_HTML,
         stats=sanitize_for_json(stats),
@@ -1369,6 +1985,13 @@ def dashboard():
         available_models=AVAILABLE_AI_MODELS,
         paused=simulation_paused,
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # V6 data
+        v6_leaderboard=v6_leaderboard,
+        v6_model_controls=v6_model_controls,
+        best_v6_model=best_v6_model,
+        v6_fast_chart_data=v6_fast_chart_data,
+        v6_medium_chart_data=v6_medium_chart_data,
+        v6_macro_chart_data=v6_macro_chart_data,
     )
 
 
@@ -1709,6 +2332,116 @@ def api_get_last_ai_analysis():
         })
     else:
         return jsonify({"success": False, "message": "Nessuna analisi AI disponibile. Clicca 'Esegui Analisi AI' per generarne una."})
+
+
+# ==================== V6 API Routes ====================
+
+@app.route('/api/v6/model/toggle', methods=['POST'])
+def api_toggle_v6_model():
+    """Toggle a specific AI model on/off for a V6 variant."""
+    import logging
+    logger = logging.getLogger("arena.dashboard")
+
+    data = request.get_json() or {}
+    variant_id = data.get('variant_id')
+    model_id = data.get('model_id')
+    enabled = data.get('enabled', True)
+
+    if not variant_id or not model_id:
+        return jsonify({"success": False, "error": "Missing variant_id or model_id"})
+
+    try:
+        # Load variants.json
+        variants_path = os.path.join(os.path.dirname(__file__), "variants.json")
+
+        with open(variants_path, 'r') as f:
+            variants_data = json.load(f)
+
+        # Find and update the variant
+        updated = False
+        for v in variants_data.get("variants", []):
+            if v.get("id") == variant_id:
+                disabled_models = v.get("disabled_models", [])
+
+                if enabled:
+                    # Remove from disabled list
+                    if model_id in disabled_models:
+                        disabled_models.remove(model_id)
+                        updated = True
+                else:
+                    # Add to disabled list
+                    if model_id not in disabled_models:
+                        disabled_models.append(model_id)
+                        updated = True
+
+                v["disabled_models"] = disabled_models
+                break
+
+        if updated:
+            with open(variants_path, 'w') as f:
+                json.dump(variants_data, f, indent=2)
+            logger.info(f"V6 Model toggle: {variant_id} - {model_id} = {enabled}")
+
+        return jsonify({"success": True, "enabled": enabled})
+
+    except Exception as e:
+        logger.error(f"Error toggling V6 model: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/go-live', methods=['POST'])
+def api_go_live():
+    """Deploy the winning AI model to production (Rizzo)."""
+    import logging
+    logger = logging.getLogger("arena.dashboard")
+
+    data = request.get_json() or {}
+    model_id = data.get('model_id')
+    model_name = data.get('model_name')
+
+    if not model_id:
+        return jsonify({"success": False, "error": "Missing model_id"})
+
+    try:
+        # Find the production .env file
+        prod_env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+
+        if not os.path.exists(prod_env_path):
+            return jsonify({"success": False, "error": f".env file not found at {prod_env_path}"})
+
+        # Read current .env
+        with open(prod_env_path, 'r') as f:
+            env_content = f.read()
+
+        # Update OPENROUTER_MODEL
+        import re
+        new_env = re.sub(
+            r'^OPENROUTER_MODEL=.*$',
+            f'OPENROUTER_MODEL={model_id}',
+            env_content,
+            flags=re.MULTILINE
+        )
+
+        # If OPENROUTER_MODEL doesn't exist, add it
+        if 'OPENROUTER_MODEL=' not in new_env:
+            new_env += f'\nOPENROUTER_MODEL={model_id}\n'
+
+        # Write updated .env
+        with open(prod_env_path, 'w') as f:
+            f.write(new_env)
+
+        logger.info(f"GO LIVE: Deployed {model_id} to production")
+
+        return jsonify({
+            "success": True,
+            "message": f"Production model updated to: {model_name}",
+            "model_id": model_id,
+            "note": "Restart Rizzo containers to apply changes"
+        })
+
+    except Exception as e:
+        logger.error(f"GO LIVE error: {e}")
+        return jsonify({"success": False, "error": str(e)})
 
 
 # ==================== Data Functions ====================
@@ -2106,6 +2839,216 @@ def get_strategy_chart_data() -> Dict[str, Any]:
         for ds in datasets:
             if not ds["data"]:
                 ds["data"] = [STARTING_CAPITAL]
+
+    return {"labels": labels, "datasets": datasets}
+
+
+# ==================== V6 Data Functions ====================
+
+def get_v6_leaderboard() -> List[Dict[str, Any]]:
+    """Get combined AI model leaderboard for all V6 variants."""
+    # Aggregate trades by AI model across all V6 variants
+    model_stats = {}  # model_id -> {trades, wins, pnl}
+
+    for v in load_variants(db):
+        if v.id.startswith("V6_"):
+            for sv in v.sub_variants:
+                trades = db.get_trades_for_sub_variant(sv.id, limit=1000)
+                model_name = sv.ai_model_name
+
+                if model_name not in model_stats:
+                    model_stats[model_name] = {"trades": 0, "wins": 0, "pnl": 0.0}
+
+                for t in trades:
+                    model_stats[model_name]["trades"] += 1
+                    model_stats[model_name]["pnl"] += t.pnl_usd
+                    if t.pnl_usd > 0:
+                        model_stats[model_name]["wins"] += 1
+
+    # Convert to leaderboard format
+    leaderboard = []
+    for model, stats in model_stats.items():
+        win_rate = (stats["wins"] / stats["trades"] * 100) if stats["trades"] > 0 else 0
+        leaderboard.append({
+            "ai_model": model,
+            "total_trades": stats["trades"],
+            "win_rate": win_rate,
+            "total_pnl_usd": stats["pnl"],
+        })
+
+    # Sort by P&L
+    leaderboard.sort(key=lambda x: x["total_pnl_usd"], reverse=True)
+
+    # Add ranks
+    for i, entry in enumerate(leaderboard):
+        entry["rank"] = i + 1
+
+    return leaderboard
+
+
+def get_v6_model_controls() -> List[Dict[str, Any]]:
+    """Get model controls organized by V6 variant family."""
+    controls = []
+
+    # Define variant families
+    families = {
+        "FAST": {"name": "V6 Fast (5min)", "description": "High frequency trading", "variants": ["V6_FAST_PRUDENT", "V6_FAST_MODERATE", "V6_FAST_AGGRESSIVE"]},
+        "MEDIUM": {"name": "V6 Medium (15min)", "description": "Balanced approach", "variants": ["V6_MEDIUM_PRUDENT", "V6_MEDIUM_MODERATE", "V6_MEDIUM_AGGRESSIVE"]},
+        "MACRO": {"name": "V6 Macro (1h)", "description": "Trend following", "variants": ["V6_MACRO_TREND"]},
+    }
+
+    for family_key, family_info in families.items():
+        # Aggregate model stats across all variants in this family
+        model_data = {}
+
+        for v in load_variants(db):
+            if v.id in family_info["variants"]:
+                disabled_models = getattr(v, 'disabled_models', []) or []
+
+                for model_id in v.ai_models:
+                    model_name = model_id.split("/")[-1]
+
+                    if model_id not in model_data:
+                        model_data[model_id] = {
+                            "id": model_id,
+                            "name": model_name,
+                            "enabled": model_id not in disabled_models,
+                            "trades": 0,
+                            "wins": 0,
+                        }
+
+                    # Get stats from sub_variants
+                    for sv in v.sub_variants:
+                        if sv.ai_model == model_id:
+                            trades = db.get_trades_for_sub_variant(sv.id, limit=1000)
+                            model_data[model_id]["trades"] += len(trades)
+                            model_data[model_id]["wins"] += sum(1 for t in trades if t.pnl_usd > 0)
+
+        # Calculate win rates
+        models = []
+        for model_id, data in model_data.items():
+            win_rate = (data["wins"] / data["trades"] * 100) if data["trades"] > 0 else 0
+            models.append({
+                "id": data["id"],
+                "name": data["name"],
+                "enabled": data["enabled"],
+                "trades": data["trades"],
+                "win_rate": win_rate,
+            })
+
+        # Use first variant ID for the toggle control
+        variant_id = family_info["variants"][0] if family_info["variants"] else ""
+
+        controls.append({
+            "family": family_key,
+            "name": family_info["name"],
+            "description": family_info["description"],
+            "variant_id": variant_id,
+            "models": models,
+        })
+
+    return controls
+
+
+def get_best_v6_model() -> Optional[Dict[str, Any]]:
+    """Get the best performing AI model from V6 variants."""
+    leaderboard = get_v6_leaderboard()
+
+    if not leaderboard:
+        return None
+
+    best = leaderboard[0]
+
+    # Find the model ID
+    model_id = None
+    for v in load_variants(db):
+        if v.id.startswith("V6_"):
+            for m in v.ai_models:
+                if m.split("/")[-1] == best["ai_model"]:
+                    model_id = m
+                    break
+            if model_id:
+                break
+
+    return {
+        "id": model_id or best["ai_model"],
+        "name": best["ai_model"],
+        "trades": best["total_trades"],
+        "win_rate": best["win_rate"],
+        "pnl": best["total_pnl_usd"],
+    }
+
+
+def get_v6_chart_data(family: str) -> Dict[str, Any]:
+    """Get chart data for a specific V6 strategy family."""
+    colors = ['#00d4ff', '#00ff88', '#ff4444', '#ffaa00', '#aa44ff', '#ff44aa', '#44ffff']
+    datasets = []
+    labels = []
+
+    # Map family to variant patterns
+    family_patterns = {
+        "FAST": ["V6_FAST_PRUDENT", "V6_FAST_MODERATE", "V6_FAST_AGGRESSIVE"],
+        "MEDIUM": ["V6_MEDIUM_PRUDENT", "V6_MEDIUM_MODERATE", "V6_MEDIUM_AGGRESSIVE"],
+        "MACRO": ["V6_MACRO_TREND"],
+    }
+
+    variant_ids = family_patterns.get(family, [])
+
+    # Collect data for each variant in this family
+    color_idx = 0
+    for v in load_variants(db):
+        if v.id in variant_ids:
+            # Get trades for this variant
+            trades = db.get_trades_for_variant(v.id, limit=1000)
+            trades.sort(key=lambda t: t.exit_time or datetime.min)
+
+            # Build equity curve
+            equity = [STARTING_CAPITAL]
+            cumulative = STARTING_CAPITAL
+
+            for t in trades:
+                cumulative += t.pnl_usd
+                equity.append(cumulative)
+                if t.exit_time and len(labels) < len(equity):
+                    labels.append(t.exit_time.strftime("%H:%M"))
+
+            # Ensure labels match
+            while len(labels) < len(equity):
+                labels.append("")
+
+            # Get style name (Prudent, Moderate, Aggressive)
+            style_name = v.name.split()[-1].replace("(", "").replace(")", "")
+            if "Prudente" in v.name:
+                style_name = "Prudent"
+            elif "Moderato" in v.name:
+                style_name = "Moderate"
+            elif "Aggressivo" in v.name:
+                style_name = "Aggressive"
+            elif "Macro" in v.name:
+                style_name = "Macro Trend"
+
+            color = colors[color_idx % len(colors)]
+            datasets.append({
+                "label": style_name,
+                "data": equity,
+                "borderColor": color,
+                "backgroundColor": "transparent",
+                "tension": 0.4,
+                "pointRadius": 0,
+            })
+            color_idx += 1
+
+    if not labels:
+        labels = ["Start"]
+
+    # Ensure all datasets have same length
+    max_len = max(len(ds["data"]) for ds in datasets) if datasets else 1
+    for ds in datasets:
+        while len(ds["data"]) < max_len:
+            ds["data"].append(ds["data"][-1] if ds["data"] else STARTING_CAPITAL)
+
+    while len(labels) < max_len:
+        labels.append("")
 
     return {"labels": labels, "datasets": datasets}
 

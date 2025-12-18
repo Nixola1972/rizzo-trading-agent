@@ -250,6 +250,14 @@ class Variant:
     ai_check_interval_minutes: int = 15
     ai_independent_timeframe: str = "4h"  # Longer timeframe for independent AI
 
+    # V6 AI Battle settings
+    prompt_style: Optional[str] = None  # PRUDENT, MODERATE, AGGRESSIVE, MACRO
+    disabled_models: List[str] = field(default_factory=list)  # Models to skip
+
+    # Risk management
+    max_positions_per_symbol: int = 2  # Max concurrent positions per symbol
+    max_total_positions: int = 10  # Max total positions across all variants
+
     # Symbols to trade
     symbols: List[str] = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
 
@@ -271,9 +279,12 @@ class Variant:
         return None
 
     def create_sub_variants(self) -> None:
-        """Create sub-variants for each AI model."""
+        """Create sub-variants for each AI model (excluding disabled ones)."""
         self.sub_variants = []
         for model in self.ai_models:
+            # Skip disabled models
+            if model in self.disabled_models:
+                continue
             model_name = model.split("/")[-1] if "/" in model else model
             sv = SubVariant(
                 id=f"{self.id}_{model_name}",
@@ -282,6 +293,20 @@ class Variant:
                 ai_model_name=model_name.replace("-", " ").title(),
             )
             self.sub_variants.append(sv)
+
+    def is_model_enabled(self, model: str) -> bool:
+        """Check if a specific model is enabled for this variant."""
+        return model in self.ai_models and model not in self.disabled_models
+
+    def enable_model(self, model: str) -> None:
+        """Enable a model for this variant."""
+        if model in self.disabled_models:
+            self.disabled_models.remove(model)
+
+    def disable_model(self, model: str) -> None:
+        """Disable a model for this variant."""
+        if model not in self.disabled_models:
+            self.disabled_models.append(model)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -299,6 +324,10 @@ class Variant:
             "pattern_min_confidence": self.pattern_min_confidence,
             "ai_check_interval_minutes": self.ai_check_interval_minutes,
             "ai_independent_timeframe": self.ai_independent_timeframe,
+            "prompt_style": self.prompt_style,
+            "disabled_models": self.disabled_models,
+            "max_positions_per_symbol": self.max_positions_per_symbol,
+            "max_total_positions": self.max_total_positions,
             "symbols": self.symbols,
             "sub_variants": [sv.to_dict() for sv in self.sub_variants],
             "total_trades": self.total_trades,
@@ -328,10 +357,14 @@ class Variant:
             pattern_min_confidence=data.get("pattern_min_confidence", 0.60),
             ai_check_interval_minutes=data.get("ai_check_interval_minutes", 15),
             ai_independent_timeframe=data.get("ai_independent_timeframe", "4h"),
+            prompt_style=data.get("prompt_style"),
+            disabled_models=data.get("disabled_models", []),
+            max_positions_per_symbol=data.get("max_positions_per_symbol", 2),
+            max_total_positions=data.get("max_total_positions", 10),
             symbols=data.get("symbols", ["BTC", "ETH", "SOL"]),
         )
 
-        # Create sub-variants
+        # Create sub-variants (excluding disabled models)
         variant.create_sub_variants()
 
         return variant
