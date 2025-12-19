@@ -74,7 +74,7 @@
       },
       "indicator_config": {},
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "id": "V2_MULTI_AI",
@@ -105,7 +105,7 @@
       },
       "indicator_config": {},
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "id": "V5_AI_FREE",
@@ -132,7 +132,7 @@
       "ai_check_interval_minutes": 15,
       "ai_independent_timeframe": "1h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "_comment": "=== V6 VARIANTS (Nuovo Sistema AI Battle) ===",
@@ -171,7 +171,7 @@
       "ai_check_interval_minutes": 5,
       "ai_independent_timeframe": "1h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "id": "V6_FAST_MODERATE",
@@ -209,7 +209,7 @@
       "ai_check_interval_minutes": 5,
       "ai_independent_timeframe": "1h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "id": "V6_FAST_AGGRESSIVE",
@@ -247,7 +247,7 @@
       "ai_check_interval_minutes": 5,
       "ai_independent_timeframe": "1h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "id": "V6_MEDIUM_PRUDENT",
@@ -285,7 +285,7 @@
       "ai_check_interval_minutes": 15,
       "ai_independent_timeframe": "4h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "id": "V6_MEDIUM_MODERATE",
@@ -323,7 +323,7 @@
       "ai_check_interval_minutes": 15,
       "ai_independent_timeframe": "4h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "id": "V6_MEDIUM_AGGRESSIVE",
@@ -361,7 +361,7 @@
       "ai_check_interval_minutes": 15,
       "ai_independent_timeframe": "4h",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     },
     {
       "id": "V6_MACRO_TREND",
@@ -399,7 +399,7 @@
       "ai_check_interval_minutes": 60,
       "ai_independent_timeframe": "1d",
       "pattern_detection_enabled": true,
-      "symbols": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "ARB", "SUI"]
+      "symbols": ["BTC", "ETH", "SOL"]
     }
   ]
 }
