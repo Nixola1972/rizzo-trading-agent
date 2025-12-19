@@ -357,6 +357,11 @@ DECISION PRIORITY: Risk-adjusted returns"""
         except requests.exceptions.Timeout:
             logger.error("AI call timeout")
             return None
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"AI call HTTP error: {e}")
+            logger.error(f"Response body: {e.response.text if e.response else 'No response'}")
+            logger.error(f"Model used: {self.config.ai_model}")
+            return None
         except Exception as e:
             logger.error(f"AI call error: {e}")
             return None
