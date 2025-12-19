@@ -91,6 +91,7 @@ class BotoneV6Config:
         self.max_leverage = int(os.getenv("MAX_LEVERAGE", "3"))
         self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "3.0"))
         self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "4.0"))
+        self.min_profit_to_close = float(os.getenv("MIN_PROFIT_TO_CLOSE", "0.5"))  # Min profit % for AI to close
 
         # Trailing Stop
         self.trailing_enabled = os.getenv("TRAILING_ENABLED", "true").lower() == "true"
@@ -125,6 +126,7 @@ class BotoneV6Config:
         logger.info(f"  Position Size: ${self.position_size_usd}")
         logger.info(f"  Max Leverage: {self.max_leverage}x")
         logger.info(f"  SL: {self.stop_loss_pct}% | TP: {self.take_profit_pct}%")
+        logger.info(f"  Min Profit to Close: {self.min_profit_to_close}%")
         logger.info(f"  Trailing: {self.trailing_enabled} - {self.trailing_steps}")
         logger.info(f"  Testnet: {self.hl_testnet}")
         logger.info("=" * 50)
@@ -878,8 +880,8 @@ class BotoneV6:
         if action == "open" and direction and not has_position:
             self._open_position(symbol, direction, market_data.get("price", 0), leverage, reason)
         elif action == "close" and has_position:
-            # OPZIONE 2: L'AI può chiudere SOLO se in profitto
-            # Se in perdita, lascia che lo SL gestisca l'uscita
+            # L'AI può chiudere SOLO se in profitto >= MIN_PROFIT_TO_CLOSE
+            # Questo copre le fee e garantisce un minimo guadagno
             position = self.position_tracker.get_position(symbol)
             if position:
                 current_price = market_data.get("price", 0)
@@ -888,16 +890,44 @@ class BotoneV6:
                 else:
                     pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
 
-                if pnl_pct >= 0:
-                    # In profitto o breakeven - permetti la chiusura
-                    logger.info(f"[SLOW] {symbol}: AI chiude in profitto (P&L: {pnl_pct:+.2f}%)")
+                min_profit = self.config.min_profit_to_close
+                if pnl_pct >= min_profit:
+                    # Profitto sufficiente - permetti la chiusura
+                    logger.info(f"[SLOW] {symbol}: ✅ AI chiude in profitto (P&L: {pnl_pct:+.2f}% >= {min_profit}%)")
                     self._close_position(symbol, "AI decision", reason)
                 else:
-                    # In perdita - ignora la richiesta di chiusura, lascia lavorare lo SL
-                    logger.warning(f"[SLOW] {symbol}: ⚠️ AI vuole chiudere ma P&L={pnl_pct:+.2f}% (negativo)")
-                    logger.warning(f"[SLOW] {symbol}: Ignoro CLOSE - aspetto SL @ ${position.stop_loss_price:.2f}")
+                    # Profitto insufficiente o in perdita - ignora, lascia lavorare trailing/SL
+                    logger.warning(f"[SLOW] {symbol}: ⚠️ AI vuole chiudere ma P&L={pnl_pct:+.2f}% < {min_profit}%")
+                    logger.warning(f"[SLOW] {symbol}: Ignoro CLOSE - aspetto trailing o SL @ ${position.stop_loss_price:.2f}")
             else:
                 self._close_position(symbol, "AI decision", reason)
+
+    def _get_next_trailing_step(self, current_pnl_pct: float, leverage: int) -> str:
+        """Get info about the next trailing stop step."""
+        try:
+            steps = []
+            for step in self.config.trailing_steps.split(","):
+                profit_str, lock_str = step.strip().split(":")
+                profit_pct = float(profit_str)
+                lock_pct = float(lock_str)
+                steps.append((profit_pct, lock_pct))
+
+            # Sort by profit threshold
+            steps.sort(key=lambda x: x[0])
+
+            # Find the next step that hasn't been reached yet
+            for profit_threshold, lock_at in steps:
+                if current_pnl_pct < profit_threshold:
+                    needed = profit_threshold - current_pnl_pct
+                    return f"Next: +{profit_threshold:.1f}% → lock +{lock_at:.1f}% (need +{needed:.2f}%)"
+
+            # All steps reached
+            if steps:
+                last_profit, last_lock = steps[-1]
+                return f"✅ Max trailing reached (lock: +{last_lock:.1f}%)"
+            return "No trailing steps"
+        except Exception as e:
+            return f"Trailing error: {e}"
 
     def _monitor_position(self, position: Position):
         """Monitor an open position for SL/TP/trailing."""
@@ -908,10 +938,20 @@ class BotoneV6:
         # Calculate P&L
         if position.direction == TradeDirection.LONG:
             pnl_pct = ((price - position.entry_price) / position.entry_price) * 100 * position.leverage
+            price_move_pct = ((price - position.entry_price) / position.entry_price) * 100
         else:
             pnl_pct = ((position.entry_price - price) / position.entry_price) * 100 * position.leverage
+            price_move_pct = ((position.entry_price - price) / position.entry_price) * 100
 
-        logger.info(f"[FAST] {position.symbol}: ${price:,.2f} P&L: {pnl_pct:+.2f}%")
+        # Find current and next trailing step
+        current_level_str = f"+{position.current_sl_level:.1f}%" if position.current_sl_level >= 0 else f"{position.current_sl_level:.1f}%"
+        next_step_info = self._get_next_trailing_step(pnl_pct, position.leverage)
+
+        # Detailed log with trailing info
+        logger.info(f"[FAST] {position.symbol} {position.direction.value}: "
+                    f"${price:,.2f} | P&L: {pnl_pct:+.2f}% | "
+                    f"SL: ${position.stop_loss_price:.2f} (lock: {current_level_str}) | "
+                    f"{next_step_info}")
 
         # Check TP
         if position.direction == TradeDirection.LONG and price >= position.take_profit_price:
