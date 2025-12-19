@@ -498,20 +498,21 @@ class MarketDataProvider:
             analysis = analyzer.get_complete_analysis(symbol)
             current = analysis.get("current", {})
 
-            # Determine EMA trend/stack
-            ema9 = current.get("ema9", 0)
-            ema21 = current.get("ema21", 0)
+            # Determine EMA trend/stack (indicators uses ema20/ema50)
+            ema9 = current.get("ema20", 0)  # Use ema20 as proxy for ema9
+            ema21 = current.get("ema50", 0)  # Use ema50 as proxy for ema21
             price = current.get("price", 0)
 
             if price > ema9 > ema21:
-                ema_stack = "bullish (price > EMA9 > EMA21)"
+                ema_stack = "bullish (price > EMA20 > EMA50)"
             elif price < ema9 < ema21:
-                ema_stack = "bearish (price < EMA9 < EMA21)"
+                ema_stack = "bearish (price < EMA20 < EMA50)"
             else:
                 ema_stack = "neutral/mixed"
 
-            # Volatility level
-            atr = current.get("atr_14", 0)
+            # Get ATR from longer_term section
+            longer_term = analysis.get("longer_term_15m", {})
+            atr = longer_term.get("atr_14_current", 0)
             atr_pct = (atr / price * 100) if price > 0 else 0
             if atr_pct > 3:
                 volatility_level = "high"
@@ -531,9 +532,9 @@ class MarketDataProvider:
                 "atr": atr,
                 "volatility_level": volatility_level,
 
-                # Volume
-                "volume_24h": analysis.get("volume", {}).get("volume_24h", 0),
-                "volume_ratio": analysis.get("volume", {}).get("volume_ratio", 1.0),
+                # Volume - from longer_term (volume key is a string, not dict)
+                "volume_24h": longer_term.get("volume_current", 0),
+                "volume_ratio": longer_term.get("volume_current", 0) / max(longer_term.get("volume_average", 1), 1),
 
                 # Open Interest
                 "open_interest": analysis.get("derivatives", {}).get("open_interest_latest", 0),
