@@ -81,10 +81,10 @@ class BotoneV6Config:
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.ai_model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-235b-a22b-2507")
 
-        # HyperLiquid credentials
-        self.hl_private_key = os.getenv("HL_PRIVATE_KEY")
-        self.hl_account_address = os.getenv("HL_ACCOUNT_ADDRESS")
-        self.hl_testnet = os.getenv("HL_TESTNET", "false").lower() == "true"
+        # HyperLiquid credentials (same as sentinel.py)
+        self.hl_private_key = os.getenv("PRIVATE_KEY") or os.getenv("HL_PRIVATE_KEY")
+        self.hl_account_address = os.getenv("WALLET_ADDRESS") or os.getenv("HL_ACCOUNT_ADDRESS")
+        self.hl_testnet = os.getenv("TESTNET", "false").lower() == "true" or os.getenv("HL_TESTNET", "false").lower() == "true"
 
         # Trading Parameters
         self.position_size_usd = float(os.getenv("POSITION_SIZE_USD", "25"))
@@ -113,9 +113,9 @@ class BotoneV6Config:
         if not self.openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY is required in .env.baseline")
         if not self.hl_private_key:
-            raise ValueError("HL_PRIVATE_KEY is required in .env.baseline")
+            raise ValueError("PRIVATE_KEY (or HL_PRIVATE_KEY) is required in .env.baseline")
         if not self.hl_account_address:
-            raise ValueError("HL_ACCOUNT_ADDRESS is required in .env.baseline")
+            raise ValueError("WALLET_ADDRESS (or HL_ACCOUNT_ADDRESS) is required in .env.baseline")
 
         logger.info(f"=== {self.bot_name.upper()} CONFIGURATION ===")
         logger.info(f"  AI Model: {self.ai_model}")
