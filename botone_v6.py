@@ -924,6 +924,39 @@ class BotoneV6:
             position.current_sl_level = new_level
             logger.info(f"[FAST] {position.symbol}: Trailing SL → ${new_sl:.2f} (level: +{new_level:.1f}%)")
 
+            # === AGGIORNA SL SU HYPERLIQUID ===
+            try:
+                # Cancel existing SL orders and place new one
+                open_orders = self.trader.exchange.info.open_orders(self.config.hl_account_address)
+                for order in open_orders:
+                    if order.get("coin") == position.symbol:
+                        trigger_px = order.get("triggerPx")
+                        if trigger_px and trigger_px != "0.0":
+                            # Cancel old SL
+                            self.trader.exchange.cancel(position.symbol, order.get("oid"))
+                            logger.info(f"[FAST] {position.symbol}: Cancellato vecchio SL")
+
+                # Place new SL
+                sl_is_buy = position.direction == TradeDirection.SHORT
+                sl_price_rounded = round(new_sl, 2)
+
+                sl_order = self.trader.exchange.order(
+                    position.symbol,
+                    sl_is_buy,
+                    position.size,
+                    sl_price_rounded,
+                    {"trigger": {"triggerPx": str(sl_price_rounded), "isMarket": True, "tpsl": "sl"}},
+                    reduce_only=True
+                )
+
+                if sl_order.get("status") == "ok":
+                    logger.info(f"[FAST] {position.symbol}: 🛡️ Nuovo SL piazzato @ ${sl_price_rounded:.2f}")
+                else:
+                    logger.warning(f"[FAST] {position.symbol}: ⚠️ Errore aggiornamento SL: {sl_order}")
+
+            except Exception as sl_err:
+                logger.error(f"[FAST] {position.symbol}: ❌ Errore trailing SL update: {sl_err}")
+
     def _open_position(self, symbol: str, direction: TradeDirection, price: float, leverage: int, reason: str):
         """Open a new position."""
         logger.info(f"[TRADE] Opening {direction.value} on {symbol} @ ${price:.2f} lev={leverage}x")
@@ -971,6 +1004,43 @@ class BotoneV6:
 
                 logger.info(f"[TRADE] ✅ Opened {direction.value} {symbol}")
                 logger.info(f"[TRADE]    Entry: ${price:.2f} | SL: ${sl_price:.2f} | TP: ${tp_price:.2f}")
+
+                # === PIAZZA SL SU HYPERLIQUID ===
+                try:
+                    # Get actual position size from exchange
+                    status = self.trader.get_account_status()
+                    actual_size = 0
+                    for pos in status.get("open_positions", []):
+                        if pos.get("symbol") == symbol:
+                            actual_size = abs(float(pos.get("size", 0)))
+                            break
+
+                    if actual_size > 0:
+                        # SL direction is opposite to position
+                        sl_is_buy = direction == TradeDirection.SHORT
+
+                        # Round SL price to tick size
+                        sl_price_rounded = round(sl_price, 2)
+
+                        # Place SL trigger order
+                        sl_order = self.trader.exchange.order(
+                            symbol,
+                            sl_is_buy,
+                            actual_size,
+                            sl_price_rounded,
+                            {"trigger": {"triggerPx": str(sl_price_rounded), "isMarket": True, "tpsl": "sl"}},
+                            reduce_only=True
+                        )
+
+                        if sl_order.get("status") == "ok":
+                            logger.info(f"[TRADE] 🛡️ SL piazzato su HyperLiquid @ ${sl_price_rounded:.2f}")
+                        else:
+                            logger.warning(f"[TRADE] ⚠️ SL non piazzato: {sl_order}")
+                    else:
+                        logger.warning(f"[TRADE] ⚠️ Position size non trovato, SL non piazzato")
+
+                except Exception as sl_err:
+                    logger.error(f"[TRADE] ❌ Errore piazzamento SL: {sl_err}")
             else:
                 logger.error(f"[TRADE] ❌ Failed to open: {result}")
 
