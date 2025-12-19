@@ -827,6 +827,19 @@ class BotoneV6:
             logger.warning(f"[SLOW] {symbol}: No price data")
             return
 
+        # Verbose logging of market data
+        if os.getenv("VERBOSE_LOGGING", "false").lower() == "true":
+            logger.info(f"[SLOW] {symbol}: === MARKET DATA ===")
+            logger.info(f"  Price: ${market_data.get('price', 0):,.2f}")
+            logger.info(f"  MACD: {market_data.get('macd', 0):.4f}")
+            logger.info(f"  RSI: {market_data.get('rsi', 50):.1f}")
+            logger.info(f"  ADX: {market_data.get('adx', 0):.1f}")
+            logger.info(f"  EMA Stack: {market_data.get('ema_stack', 'N/A')}")
+            logger.info(f"  ATR: {market_data.get('atr', 0):.4f} ({market_data.get('volatility_level', 'N/A')})")
+            logger.info(f"  Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x")
+            logger.info(f"  Funding Rate: {market_data.get('funding_rate', 0):.4%}")
+            logger.info(f"  Open Interest: ${market_data.get('open_interest', 0):,.0f}")
+
         # Check if we have a position
         position = self.position_tracker.get_position(symbol)
         has_position = position is not None
@@ -853,7 +866,13 @@ class BotoneV6:
 
         logger.info(f"[SLOW] {symbol}: AI → {action.upper()} {direction.value if direction else ''} "
                    f"lev={leverage}x conf={confidence:.0%}")
-        logger.info(f"[SLOW] {symbol}: Reason: {reason[:100]}...")
+
+        # Verbose logging of full AI response
+        if os.getenv("VERBOSE_LOGGING", "false").lower() == "true":
+            logger.info(f"[SLOW] {symbol}: === FULL AI RESPONSE ===")
+            logger.info(f"  {reason}")
+        else:
+            logger.info(f"[SLOW] {symbol}: Reason: {reason[:100]}...")
 
         # Execute decision
         if action == "open" and direction and not has_position:
