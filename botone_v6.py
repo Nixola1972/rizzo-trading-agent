@@ -878,7 +878,26 @@ class BotoneV6:
         if action == "open" and direction and not has_position:
             self._open_position(symbol, direction, market_data.get("price", 0), leverage, reason)
         elif action == "close" and has_position:
-            self._close_position(symbol, "AI decision", reason)
+            # OPZIONE 2: L'AI può chiudere SOLO se in profitto
+            # Se in perdita, lascia che lo SL gestisca l'uscita
+            position = self.position_tracker.get_position(symbol)
+            if position:
+                current_price = market_data.get("price", 0)
+                if position.direction == TradeDirection.LONG:
+                    pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                else:
+                    pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
+
+                if pnl_pct >= 0:
+                    # In profitto o breakeven - permetti la chiusura
+                    logger.info(f"[SLOW] {symbol}: AI chiude in profitto (P&L: {pnl_pct:+.2f}%)")
+                    self._close_position(symbol, "AI decision", reason)
+                else:
+                    # In perdita - ignora la richiesta di chiusura, lascia lavorare lo SL
+                    logger.warning(f"[SLOW] {symbol}: ⚠️ AI vuole chiudere ma P&L={pnl_pct:+.2f}% (negativo)")
+                    logger.warning(f"[SLOW] {symbol}: Ignoro CLOSE - aspetto SL @ ${position.stop_loss_price:.2f}")
+            else:
+                self._close_position(symbol, "AI decision", reason)
 
     def _monitor_position(self, position: Position):
         """Monitor an open position for SL/TP/trailing."""
@@ -938,14 +957,29 @@ class BotoneV6:
 
                 # Place new SL
                 sl_is_buy = position.direction == TradeDirection.SHORT
-                sl_price_rounded = round(new_sl, 2)
+
+                # Round SL price appropriately based on asset
+                if position.symbol == "BTC":
+                    sl_price_rounded = round(new_sl, 1)
+                elif position.symbol in ["ETH", "SOL"]:
+                    sl_price_rounded = round(new_sl, 2)
+                else:
+                    sl_price_rounded = round(new_sl, 4)
+
+                # Get actual position size from exchange
+                status = self.trader.get_account_status()
+                actual_size = position.size
+                for pos in status.get("open_positions", []):
+                    if pos.get("symbol") == position.symbol:
+                        actual_size = abs(float(pos.get("size", 0)))
+                        break
 
                 sl_order = self.trader.exchange.order(
                     position.symbol,
                     sl_is_buy,
-                    position.size,
+                    actual_size,
                     sl_price_rounded,
-                    {"trigger": {"triggerPx": str(sl_price_rounded), "isMarket": True, "tpsl": "sl"}},
+                    {"trigger": {"triggerPx": sl_price_rounded, "isMarket": True, "tpsl": "sl"}},  # float, not string!
                     reduce_only=True
                 )
 
@@ -1007,40 +1041,94 @@ class BotoneV6:
 
                 # === PIAZZA SL SU HYPERLIQUID ===
                 try:
+                    # Piccolo delay per permettere alla posizione di apparire
+                    time.sleep(1)
+
                     # Get actual position size from exchange
+                    logger.info(f"[TRADE] Recupero size posizione per SL...")
                     status = self.trader.get_account_status()
                     actual_size = 0
                     for pos in status.get("open_positions", []):
                         if pos.get("symbol") == symbol:
                             actual_size = abs(float(pos.get("size", 0)))
+                            logger.info(f"[TRADE] Trovata posizione {symbol}: size={actual_size}")
                             break
 
                     if actual_size > 0:
                         # SL direction is opposite to position
                         sl_is_buy = direction == TradeDirection.SHORT
 
-                        # Round SL price to tick size
-                        sl_price_rounded = round(sl_price, 2)
+                        # Round SL price appropriately based on asset
+                        if symbol == "BTC":
+                            sl_price_rounded = round(sl_price, 1)  # BTC usa 1 decimale
+                        elif symbol in ["ETH", "SOL"]:
+                            sl_price_rounded = round(sl_price, 2)  # ETH/SOL usa 2 decimali
+                        else:
+                            sl_price_rounded = round(sl_price, 4)  # Altri asset
 
-                        # Place SL trigger order
+                        logger.info(f"[TRADE] Piazzando SL: {symbol} is_buy={sl_is_buy} size={actual_size} trigger={sl_price_rounded}")
+
+                        # Place SL trigger order - triggerPx deve essere float, non string!
                         sl_order = self.trader.exchange.order(
                             symbol,
                             sl_is_buy,
                             actual_size,
-                            sl_price_rounded,
-                            {"trigger": {"triggerPx": str(sl_price_rounded), "isMarket": True, "tpsl": "sl"}},
+                            sl_price_rounded,  # limit price
+                            {"trigger": {"triggerPx": sl_price_rounded, "isMarket": True, "tpsl": "sl"}},
                             reduce_only=True
                         )
 
+                        logger.info(f"[TRADE] SL order response: {sl_order}")
+
                         if sl_order.get("status") == "ok":
-                            logger.info(f"[TRADE] 🛡️ SL piazzato su HyperLiquid @ ${sl_price_rounded:.2f}")
+                            response_data = sl_order.get("response", {})
+                            if response_data.get("type") == "order":
+                                statuses = response_data.get("data", {}).get("statuses", [])
+                                if statuses and statuses[0].get("resting"):
+                                    oid = statuses[0]["resting"]["oid"]
+                                    logger.info(f"[TRADE] 🛡️ SL piazzato su HyperLiquid @ ${sl_price_rounded:.2f} (OID: {oid})")
+                                else:
+                                    logger.info(f"[TRADE] 🛡️ SL piazzato @ ${sl_price_rounded:.2f}")
+                            else:
+                                logger.info(f"[TRADE] 🛡️ SL piazzato @ ${sl_price_rounded:.2f}")
                         else:
                             logger.warning(f"[TRADE] ⚠️ SL non piazzato: {sl_order}")
                     else:
-                        logger.warning(f"[TRADE] ⚠️ Position size non trovato, SL non piazzato")
+                        logger.warning(f"[TRADE] ⚠️ Position size non trovato dopo 1s, riprovo...")
+                        # Riprova dopo altro delay
+                        time.sleep(2)
+                        status = self.trader.get_account_status()
+                        for pos in status.get("open_positions", []):
+                            if pos.get("symbol") == symbol:
+                                actual_size = abs(float(pos.get("size", 0)))
+                                break
+                        if actual_size > 0:
+                            sl_is_buy = direction == TradeDirection.SHORT
+                            if symbol == "BTC":
+                                sl_price_rounded = round(sl_price, 1)
+                            elif symbol in ["ETH", "SOL"]:
+                                sl_price_rounded = round(sl_price, 2)
+                            else:
+                                sl_price_rounded = round(sl_price, 4)
+                            sl_order = self.trader.exchange.order(
+                                symbol,
+                                sl_is_buy,
+                                actual_size,
+                                sl_price_rounded,
+                                {"trigger": {"triggerPx": sl_price_rounded, "isMarket": True, "tpsl": "sl"}},
+                                reduce_only=True
+                            )
+                            if sl_order.get("status") == "ok":
+                                logger.info(f"[TRADE] 🛡️ SL piazzato (retry) @ ${sl_price_rounded:.2f}")
+                            else:
+                                logger.error(f"[TRADE] ❌ SL fallito anche al retry: {sl_order}")
+                        else:
+                            logger.error(f"[TRADE] ❌ Position size ancora non trovato!")
 
                 except Exception as sl_err:
                     logger.error(f"[TRADE] ❌ Errore piazzamento SL: {sl_err}")
+                    import traceback
+                    logger.error(traceback.format_exc())
             else:
                 logger.error(f"[TRADE] ❌ Failed to open: {result}")
 
