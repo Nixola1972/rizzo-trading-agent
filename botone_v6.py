@@ -735,6 +735,12 @@ class BotoneV6:
             status = self.trader.get_account_status()
             exchange_positions = status.get("open_positions", [])
 
+            # Debug log
+            if exchange_positions:
+                logger.info(f"[SYNC] Found {len(exchange_positions)} positions on exchange")
+                for pos in exchange_positions:
+                    logger.debug(f"[SYNC] Raw position data: {pos}")
+
             # Track which symbols have positions on exchange
             exchange_symbols = set()
 
@@ -751,6 +757,15 @@ class BotoneV6:
                     direction = TradeDirection.LONG if pos.get("side") == "long" else TradeDirection.SHORT
                     entry_price = pos.get("entry_price", 0)
                     size = pos.get("size", 0)
+
+                    # Log warning if entry price is 0
+                    if entry_price == 0:
+                        logger.warning(f"[SYNC] ⚠️ {symbol}: entry_price is 0! Raw data: {pos}")
+                        # Try to get current price as fallback
+                        current_price = self.market_data.get_price(symbol)
+                        if current_price > 0:
+                            logger.warning(f"[SYNC] Using current price as fallback: ${current_price}")
+                            entry_price = current_price
 
                     # Calculate SL/TP from config
                     if direction == TradeDirection.LONG:
@@ -859,6 +874,11 @@ class BotoneV6:
                 current_pnl_pct = ((price - position.entry_price) / position.entry_price) * 100 * position.leverage
             else:
                 current_pnl_pct = ((position.entry_price - price) / position.entry_price) * 100 * position.leverage
+
+            # Add entry_price to market_data for AI prompt
+            market_data["entry_price"] = position.entry_price
+            market_data["position_leverage"] = position.leverage
+            market_data["stop_loss_price"] = position.stop_loss_price
 
         # Get AI decision
         logger.info(f"[SLOW] {symbol}: Calling AI ({self.config.prompt_style})...")
