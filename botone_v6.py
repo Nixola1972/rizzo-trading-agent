@@ -200,6 +200,7 @@ CURRENT POSITION:
         max_leverage = self.config.max_leverage
 
         # Enhanced market data section
+        bb_squeeze_text = "⚠️ SQUEEZE (breakout imminent!)" if market_data.get('bb_squeeze', False) else "no squeeze"
         market_section = f"""
 PRICE DATA:
 - Current: ${market_data.get('price', 0):,.2f}
@@ -213,9 +214,22 @@ TECHNICAL INDICATORS:
 - EMA Stack: Price vs EMA9 vs EMA21 = {market_data.get('ema_stack', 'neutral')}
 - ATR (Volatility): {market_data.get('atr', 0):.2f} ({market_data.get('volatility_level', 'normal')})
 
+BOLLINGER BANDS:
+- Position: {market_data.get('bb_position', 'MIDDLE')} (ABOVE_UPPER=overbought, BELOW_LOWER=oversold)
+- %B: {market_data.get('bb_percent_b', 0.5):.2f} (0=lower band, 0.5=middle, 1=upper band)
+- Bandwidth: {market_data.get('bb_bandwidth', 0):.2f}% ({bb_squeeze_text})
+
+PIVOT POINTS (Support/Resistance):
+- R2 (Strong Resistance): ${market_data.get('pivot_r2', 0):,.2f}
+- R1 (Resistance): ${market_data.get('pivot_r1', 0):,.2f}
+- PP (Pivot): ${market_data.get('pivot_pp', 0):,.2f}
+- S1 (Support): ${market_data.get('pivot_s1', 0):,.2f}
+- S2 (Strong Support): ${market_data.get('pivot_s2', 0):,.2f}
+
 VOLUME & LIQUIDITY:
 - Volume 24h: ${market_data.get('volume_24h', 0):,.0f}
 - Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x average
+- OBV Trend: {market_data.get('obv_trend', 'neutral')} (rising=buyers, falling=sellers)
 - Open Interest: ${market_data.get('open_interest', 0):,.0f}
 - OI Change 24h: {market_data.get('oi_change_24h', 0):+.2f}%
 
@@ -247,8 +261,20 @@ SYMBOL: {symbol}
 {market_section}
 {rules}
 
+IMPORTANT: Explain your reasoning by listing which indicators influenced your decision most.
+
 Respond with JSON:
-{{"action": "open/close/hold", "direction": "LONG/SHORT" (if open), "leverage": 1-{max_leverage} (if open), "confidence": 0.0-1.0, "reason": "detailed analysis"}}"""
+{{
+  "action": "open/close/hold",
+  "direction": "LONG/SHORT" (required if action=open),
+  "leverage": 1-{max_leverage} (required if action=open),
+  "confidence": 0.0-1.0,
+  "reason": "brief summary",
+  "key_factors": ["list of 2-4 most important indicators that drove this decision"],
+  "bullish_signals": ["indicators suggesting UP"],
+  "bearish_signals": ["indicators suggesting DOWN"],
+  "warnings": ["any concerns or risks identified"]
+}}"""
 
     def _get_style_rules(self) -> str:
         """Get rules based on prompt style."""
@@ -442,7 +468,25 @@ DECISION PRIORITY: Risk-adjusted returns"""
             except (ValueError, TypeError):
                 leverage = 3
 
-        reason = response.get("reason", "No reason provided")
+        # Build enriched reason with AI reasoning
+        base_reason = response.get("reason", "No reason provided")
+        key_factors = response.get("key_factors", [])
+        bullish_signals = response.get("bullish_signals", [])
+        bearish_signals = response.get("bearish_signals", [])
+        warnings = response.get("warnings", [])
+
+        # Build detailed reason string
+        reason_parts = [base_reason]
+        if key_factors:
+            reason_parts.append(f"KEY FACTORS: {', '.join(key_factors)}")
+        if bullish_signals:
+            reason_parts.append(f"BULLISH: {', '.join(bullish_signals)}")
+        if bearish_signals:
+            reason_parts.append(f"BEARISH: {', '.join(bearish_signals)}")
+        if warnings:
+            reason_parts.append(f"⚠️ WARNINGS: {', '.join(warnings)}")
+
+        reason = " | ".join(reason_parts)
         confidence = float(response.get("confidence", 0.5))
 
         return action, direction, reason, confidence, leverage
@@ -543,6 +587,19 @@ class MarketDataProvider:
             else:
                 volatility_level = "low"
 
+            # Extract Bollinger Bands
+            bollinger = analysis.get("bollinger", {})
+            bb_position = bollinger.get("position", "MIDDLE")
+            bb_bandwidth = bollinger.get("bandwidth", 0)
+            bb_squeeze = bollinger.get("squeeze", False)
+            bb_percent_b = bollinger.get("percent_b", 0.5)
+
+            # Extract OBV trend
+            obv_trend = longer_term.get("obv_trend", "neutral")
+
+            # Extract Pivot Points
+            pivot_points = analysis.get("pivot_points", {})
+
             return {
                 "price": price,
                 "macd": current.get("macd", 0),
@@ -553,6 +610,22 @@ class MarketDataProvider:
                 "ema_stack": ema_stack,
                 "atr": atr,
                 "volatility_level": volatility_level,
+
+                # Bollinger Bands (NEW)
+                "bb_position": bb_position,
+                "bb_bandwidth": bb_bandwidth,
+                "bb_squeeze": bb_squeeze,
+                "bb_percent_b": bb_percent_b,
+
+                # OBV - On Balance Volume (NEW)
+                "obv_trend": obv_trend,
+
+                # Pivot Points (NEW)
+                "pivot_pp": pivot_points.get("pp", 0),
+                "pivot_r1": pivot_points.get("r1", 0),
+                "pivot_r2": pivot_points.get("r2", 0),
+                "pivot_s1": pivot_points.get("s1", 0),
+                "pivot_s2": pivot_points.get("s2", 0),
 
                 # Volume - from longer_term (volume key is a string, not dict)
                 "volume_24h": longer_term.get("volume_current", 0),
@@ -873,6 +946,13 @@ class BotoneV6:
             logger.info(f"  ADX: {market_data.get('adx', 0):.1f}")
             logger.info(f"  EMA Stack: {market_data.get('ema_stack', 'N/A')}")
             logger.info(f"  ATR: {market_data.get('atr', 0):.4f} ({market_data.get('volatility_level', 'N/A')})")
+            # Bollinger Bands (NEW)
+            bb_squeeze = "SQUEEZE!" if market_data.get('bb_squeeze', False) else "no"
+            logger.info(f"  Bollinger: {market_data.get('bb_position', 'N/A')} | %B={market_data.get('bb_percent_b', 0):.2f} | Squeeze={bb_squeeze}")
+            # OBV (NEW)
+            logger.info(f"  OBV Trend: {market_data.get('obv_trend', 'N/A')}")
+            # Pivot Points (NEW)
+            logger.info(f"  Pivot Points: R2=${market_data.get('pivot_r2', 0):,.0f} R1=${market_data.get('pivot_r1', 0):,.0f} PP=${market_data.get('pivot_pp', 0):,.0f} S1=${market_data.get('pivot_s1', 0):,.0f} S2=${market_data.get('pivot_s2', 0):,.0f}")
             logger.info(f"  Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x")
             logger.info(f"  Funding Rate: {market_data.get('funding_rate', 0):.4%}")
             logger.info(f"  Open Interest: ${market_data.get('open_interest', 0):,.0f}")
