@@ -1265,7 +1265,12 @@ class BotoneV6:
             # === AGGIORNA SL SU HYPERLIQUID ===
             try:
                 # Cancel existing SL orders and place new one
-                open_orders = self.trader.exchange.info.open_orders(self.config.hl_account_address)
+                # MUST use frontend_open_orders() to see trigger orders (SL/TP)
+                try:
+                    open_orders = self.trader.exchange.info.frontend_open_orders(self.config.hl_account_address)
+                except AttributeError:
+                    open_orders = self.trader.exchange.info.open_orders(self.config.hl_account_address)
+
                 for order in open_orders:
                     if order.get("coin") == position.symbol:
                         trigger_px = order.get("triggerPx")
