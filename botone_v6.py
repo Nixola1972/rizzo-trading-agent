@@ -874,7 +874,14 @@ class BotoneV6:
                             entry_price = current_price
 
                     # Get actual leverage from exchange data
-                    actual_leverage = int(pos.get("leverage", {}).get("value", 3))
+                    lev_data = pos.get("leverage", 3)
+                    if isinstance(lev_data, dict):
+                        actual_leverage = int(lev_data.get("value", 3))
+                    elif isinstance(lev_data, str):
+                        # Handle "3x" or "3" format
+                        actual_leverage = int(lev_data.replace("x", "").strip())
+                    else:
+                        actual_leverage = int(lev_data) if lev_data else 3
                     if actual_leverage <= 0:
                         actual_leverage = 3  # Default fallback
 
