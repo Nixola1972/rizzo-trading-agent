@@ -944,7 +944,8 @@ class BotoneV6:
         interval = timedelta(minutes=self.config.ai_interval_minutes)
 
         if datetime.now() - last_check < interval:
-            logger.debug(f"[SLOW] {symbol}: Waiting for AI interval...")
+            remaining = interval - (datetime.now() - last_check)
+            logger.info(f"[SLOW] {symbol}: ⏳ Skipping - next AI check in {remaining.seconds}s")
             return
 
         self._last_ai_check[check_key] = datetime.now()
