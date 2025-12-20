@@ -92,6 +92,7 @@ class BotoneV6Config:
         self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "3.0"))
         self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "4.0"))
         self.min_profit_to_close = float(os.getenv("MIN_PROFIT_TO_CLOSE", "0.5"))  # Min profit % for AI to close
+        self.ai_loss_threshold_pct = float(os.getenv("AI_LOSS_THRESHOLD_PCT", "50"))  # AI can close if loss > X% of SL
 
         # Trailing Stop
         self.trailing_enabled = os.getenv("TRAILING_ENABLED", "true").lower() == "true"
@@ -127,6 +128,7 @@ class BotoneV6Config:
         logger.info(f"  Max Leverage: {self.max_leverage}x")
         logger.info(f"  SL: {self.stop_loss_pct}% | TP: {self.take_profit_pct}%")
         logger.info(f"  Min Profit to Close: {self.min_profit_to_close}%")
+        logger.info(f"  AI Loss Threshold: {self.ai_loss_threshold_pct}% of SL (={self.stop_loss_pct * self.ai_loss_threshold_pct / 100:.1f}%)")
         logger.info(f"  Trailing: {self.trailing_enabled} - {self.trailing_steps}")
         logger.info(f"  Testnet: {self.hl_testnet}")
         logger.info("=" * 50)
@@ -905,8 +907,10 @@ class BotoneV6:
         if action == "open" and direction and not has_position:
             self._open_position(symbol, direction, market_data.get("price", 0), leverage, reason)
         elif action == "close" and has_position:
-            # L'AI può chiudere SOLO se in profitto >= MIN_PROFIT_TO_CLOSE
-            # Questo copre le fee e garantisce un minimo guadagno
+            # Logica chiusura AI:
+            # 1. Se in profitto >= MIN_PROFIT_TO_CLOSE → chiudi (profit taking)
+            # 2. Se in perdita >= X% dello SL → AI può chiudere (loss cutting)
+            # 3. Altrimenti → ignora, aspetta trailing/SL
             position = self.position_tracker.get_position(symbol)
             if position:
                 current_price = market_data.get("price", 0)
@@ -916,14 +920,26 @@ class BotoneV6:
                     pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
 
                 min_profit = self.config.min_profit_to_close
+                sl_pct = self.config.stop_loss_pct
+                loss_threshold = sl_pct * (self.config.ai_loss_threshold_pct / 100)  # es: 10% SL * 50% = 5%
+
                 if pnl_pct >= min_profit:
-                    # Profitto sufficiente - permetti la chiusura
+                    # CASO 1: In profitto - permetti la chiusura
                     logger.info(f"[SLOW] {symbol}: ✅ AI chiude in profitto (P&L: {pnl_pct:+.2f}% >= {min_profit}%)")
-                    self._close_position(symbol, "AI decision", reason)
+                    self._close_position(symbol, "AI profit-take", reason)
+                elif pnl_pct < 0 and abs(pnl_pct) >= loss_threshold:
+                    # CASO 2: Perdita significativa (>50% di SL) - AI può tagliare
+                    logger.warning(f"[SLOW] {symbol}: 🔴 AI taglia perdita (P&L: {pnl_pct:+.2f}% >= -{loss_threshold:.1f}% threshold)")
+                    logger.warning(f"[SLOW] {symbol}: Chiudo prima dello SL @ ${position.stop_loss_price:.2f}")
+                    self._close_position(symbol, "AI loss-cut", reason)
                 else:
-                    # Profitto insufficiente o in perdita - ignora, lascia lavorare trailing/SL
-                    logger.warning(f"[SLOW] {symbol}: ⚠️ AI vuole chiudere ma P&L={pnl_pct:+.2f}% < {min_profit}%")
-                    logger.warning(f"[SLOW] {symbol}: Ignoro CLOSE - aspetto trailing o SL @ ${position.stop_loss_price:.2f}")
+                    # CASO 3: Perdita piccola o profitto insufficiente - ignora
+                    if pnl_pct < 0:
+                        logger.info(f"[SLOW] {symbol}: ⏳ AI vuole chiudere ma perdita piccola ({pnl_pct:+.2f}% < -{loss_threshold:.1f}%)")
+                        logger.info(f"[SLOW] {symbol}: Aspetto recupero o SL @ ${position.stop_loss_price:.2f}")
+                    else:
+                        logger.info(f"[SLOW] {symbol}: ⏳ AI vuole chiudere ma profitto basso ({pnl_pct:+.2f}% < {min_profit}%)")
+                        logger.info(f"[SLOW] {symbol}: Aspetto trailing o target migliore")
             else:
                 self._close_position(symbol, "AI decision", reason)
 
