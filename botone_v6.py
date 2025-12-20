@@ -960,8 +960,11 @@ class BotoneV6:
     def _verify_all_sl_orders(self, positions: list):
         """Verify all positions have SL orders on exchange, place if missing."""
         try:
-            # Get all open orders from exchange
-            open_orders = self.trader.exchange.info.open_orders(self.config.hl_account_address)
+            # Get all open orders from exchange - use frontend_open_orders for trigger orders
+            try:
+                open_orders = self.trader.exchange.info.frontend_open_orders(self.config.hl_account_address)
+            except AttributeError:
+                open_orders = self.trader.exchange.info.open_orders(self.config.hl_account_address)
 
             # Build a set of symbols that have SL orders
             symbols_with_sl = set()
