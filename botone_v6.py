@@ -1263,9 +1263,11 @@ class BotoneV6:
             logger.info(f"[FAST] {position.symbol}: Trailing SL → ${new_sl:.2f} (level: +{new_level:.1f}%)")
 
             # === AGGIORNA SL SU HYPERLIQUID ===
+            # ORDINE IMPORTANTE: prima piazza nuovo SL, poi cancella vecchio
+            # Così non sei mai scoperto durante l'aggiornamento
             try:
-                # Cancel existing SL orders and place new one
-                # MUST use frontend_open_orders() to see trigger orders (SL/TP)
+                # 1. Trova vecchi SL orders (per cancellarli DOPO)
+                old_sl_oids = []
                 try:
                     open_orders = self.trader.exchange.info.frontend_open_orders(self.config.hl_account_address)
                 except AttributeError:
@@ -1275,11 +1277,9 @@ class BotoneV6:
                     if order.get("coin") == position.symbol:
                         trigger_px = order.get("triggerPx")
                         if trigger_px and trigger_px != "0.0":
-                            # Cancel old SL
-                            self.trader.exchange.cancel(position.symbol, order.get("oid"))
-                            logger.info(f"[FAST] {position.symbol}: Cancellato vecchio SL")
+                            old_sl_oids.append(order.get("oid"))
 
-                # Place new SL
+                # 2. PRIMA piazza nuovo SL (sei protetto)
                 sl_is_buy = position.direction == TradeDirection.SHORT
 
                 # Round SL price appropriately based on asset tick size
@@ -1304,12 +1304,20 @@ class BotoneV6:
                     sl_is_buy,
                     actual_size,
                     sl_price_rounded,
-                    {"trigger": {"triggerPx": sl_price_rounded, "isMarket": True, "tpsl": "sl"}},  # float, not string!
+                    {"trigger": {"triggerPx": sl_price_rounded, "isMarket": True, "tpsl": "sl"}},
                     reduce_only=True
                 )
 
                 if sl_order.get("status") == "ok":
                     logger.info(f"[FAST] {position.symbol}: 🛡️ Nuovo SL piazzato @ ${sl_price_rounded:.2f}")
+
+                    # 3. POI cancella vecchi SL (ora sei coperto dal nuovo)
+                    for oid in old_sl_oids:
+                        try:
+                            self.trader.exchange.cancel(position.symbol, oid)
+                            logger.info(f"[FAST] {position.symbol}: Cancellato vecchio SL (oid: {oid})")
+                        except Exception as cancel_err:
+                            logger.warning(f"[FAST] {position.symbol}: Errore cancellazione vecchio SL: {cancel_err}")
                 else:
                     logger.warning(f"[FAST] {position.symbol}: ⚠️ Errore aggiornamento SL: {sl_order}")
 
