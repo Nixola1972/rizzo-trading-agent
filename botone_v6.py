@@ -94,6 +94,12 @@ class BotoneV6Config:
         self.min_profit_to_close = float(os.getenv("MIN_PROFIT_TO_CLOSE", "0.5"))  # Min profit % for AI to close
         self.ai_loss_threshold_pct = float(os.getenv("AI_LOSS_THRESHOLD_PCT", "50"))  # AI can close if loss > X% of SL
 
+        # Leverage limits per style (configurable via env)
+        self.leverage_prudent_max = int(os.getenv("LEVERAGE_PRUDENT_MAX", "3"))
+        self.leverage_moderate_max = int(os.getenv("LEVERAGE_MODERATE_MAX", "5"))
+        self.leverage_aggressive_min = int(os.getenv("LEVERAGE_AGGRESSIVE_MIN", "5"))
+        self.leverage_macro_max = int(os.getenv("LEVERAGE_MACRO_MAX", "2"))
+
         # Trailing Stop
         self.trailing_enabled = os.getenv("TRAILING_ENABLED", "true").lower() == "true"
         self.trailing_steps = os.getenv("TRAILING_STEPS", "2.0:0.0,3.0:1.0,4.0:2.0")
@@ -126,6 +132,7 @@ class BotoneV6Config:
         logger.info(f"  Symbols: {self.symbols}")
         logger.info(f"  Position Size: ${self.position_size_usd}")
         logger.info(f"  Max Leverage: {self.max_leverage}x")
+        logger.info(f"  Style Leverage Limits: PRUDENT={self.leverage_prudent_max}x, MODERATE={self.leverage_moderate_max}x, AGGRESSIVE={self.leverage_aggressive_min}-{self.max_leverage}x, MACRO={self.leverage_macro_max}x")
         logger.info(f"  SL: {self.stop_loss_pct}% | TP: {self.take_profit_pct}%")
         logger.info(f"  Min Profit to Close: {self.min_profit_to_close}%")
         logger.info(f"  AI Loss Threshold: {self.ai_loss_threshold_pct}% of SL (={self.stop_loss_pct * self.ai_loss_threshold_pct / 100:.1f}%)")
@@ -248,6 +255,12 @@ Respond with JSON:
         max_leverage = self.config.max_leverage
         style = self.config.prompt_style
 
+        # Get style-specific leverage limits from config
+        prudent_max = self.config.leverage_prudent_max
+        moderate_max = self.config.leverage_moderate_max
+        aggressive_min = self.config.leverage_aggressive_min
+        macro_max = self.config.leverage_macro_max
+
         if style == "PRUDENT":
             return f"""
 TRADING STYLE: PRUDENT (Capital Preservation)
@@ -256,7 +269,7 @@ Goal: High win rate, fewer trades, protect capital
 RULES YOU MUST FOLLOW:
 1. ONLY open if confidence > 80%
 2. Require at least 3 aligned indicators (MACD + RSI + Trend)
-3. MAX leverage: {min(3, max_leverage)}x
+3. MAX leverage: {prudent_max}x
 4. PREFER HOLD when uncertain - patience is key
 5. AVOID trading when ADX < 20 (no clear trend)
 6. AVOID trading when volatility is high (ATR above normal)
@@ -273,7 +286,7 @@ Goal: Capture more moves, accept higher risk for higher rewards
 
 RULES YOU MUST FOLLOW:
 1. Open if confidence > 50%
-2. Use higher leverage (5-{max_leverage}x) on strong signals
+2. Use higher leverage ({aggressive_min}-{max_leverage}x) on strong signals
 3. Trade even in moderate volatility
 4. Hold positions longer for bigger targets
 5. One strong indicator can be enough to enter
@@ -291,7 +304,7 @@ Goal: Catch major trend moves on daily timeframe
 RULES YOU MUST FOLLOW:
 1. ONLY open if confidence > 85%
 2. REQUIRE trend alignment on 4h AND 1D timeframes
-3. MAX leverage: {min(2, max_leverage)}x (protect capital for big moves)
+3. MAX leverage: {macro_max}x (protect capital for big moves)
 4. Target: 5-10% profit (let winners run)
 5. IGNORE short-term noise and minor fluctuations
 6. Wait for PERFECT setups - patience is critical
@@ -313,10 +326,10 @@ Goal: Balance between opportunities and risk management
 RULES YOU MUST FOLLOW:
 1. Open if confidence > 60%
 2. Need at least 2 aligned indicators
-3. Leverage 1-{max_leverage}x based on confidence:
+3. Leverage 1-{moderate_max}x based on confidence:
    - 60-70% confidence → 2-3x
-   - 70-80% confidence → 3-5x
-   - 80%+ confidence → up to {max_leverage}x
+   - 70-80% confidence → 3-{min(5, moderate_max)}x
+   - 80%+ confidence → up to {moderate_max}x
 4. Close position when indicators flip against you
 5. Consider volume confirmation for entries
 6. Respect multi-timeframe alignment
