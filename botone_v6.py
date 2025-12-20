@@ -918,7 +918,25 @@ class BotoneV6:
             except Exception as e:
                 logger.error(f"[SLOW] Error processing {symbol}: {e}")
 
-        logger.info("[SLOW] Loop iteration complete")
+        # Show summary with positions status
+        positions = self.position_tracker.get_all_positions()
+        if positions:
+            logger.info("[SLOW] ═══════════════════════════════════════")
+            logger.info(f"[SLOW] 📊 POSITIONS SUMMARY ({len(positions)} open):")
+            for pos in positions:
+                current_price = self.market_data.get_price(pos.symbol)
+                if current_price > 0 and pos.entry_price > 0:
+                    if pos.direction == TradeDirection.LONG:
+                        pnl_pct = ((current_price - pos.entry_price) / pos.entry_price) * 100 * pos.leverage
+                    else:
+                        pnl_pct = ((pos.entry_price - current_price) / pos.entry_price) * 100 * pos.leverage
+                    emoji = "🟢" if pnl_pct >= 0 else "🔴"
+                    logger.info(f"[SLOW]   {emoji} {pos.symbol} {pos.direction.value}: {pnl_pct:+.2f}% @ ${current_price:,.2f}")
+            logger.info("[SLOW] ═══════════════════════════════════════")
+
+        interval = self.config.ai_interval_minutes
+        logger.info(f"[SLOW] ✅ Loop complete - next AI check in {interval} minutes")
+        logger.info(f"[SLOW] 💤 Waiting... (FAST loop monitors SL/TP every 5s)")
 
     def run_fast_loop(self):
         """Run fast loop - position monitoring."""
