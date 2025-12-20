@@ -261,7 +261,7 @@ SYMBOL: {symbol}
 {market_section}
 {rules}
 
-IMPORTANT: Explain your reasoning by listing which indicators influenced your decision most.
+IMPORTANT: Show your CONFIDENCE BREAKDOWN - how each indicator contributed to the final score.
 
 Respond with JSON:
 {{
@@ -270,11 +270,27 @@ Respond with JSON:
   "leverage": 1-{max_leverage} (required if action=open),
   "confidence": 0.0-1.0,
   "reason": "brief summary",
-  "key_factors": ["list of 2-4 most important indicators that drove this decision"],
-  "bullish_signals": ["indicators suggesting UP"],
-  "bearish_signals": ["indicators suggesting DOWN"],
-  "warnings": ["any concerns or risks identified"]
-}}"""
+  "confidence_breakdown": {{
+    "MACD": "+X% (reason)",
+    "RSI": "+X% or -X% (reason)",
+    "ADX": "+X% (reason)",
+    "EMA": "+X% (reason)",
+    "Bollinger": "+X% or -X% (reason)",
+    "OBV": "+X% (reason)",
+    "Pivot": "+X% or -X% (reason)",
+    "Funding": "+X% or -X% (reason)",
+    "OI": "+X% (reason)",
+    "Patterns": "+X% (reason if detected)"
+  }},
+  "key_factors": ["top 2-3 indicators that drove this decision"],
+  "warnings": ["any risks identified"]
+}}
+
+RULES for confidence_breakdown:
+- Positive % = indicator supports the trade direction
+- Negative % = indicator warns against the trade
+- 0% = neutral, no impact
+- Sum of all contributions should roughly equal final confidence"""
 
     def _get_style_rules(self) -> str:
         """Get rules based on prompt style."""
@@ -471,18 +487,20 @@ DECISION PRIORITY: Risk-adjusted returns"""
         # Build enriched reason with AI reasoning
         base_reason = response.get("reason", "No reason provided")
         key_factors = response.get("key_factors", [])
-        bullish_signals = response.get("bullish_signals", [])
-        bearish_signals = response.get("bearish_signals", [])
         warnings = response.get("warnings", [])
+        confidence_breakdown = response.get("confidence_breakdown", {})
 
         # Build detailed reason string
         reason_parts = [base_reason]
+
+        # Add confidence breakdown if available
+        if confidence_breakdown:
+            breakdown_str = " | ".join([f"{k}: {v}" for k, v in confidence_breakdown.items() if v and v != "0%"])
+            if breakdown_str:
+                reason_parts.append(f"BREAKDOWN: {breakdown_str}")
+
         if key_factors:
-            reason_parts.append(f"KEY FACTORS: {', '.join(key_factors)}")
-        if bullish_signals:
-            reason_parts.append(f"BULLISH: {', '.join(bullish_signals)}")
-        if bearish_signals:
-            reason_parts.append(f"BEARISH: {', '.join(bearish_signals)}")
+            reason_parts.append(f"KEY: {', '.join(key_factors)}")
         if warnings:
             reason_parts.append(f"⚠️ WARNINGS: {', '.join(warnings)}")
 
