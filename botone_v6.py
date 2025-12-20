@@ -948,11 +948,78 @@ class BotoneV6:
             logger.debug("[FAST] No open positions")
             return
 
+        # First, verify all positions have SL orders on exchange
+        self._verify_all_sl_orders(positions)
+
         for position in positions:
             try:
                 self._monitor_position(position)
             except Exception as e:
                 logger.error(f"[FAST] Error monitoring {position.symbol}: {e}")
+
+    def _verify_all_sl_orders(self, positions: list):
+        """Verify all positions have SL orders on exchange, place if missing."""
+        try:
+            # Get all open orders from exchange
+            open_orders = self.trader.exchange.info.open_orders(self.config.hl_account_address)
+
+            # Build a set of symbols that have SL orders
+            symbols_with_sl = set()
+            for order in open_orders:
+                trigger_px = order.get("triggerPx")
+                if trigger_px and trigger_px != "0.0":
+                    symbols_with_sl.add(order.get("coin"))
+
+            # Check each position
+            for position in positions:
+                if position.symbol not in symbols_with_sl:
+                    logger.warning(f"[FAST] ⚠️ {position.symbol}: SL MANCANTE su exchange! Piazzo ora...")
+                    self._place_sl_order(position)
+
+        except Exception as e:
+            logger.error(f"[FAST] Errore verifica SL orders: {e}")
+
+    def _place_sl_order(self, position: Position):
+        """Place a stop loss order on the exchange."""
+        try:
+            sl_is_buy = position.direction == TradeDirection.SHORT
+
+            # Round SL price appropriately based on asset
+            if position.symbol == "BTC":
+                sl_price_rounded = round(position.stop_loss_price, 1)
+            elif position.symbol in ["ETH", "SOL"]:
+                sl_price_rounded = round(position.stop_loss_price, 2)
+            else:
+                sl_price_rounded = round(position.stop_loss_price, 4)
+
+            # Get actual position size from exchange
+            status = self.trader.get_account_status()
+            actual_size = position.size
+            for pos in status.get("open_positions", []):
+                if pos.get("symbol") == position.symbol:
+                    actual_size = abs(float(pos.get("size", 0)))
+                    break
+
+            if actual_size <= 0:
+                logger.warning(f"[FAST] {position.symbol}: Size=0, skip SL placement")
+                return
+
+            sl_order = self.trader.exchange.order(
+                position.symbol,
+                sl_is_buy,
+                actual_size,
+                sl_price_rounded,
+                {"trigger": {"triggerPx": sl_price_rounded, "isMarket": True, "tpsl": "sl"}},
+                reduce_only=True
+            )
+
+            if sl_order.get("status") == "ok":
+                logger.info(f"[FAST] {position.symbol}: ✅ SL piazzato @ ${sl_price_rounded:.2f}")
+            else:
+                logger.warning(f"[FAST] {position.symbol}: ❌ Errore piazzamento SL: {sl_order}")
+
+        except Exception as e:
+            logger.error(f"[FAST] {position.symbol}: ❌ Errore _place_sl_order: {e}")
 
     def _process_symbol(self, symbol: str):
         """Process a symbol for potential trades."""
