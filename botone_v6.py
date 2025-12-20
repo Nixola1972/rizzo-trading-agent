@@ -1120,6 +1120,18 @@ class BotoneV6:
             market_data["position_leverage"] = position.leverage
             market_data["stop_loss_price"] = position.stop_loss_price
 
+            # === OTTIMIZZAZIONE: Skip AI se P&L in "dead zone" ===
+            # Dead zone = AI non può fare nulla di utile
+            # - Non abbastanza profitto per chiudere (< min_profit)
+            # - Non abbastanza perdita per loss-cut (< loss_threshold)
+            min_profit = self.config.min_profit_to_close
+            loss_threshold = self.config.stop_loss_pct * (self.config.ai_loss_threshold_pct / 100)
+
+            if current_pnl_pct < min_profit and current_pnl_pct > -loss_threshold:
+                logger.info(f"[SLOW] {symbol}: ⏭️ Skip AI - P&L {current_pnl_pct:+.2f}% in dead zone "
+                           f"(need >{min_profit:+.1f}% or <-{loss_threshold:.1f}%)")
+                return
+
         # Get AI decision
         logger.info(f"[SLOW] {symbol}: Calling AI ({self.config.prompt_style})...")
 
