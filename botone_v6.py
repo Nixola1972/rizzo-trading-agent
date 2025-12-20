@@ -1007,6 +1007,8 @@ class BotoneV6:
                 logger.warning(f"[FAST] {position.symbol}: Size=0, skip SL placement")
                 return
 
+            logger.info(f"[FAST] {position.symbol}: Placing SL - size={actual_size}, price=${sl_price_rounded:.2f}, is_buy={sl_is_buy}")
+
             sl_order = self.trader.exchange.order(
                 position.symbol,
                 sl_is_buy,
@@ -1016,7 +1018,13 @@ class BotoneV6:
                 reduce_only=True
             )
 
+            # Log full response for debugging
+            logger.info(f"[FAST] {position.symbol}: SL API response: {sl_order}")
+
             if sl_order.get("status") == "ok":
+                logger.info(f"[FAST] {position.symbol}: ✅ SL piazzato @ ${sl_price_rounded:.2f}")
+            elif "response" in sl_order and sl_order["response"].get("type") == "order":
+                # Alternative success format
                 logger.info(f"[FAST] {position.symbol}: ✅ SL piazzato @ ${sl_price_rounded:.2f}")
             else:
                 logger.warning(f"[FAST] {position.symbol}: ❌ Errore piazzamento SL: {sl_order}")
