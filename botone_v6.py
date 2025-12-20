@@ -873,13 +873,19 @@ class BotoneV6:
                             logger.warning(f"[SYNC] Using current price as fallback: ${current_price}")
                             entry_price = current_price
 
-                    # Calculate SL/TP from config
+                    # Get actual leverage from exchange data
+                    actual_leverage = int(pos.get("leverage", {}).get("value", 3))
+                    if actual_leverage <= 0:
+                        actual_leverage = 3  # Default fallback
+
+                    # Calculate SL/TP from config - MUST divide by leverage!
+                    # SL at 10% P&L loss with 3x leverage = 3.33% price move
                     if direction == TradeDirection.LONG:
-                        sl_price = entry_price * (1 - self.config.stop_loss_pct / 100)
-                        tp_price = entry_price * (1 + self.config.take_profit_pct / 100)
+                        sl_price = entry_price * (1 - self.config.stop_loss_pct / 100 / actual_leverage)
+                        tp_price = entry_price * (1 + self.config.take_profit_pct / 100 / actual_leverage)
                     else:
-                        sl_price = entry_price * (1 + self.config.stop_loss_pct / 100)
-                        tp_price = entry_price * (1 - self.config.take_profit_pct / 100)
+                        sl_price = entry_price * (1 + self.config.stop_loss_pct / 100 / actual_leverage)
+                        tp_price = entry_price * (1 - self.config.take_profit_pct / 100 / actual_leverage)
 
                     position = Position(
                         id=f"{symbol}_{int(time.time())}",
@@ -887,7 +893,7 @@ class BotoneV6:
                         direction=direction,
                         entry_price=entry_price,
                         size=size,
-                        leverage=3,  # Default, we don't know actual
+                        leverage=actual_leverage,
                         stop_loss_price=sl_price,
                         take_profit_price=tp_price,
                         current_sl_level=-self.config.stop_loss_pct,
@@ -1007,7 +1013,10 @@ class BotoneV6:
                 logger.warning(f"[FAST] {position.symbol}: Size=0, skip SL placement")
                 return
 
-            logger.info(f"[FAST] {position.symbol}: Placing SL - size={actual_size}, price=${sl_price_rounded:.2f}, is_buy={sl_is_buy}")
+            # Get current price to validate SL
+            current_price = self.market_data.get_price(position.symbol)
+            sl_distance_pct = abs(sl_price_rounded - current_price) / current_price * 100
+            logger.info(f"[FAST] {position.symbol}: Placing SL - size={actual_size}, price=${sl_price_rounded:.2f}, is_buy={sl_is_buy}, current=${current_price:.2f}, distance={sl_distance_pct:.1f}%")
 
             sl_order = self.trader.exchange.order(
                 position.symbol,
@@ -1018,14 +1027,21 @@ class BotoneV6:
                 reduce_only=True
             )
 
-            # Log full response for debugging
-            logger.info(f"[FAST] {position.symbol}: SL API response: {sl_order}")
-
+            # Check for errors in nested response
             if sl_order.get("status") == "ok":
-                logger.info(f"[FAST] {position.symbol}: ✅ SL piazzato @ ${sl_price_rounded:.2f}")
-            elif "response" in sl_order and sl_order["response"].get("type") == "order":
-                # Alternative success format
-                logger.info(f"[FAST] {position.symbol}: ✅ SL piazzato @ ${sl_price_rounded:.2f}")
+                # Check for nested errors in statuses
+                response_data = sl_order.get("response", {}).get("data", {})
+                statuses = response_data.get("statuses", [])
+
+                has_error = False
+                for status in statuses:
+                    if "error" in status:
+                        logger.error(f"[FAST] {position.symbol}: ❌ SL RIFIUTATO: {status['error']}")
+                        has_error = True
+                        break
+
+                if not has_error:
+                    logger.info(f"[FAST] {position.symbol}: ✅ SL piazzato @ ${sl_price_rounded:.2f}")
             else:
                 logger.warning(f"[FAST] {position.symbol}: ❌ Errore piazzamento SL: {sl_order}")
 
