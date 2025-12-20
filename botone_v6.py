@@ -1006,10 +1006,11 @@ class BotoneV6:
         try:
             sl_is_buy = position.direction == TradeDirection.SHORT
 
-            # Round SL price appropriately based on asset
-            if position.symbol == "BTC":
+            # Round SL price appropriately based on asset tick size
+            # BTC: 0.1, ETH: 0.1, SOL: 0.01, others: 0.0001
+            if position.symbol in ["BTC", "ETH"]:
                 sl_price_rounded = round(position.stop_loss_price, 1)
-            elif position.symbol in ["ETH", "SOL"]:
+            elif position.symbol == "SOL":
                 sl_price_rounded = round(position.stop_loss_price, 2)
             else:
                 sl_price_rounded = round(position.stop_loss_price, 4)
@@ -1276,10 +1277,11 @@ class BotoneV6:
                 # Place new SL
                 sl_is_buy = position.direction == TradeDirection.SHORT
 
-                # Round SL price appropriately based on asset
-                if position.symbol == "BTC":
+                # Round SL price appropriately based on asset tick size
+                # BTC: 0.1, ETH: 0.1, SOL: 0.01, others: 0.0001
+                if position.symbol in ["BTC", "ETH"]:
                     sl_price_rounded = round(new_sl, 1)
-                elif position.symbol in ["ETH", "SOL"]:
+                elif position.symbol == "SOL":
                     sl_price_rounded = round(new_sl, 2)
                 else:
                     sl_price_rounded = round(new_sl, 4)
@@ -1376,13 +1378,14 @@ class BotoneV6:
                         # SL direction is opposite to position
                         sl_is_buy = direction == TradeDirection.SHORT
 
-                        # Round SL price appropriately based on asset
-                        if symbol == "BTC":
-                            sl_price_rounded = round(sl_price, 1)  # BTC usa 1 decimale
-                        elif symbol in ["ETH", "SOL"]:
-                            sl_price_rounded = round(sl_price, 2)  # ETH/SOL usa 2 decimali
+                        # Round SL price appropriately based on asset tick size
+                        # BTC: 0.1, ETH: 0.1, SOL: 0.01, others: 0.0001
+                        if symbol in ["BTC", "ETH"]:
+                            sl_price_rounded = round(sl_price, 1)
+                        elif symbol == "SOL":
+                            sl_price_rounded = round(sl_price, 2)
                         else:
-                            sl_price_rounded = round(sl_price, 4)  # Altri asset
+                            sl_price_rounded = round(sl_price, 4)
 
                         logger.info(f"[TRADE] Piazzando SL: {symbol} is_buy={sl_is_buy} size={actual_size} trigger={sl_price_rounded}")
 
@@ -1422,9 +1425,10 @@ class BotoneV6:
                                 break
                         if actual_size > 0:
                             sl_is_buy = direction == TradeDirection.SHORT
-                            if symbol == "BTC":
+                            # Round SL price appropriately based on asset tick size
+                            if symbol in ["BTC", "ETH"]:
                                 sl_price_rounded = round(sl_price, 1)
-                            elif symbol in ["ETH", "SOL"]:
+                            elif symbol == "SOL":
                                 sl_price_rounded = round(sl_price, 2)
                             else:
                                 sl_price_rounded = round(sl_price, 4)
