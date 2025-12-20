@@ -1293,4 +1293,253 @@ docker logs -f botone_baseline_slow --tail 50
 
 ---
 
+### Botone V6 (Production Bot)
+
+Bot di produzione che usa l'architettura V6 con AI decision-making avanzato e set completo di indicatori.
+
+```
+Containers:
+├─ botone_v6_slow  (AI decisions, ogni N minuti)
+└─ botone_v6_fast  (position monitoring, ogni 5s)
+
+Script: botone_v6.py
+Image: botone-v6:latest
+Database: botone_baseline (condiviso)
+HyperLiquid: Sub-account dedicato
+```
+
+#### Indicatori Passati all'AI
+
+Botone V6 passa ALL indicatori disponibili all'AI per massimizzare il contesto:
+
+| Categoria | Indicatori |
+|-----------|------------|
+| **Momentum** | MACD (valore + segnale), RSI (14 periodi) |
+| **Trend** | ADX (forza trend), EMA Stack (EMA20 vs EMA50 vs Price) |
+| **Volatilità** | ATR (14 periodi), Bollinger Bands (position, %B, bandwidth, squeeze) |
+| **Volume** | OBV Trend (rising/falling), Volume Ratio (vs average) |
+| **Support/Resistance** | Pivot Points (R2, R1, PP, S1, S2) |
+| **Derivatives** | Funding Rate, Open Interest (+ change 24h) |
+| **Patterns** | Double Bottom, Double Top (con confidence) |
+| **Sentiment** | Fear & Greed Index |
+
+#### Confidence Breakdown
+
+L'AI deve spiegare COME ha calcolato la confidence, indicando il contributo di ogni indicatore:
+
+```json
+{
+  "action": "open",
+  "direction": "LONG",
+  "leverage": 3,
+  "confidence": 0.82,
+  "reason": "Strong bullish momentum with volume confirmation",
+  "confidence_breakdown": {
+    "MACD": "+15% (0.25 strong bullish)",
+    "EMA": "+12% (price above both EMAs)",
+    "OBV": "+10% (rising, confirms buyers)",
+    "ADX": "+8% (28 = strong trend)",
+    "Pivot": "+5% (above PP, heading to R1)",
+    "Patterns": "+0% (none detected)",
+    "RSI": "-5% (62 = approaching overbought)",
+    "Bollinger": "-3% (near upper band)",
+    "Funding": "-2% (slightly crowded long)",
+    "OI": "+2% (rising with price)"
+  },
+  "key_factors": ["MACD", "EMA", "OBV"],
+  "warnings": ["RSI approaching overbought zone"]
+}
+```
+
+Questo permette di:
+- Capire quali indicatori l'AI pesa di più
+- Identificare pattern nelle decisioni
+- Debug di trade sbagliati
+- Ottimizzazione futura dei pesi
+
+#### Configurazione Botone V6 (.env.baseline)
+
+```bash
+# ═══════════════════════════════════════════════════════════════════════════
+# BOTONE V6 CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+# --- Bot Identity ---
+BOT_NAME=botone-v6
+
+# --- API Keys ---
+OPENROUTER_API_KEY=sk-or-v1-xxxxx
+OPENROUTER_MODEL=deepseek/deepseek-chat
+
+# --- HyperLiquid (SUB-ACCOUNT DEDICATO) ---
+HL_PRIVATE_KEY=0xYourSubAccountPrivateKey
+HL_ACCOUNT_ADDRESS=0xYourSubAccountAddress
+
+# --- Database ---
+DATABASE_URL=postgresql://tradingbot:TradingBot2025!Secure@memory_postgres:5432/botone_baseline
+
+# --- V6 Prompt Style ---
+V6_PROMPT_STYLE=MODERATE          # PRUDENT, MODERATE, AGGRESSIVE, MACRO
+
+# --- AI Settings ---
+AI_INTERVAL_MINUTES=5             # Frequenza chiamate AI
+MIN_PROFIT_TO_CLOSE=1.5           # Min profit % per chiusura AI
+AI_LOSS_THRESHOLD_PCT=50          # AI può chiudere se loss > X% dello SL
+
+# --- Leverage per Style ---
+MAX_LEVERAGE=5
+LEVERAGE_PRUDENT_MAX=3
+LEVERAGE_MODERATE_MAX=5
+LEVERAGE_AGGRESSIVE_MIN=5
+LEVERAGE_MACRO_MAX=2
+
+# --- Position Sizing ---
+POSITION_SIZE_USD=25
+STOP_LOSS_PCT=10
+
+# --- Trailing Stop ---
+TRAILING_STEPS=2.0:0.0,3.0:1.0,4.0:2.0,5.0:3.0,7.0:5.0,10.0:7.0,15.0:12.0,20.0:16.0
+
+# --- Symbols ---
+SYMBOLS=BTC,ETH,SOL
+
+# --- Logging ---
+VERBOSE_LOGGING=true              # Mostra tutti gli indicatori nei log
+```
+
+#### Deploy Botone V6
+
+```bash
+# 1. Pull delle modifiche
+cd /root/trading-bots/rizzo-trading-agent
+git pull origin claude/project-expansion-discussion-e6H5a
+
+# 2. Stop e rimuovi containers esistenti
+docker stop botone_v6_slow botone_v6_fast
+docker rm botone_v6_slow botone_v6_fast
+
+# 3. Rebuild immagine
+docker build -t botone-v6 -f Dockerfile .
+
+# 4. Avvia FAST (monitoring)
+docker run -d \
+  --name botone_v6_fast \
+  --env-file /root/trading-bots/rizzo-trading-agent/.env.baseline \
+  -e PYTHONUNBUFFERED=1 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  botone-v6:latest \
+  botone_v6.py --mode fast --loop
+
+# 5. Avvia SLOW (AI decisions)
+docker run -d \
+  --name botone_v6_slow \
+  --env-file /root/trading-bots/rizzo-trading-agent/.env.baseline \
+  -e PYTHONUNBUFFERED=1 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  botone-v6:latest \
+  botone_v6.py --mode slow --loop
+
+# 6. Verifica
+docker ps | grep botone_v6
+docker logs -f botone_v6_slow --tail 50
+```
+
+#### Architettura Botone V6
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     BOTONE V6 ARCHITECTURE                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   ┌─────────────────────┐     ┌─────────────────────┐           │
+│   │   botone_v6_slow    │     │   botone_v6_fast    │           │
+│   ├─────────────────────┤     ├─────────────────────┤           │
+│   │ • Ogni N minuti     │     │ • Ogni 5 secondi    │           │
+│   │ • Fetch indicatori  │     │ • Update prezzi     │           │
+│   │ • Chiama AI         │     │ • Check SL/TP       │           │
+│   │ • APRE posizioni    │     │ • Trailing stop     │           │
+│   │ • Può CHIUDERE      │     │ • CHIUDE posizioni  │           │
+│   │   (profit/loss-cut) │     │                     │           │
+│   └──────────┬──────────┘     └──────────┬──────────┘           │
+│              │                           │                       │
+│              │    THREAD INDIPENDENTI    │                       │
+│              │    (non si bloccano)      │                       │
+│              └─────────────┬─────────────┘                       │
+│                            │                                     │
+│                            ▼                                     │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │              INDICATORI PASSATI ALL'AI                   │   │
+│   ├─────────────────────────────────────────────────────────┤   │
+│   │  MACD, RSI, ADX, EMA Stack, ATR                         │   │
+│   │  Bollinger Bands (position, %B, bandwidth, squeeze)      │   │
+│   │  OBV Trend, Volume Ratio                                 │   │
+│   │  Pivot Points (R2, R1, PP, S1, S2)                       │   │
+│   │  Funding Rate, Open Interest                             │   │
+│   │  Double Bottom/Top Patterns                              │   │
+│   │  Fear & Greed Index                                      │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                            │                                     │
+│                            ▼                                     │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │              AI OUTPUT con BREAKDOWN                     │   │
+│   ├─────────────────────────────────────────────────────────┤   │
+│   │  {                                                       │   │
+│   │    "action": "open",                                     │   │
+│   │    "confidence": 0.82,                                   │   │
+│   │    "confidence_breakdown": {                             │   │
+│   │      "MACD": "+15%",                                     │   │
+│   │      "RSI": "-5%",                                       │   │
+│   │      ...                                                 │   │
+│   │    }                                                     │   │
+│   │  }                                                       │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### AI Close Logic
+
+L'AI in SLOW loop può chiudere posizioni in due casi:
+
+1. **Profit Taking**: P&L >= MIN_PROFIT_TO_CLOSE (default 1.5%)
+2. **Loss Cutting**: Perdita >= AI_LOSS_THRESHOLD_PCT% dello SL (default 50%)
+
+Esempio con SL=10% e AI_LOSS_THRESHOLD_PCT=50:
+- AI può chiudere se loss >= 5% (50% di 10%)
+- Permette all'AI di tagliare perdite "intelligentemente" prima dello SL
+
+#### Log Output Esempio
+
+```
+[SLOW] BTC: === MARKET DATA ===
+  Price: $97,500.00
+  MACD: 0.1850
+  RSI: 58.0
+  ADX: 28.5
+  EMA Stack: bullish (price > EMA20 > EMA50)
+  ATR: 850.00 (normal)
+  Bollinger: UPPER_HALF | %B=0.72 | Squeeze=no
+  OBV Trend: rising
+  Pivot Points: R2=$99,500 R1=$98,200 PP=$97,000 S1=$95,800 S2=$94,500
+  Volume Ratio: 1.25x
+  Funding Rate: 0.0080%
+  Open Interest: $1,250,000,000
+
+[SLOW] BTC: Calling AI (MODERATE)...
+[SLOW] BTC: AI Decision: OPEN LONG | Conf: 82% | Lev: 3x
+  Strong bullish momentum | BREAKDOWN: MACD: +15% | EMA: +12% | OBV: +10% | ADX: +8% | RSI: -5% | Bollinger: -3%
+  KEY: MACD, EMA, OBV
+  ⚠️ WARNINGS: Approaching R1 resistance
+
+[TRADE] Opening LONG on BTC @ $97,500.00 lev=3x
+[TRADE] ✅ Position opened successfully
+[TRADE] 📍 Setting SL at $94,575.00 (3.0% below entry)
+```
+
+---
+
 *Last updated: December 2025*
