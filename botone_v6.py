@@ -1868,19 +1868,24 @@ def main():
                     bot.run_fast_loop()
 
                 # Countdown with periodic log
-                remaining = interval
-                log_every = 60 if args.mode == "slow" else 30  # Log ogni 60s per slow, 30s per fast
-                while remaining > 0:
-                    sleep_chunk = min(log_every, remaining)
-                    time.sleep(sleep_chunk)
-                    remaining -= sleep_chunk
-                    if remaining > 0:
-                        mins = remaining // 60
-                        secs = remaining % 60
-                        if mins > 0:
-                            logger.info(f"[{args.mode.upper()}] ⏳ Next cycle in {int(mins)}m {int(secs)}s...")
-                        else:
-                            logger.info(f"[{args.mode.upper()}] ⏳ Next cycle in {int(secs)}s...")
+                if args.mode == "slow":
+                    # SLOW: countdown ogni 60 secondi
+                    remaining = interval
+                    while remaining > 0:
+                        sleep_chunk = min(60, remaining)
+                        time.sleep(sleep_chunk)
+                        remaining -= sleep_chunk
+                        if remaining > 0:
+                            mins = remaining // 60
+                            secs = remaining % 60
+                            if mins > 0:
+                                logger.info(f"[SLOW] ⏳ Next cycle in {int(mins)}m {int(secs)}s...")
+                            else:
+                                logger.info(f"[SLOW] ⏳ Next cycle in {int(secs)}s...")
+                else:
+                    # FAST: semplice sleep con heartbeat
+                    logger.debug(f"[FAST] 💓 Sleeping {interval}s...")
+                    time.sleep(interval)
 
             except KeyboardInterrupt:
                 logger.info("Shutting down...")
