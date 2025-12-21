@@ -1315,6 +1315,13 @@ class BotoneV6:
 
             # Get current price to validate SL
             current_price = self.market_data.get_price(position.symbol)
+
+            # Skip SL if position value is too small (HyperLiquid minimum ~$10)
+            position_value_usd = actual_size * current_price
+            if position_value_usd < 10.0:
+                logger.warning(f"[FAST] {position.symbol}: Position too small (${position_value_usd:.2f} < $10), skip SL")
+                return
+
             sl_distance_pct = abs(sl_price_rounded - current_price) / current_price * 100
             logger.info(f"[FAST] {position.symbol}: Placing SL - size={actual_size}, price=${sl_price_rounded:.2f}, is_buy={sl_is_buy}, current=${current_price:.2f}, distance={sl_distance_pct:.1f}%")
 
