@@ -1244,6 +1244,16 @@ class BotoneV6:
 
     def run_fast_loop(self):
         """Run fast loop - position monitoring."""
+        # Check if wallet has enough balance to operate
+        try:
+            status = self.trader.get_account_status()
+            free_balance = float(status.get("equity", 0)) - float(status.get("margin_used", 0))
+            if free_balance < 10.0:
+                logger.debug(f"[FAST] Balance residuo ${free_balance:.2f} < $10, skip monitoring")
+                return
+        except Exception as e:
+            logger.warning(f"[FAST] Cannot check balance: {e}")
+
         # Sync positions
         self.sync_positions_from_exchange()
 
