@@ -810,6 +810,17 @@ class MarketDataProvider:
     def __init__(self, config: BotoneV6Config):
         self.config = config
         self._analyzer = None
+        self._info = None  # Cached Info object to avoid creating new connections
+
+    def _get_info(self):
+        """Lazy load Info object - reuse to avoid 100 connection limit."""
+        if self._info is None:
+            from hyperliquid.info import Info
+            from hyperliquid.utils import constants
+            base_url = constants.TESTNET_API_URL if self.config.hl_testnet else constants.MAINNET_API_URL
+            self._info = Info(base_url, skip_ws=True)  # skip_ws=True avoids websocket!
+            logger.info("[MARKET] Created cached Info object (skip_ws=True)")
+        return self._info
 
     def get_analyzer(self):
         """Lazy load analyzer."""
@@ -819,13 +830,9 @@ class MarketDataProvider:
         return self._analyzer
 
     def get_price(self, symbol: str) -> float:
-        """Get current price for symbol."""
+        """Get current price for symbol using cached Info object."""
         try:
-            from hyperliquid.info import Info
-            from hyperliquid.utils import constants
-
-            base_url = constants.TESTNET_API_URL if self.config.hl_testnet else constants.MAINNET_API_URL
-            info = Info(base_url)
+            info = self._get_info()
             mids = info.all_mids()
             return float(mids.get(symbol, 0))
         except Exception as e:
