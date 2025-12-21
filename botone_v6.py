@@ -109,9 +109,32 @@ class BotoneV6Config:
         self.ai_interval_minutes = int(os.getenv("V6_AI_INTERVAL_MINUTES", "5"))
         self.timeframe = os.getenv("V6_TIMEFRAME", "5min")
 
-        # Symbols to trade
+        # RESEARCH MODE - Advanced weighted scoring system
+        self.research_mode = os.getenv("RESEARCH_MODE", "false").lower() == "true"
+        self.research_min_volume_ratio = float(os.getenv("RESEARCH_MIN_VOLUME_RATIO", "0.5"))
+
+        # Symbols to trade (all available cryptos)
         symbols_str = os.getenv("TRADING_SYMBOLS", "BTC,ETH,SOL")
         self.symbols = [s.strip() for s in symbols_str.split(",")]
+
+        # Crypto Tiers Configuration (for RESEARCH_MODE)
+        # Tier 1: High liquidity, low manipulation - threshold 60
+        # Tier 2: Medium liquidity - threshold 70
+        # Tier 3: High volatility/manipulation - threshold 80
+        self.crypto_tiers = {
+            # Tier 1 - Low risk
+            "BTC": {"tier": 1, "multiplier": 1.00, "threshold": 60, "min_volume": 0.5},
+            "ETH": {"tier": 1, "multiplier": 1.05, "threshold": 57, "min_volume": 0.5},
+            # Tier 2 - Medium risk
+            "SOL": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
+            "XRP": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
+            "BNB": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
+            "SUI": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": 1.0},
+            "ARB": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": 1.0},
+            # Tier 3 - High risk (need strong signals)
+            "DOGE": {"tier": 3, "multiplier": 0.70, "threshold": 114, "min_volume": 2.0},
+            "AVAX": {"tier": 3, "multiplier": 0.75, "threshold": 107, "min_volume": 1.5},
+        }
 
         # Loop intervals
         self.slow_loop_interval = int(os.getenv("SLOW_LOOP_INTERVAL", "60"))  # seconds
@@ -128,6 +151,9 @@ class BotoneV6Config:
         logger.info(f"=== {self.bot_name.upper()} CONFIGURATION ===")
         logger.info(f"  AI Model: {self.ai_model}")
         logger.info(f"  Prompt Style: {self.prompt_style}")
+        logger.info(f"  🔬 RESEARCH_MODE: {self.research_mode}")
+        if self.research_mode:
+            logger.info(f"  📊 Research Min Volume: {self.research_min_volume_ratio}x")
         logger.info(f"  AI Interval: {self.ai_interval_minutes} min")
         logger.info(f"  Symbols: {self.symbols}")
         logger.info(f"  Position Size: ${self.position_size_usd}")
@@ -167,9 +193,43 @@ class BotoneAIManager:
             Tuple of (action, direction, reason, confidence, leverage)
             action: "open", "close", or "hold"
         """
-        prompt = self._build_v6_prompt(
-            symbol, market_data, has_position, current_direction, current_pnl_pct
-        )
+        # RESEARCH MODE: Use weighted scoring with veto checks
+        if self.config.research_mode:
+            # Get tier info for this symbol
+            tier_info = self.config.crypto_tiers.get(symbol, {
+                "tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": 1.0
+            })
+
+            # === HARD VETO CHECKS (before calling AI) ===
+            volume_ratio = market_data.get('volume_ratio', 0)
+            min_volume = tier_info.get("min_volume", 0.5)
+            obv_trend = market_data.get('obv_trend', 'neutral')
+
+            # VETO 1: Volume too low
+            if volume_ratio < min_volume and not has_position:
+                reason = f"VETO: Volume {volume_ratio:.2f}x < {min_volume}x min for Tier-{tier_info['tier']}"
+                logger.info(f"[RESEARCH] {symbol}: 🚫 {reason}")
+                return "hold", None, reason, 0.0, 1
+
+            # VETO 2: OBV divergence (only check for new entries)
+            if not has_position:
+                price_trend = "up" if market_data.get('change_1h', 0) > 0 else "down"
+                obv_opposite = (price_trend == "up" and obv_trend == "FALLING") or \
+                               (price_trend == "down" and obv_trend == "RISING")
+                if obv_opposite:
+                    reason = f"VETO: OBV divergence - price {price_trend} but OBV {obv_trend} (whale distribution risk)"
+                    logger.info(f"[RESEARCH] {symbol}: 🚫 {reason}")
+                    return "hold", None, reason, 0.0, 1
+
+            # Build research prompt with tier info
+            prompt = self._build_research_prompt(
+                symbol, market_data, tier_info, has_position, current_direction, current_pnl_pct
+            )
+        else:
+            # Standard V6 prompt
+            prompt = self._build_v6_prompt(
+                symbol, market_data, has_position, current_direction, current_pnl_pct
+            )
 
         response = self._call_ai(prompt)
         if not response:
@@ -377,6 +437,160 @@ RULES YOU MUST FOLLOW:
 6. Respect multi-timeframe alignment
 
 DECISION PRIORITY: Risk-adjusted returns"""
+
+    def _build_research_prompt(
+        self,
+        symbol: str,
+        market_data: Dict[str, Any],
+        tier_info: Dict[str, Any],
+        has_position: bool,
+        current_direction: Optional[TradeDirection],
+        current_pnl_pct: float,
+    ) -> str:
+        """
+        Build RESEARCH MODE prompt with weighted scoring system.
+        Based on academic research on crypto technical indicators.
+        """
+        tier = tier_info.get("tier", 2)
+        multiplier = tier_info.get("multiplier", 1.0)
+        threshold = tier_info.get("threshold", 70)
+
+        position_info = ""
+        if has_position and current_direction:
+            position_info = f"""
+CURRENT POSITION:
+- Direction: {current_direction.value}
+- P&L: {current_pnl_pct:+.2f}%
+- Entry Price: ${market_data.get('entry_price', 0):,.2f}
+"""
+
+        # Extract stochastic data
+        stoch_k = market_data.get('stoch_k', 50)
+        stoch_d = market_data.get('stoch_d', 50)
+        stoch_signal = market_data.get('stoch_signal', 'NEUTRAL')
+        stoch_zone = market_data.get('stoch_zone', 'NEUTRAL')
+
+        bb_squeeze_text = "⚠️ SQUEEZE DETECTED - wait for breakout" if market_data.get('bb_squeeze', False) else "no squeeze"
+
+        return f"""🔬 RESEARCH MODE - WEIGHTED SCORING SYSTEM
+Symbol: {symbol}
+Tier: {tier} (multiplier: {multiplier:.2f}x, threshold: {threshold})
+{position_info}
+
+═══════════════════════════════════════════════════════════════════════
+                    PRICE & INDICATOR DATA
+═══════════════════════════════════════════════════════════════════════
+
+PRICE:
+- Current: ${market_data.get('price', 0):,.2f}
+- Change 1h: {market_data.get('change_1h', 0):+.2f}%
+- Change 24h: {market_data.get('change_24h', 0):+.2f}%
+
+CATEGORY A - TREND CONFIRMATION (40 points max):
+- EMA Stack: {market_data.get('ema_stack', 'neutral')} (aligned=15 pts, partial=8 pts, not aligned=0 pts)
+- ADX: {market_data.get('adx', 0):.1f} (>30=15 pts, 25-30=10 pts, <25=0 pts)
+- MACD: {market_data.get('macd', 0):.4f} (>0 AND above signal=10 pts)
+- MACD Line vs Signal: {market_data.get('macd_line', 0):.4f} vs {market_data.get('macd_signal', 0):.4f}
+
+CATEGORY B - MOMENTUM (30 points max):
+- RSI(9): {market_data.get('rsi', 50):.1f} (>50 for bullish=10 pts, <50 for bearish=10 pts)
+- Stochastic %K: {stoch_k:.1f} | %D: {stoch_d:.1f} | Signal: {stoch_signal} | Zone: {stoch_zone}
+  (crossover in oversold/overbought=15 pts, in neutral=8 pts)
+- MACD Histogram: {market_data.get('macd_hist_trend', 'neutral')} (growing=5 pts)
+
+CATEGORY C - VOLUME CONFIRMATION (30 points max):
+- Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x (>1.5x=15 pts, 1.0-1.5x=10 pts, 0.5-1.0x=5 pts)
+- OBV Trend: {market_data.get('obv_trend', 'neutral')} (aligned with price=10 pts, divergence bonus=5 pts)
+- Open Interest: ${market_data.get('open_interest', 0):,.0f}
+
+BOLLINGER BANDS:
+- Position: {market_data.get('bb_position', 'MIDDLE')}
+- %B: {market_data.get('bb_percent_b', 0.5):.2f}
+- Status: {bb_squeeze_text}
+
+PIVOT POINTS:
+- R2: ${market_data.get('pivot_r2', 0):,.2f} | R1: ${market_data.get('pivot_r1', 0):,.2f}
+- PP: ${market_data.get('pivot_pp', 0):,.2f}
+- S1: ${market_data.get('pivot_s1', 0):,.2f} | S2: ${market_data.get('pivot_s2', 0):,.2f}
+
+SENTIMENT:
+- Funding Rate: {market_data.get('funding_rate', 0):.4%}
+- Fear & Greed: {market_data.get('fear_greed', 50)}
+
+═══════════════════════════════════════════════════════════════════════
+                    SCORING INSTRUCTIONS
+═══════════════════════════════════════════════════════════════════════
+
+STEP 1: CALCULATE RAW SCORE (0-100 points)
+- Category A (Trend): up to 40 points
+- Category B (Momentum): up to 30 points
+- Category C (Volume): up to 30 points
+
+STEP 2: APPLY CRYPTO MULTIPLIER
+- Adjusted Score = Raw Score × {multiplier:.2f}
+
+STEP 3: COMPARE TO THRESHOLD
+- Required: {threshold} points for Tier-{tier}
+- If Adjusted Score < {threshold} → NO_TRADE
+
+STEP 4: CONVERT TO REALISTIC WIN RATE
+- 100 pts = 65% win rate (not 100%!)
+- 80 pts = 59% win rate
+- 60 pts = 53% win rate
+
+═══════════════════════════════════════════════════════════════════════
+                    SPECIAL RULES
+═══════════════════════════════════════════════════════════════════════
+
+RSI RULE (crypto-specific):
+- DO NOT use traditional 30/70 overbought/oversold
+- USE: RSI >50 = bullish momentum (+10 pts)
+- USE: RSI <50 = bearish momentum (+10 pts for short)
+- RSI divergence with price = +5 bonus
+
+STOCHASTIC RULE:
+- More important than RSI alone (15 pts vs 10 pts)
+- Crossover in oversold (<30) = STRONG BUY
+- Crossover in overbought (>70) = STRONG SELL
+
+BOLLINGER SQUEEZE RULE:
+- If squeeze detected: DO NOT ENTER until breakout confirmed
+- Wait for candle close outside band + volume >1.5x
+
+ADX RULE (critical for trend-following):
+- ADX <25: SKIP trade (ranging market)
+- ADX 25-30: OK but reduce position size 50%
+- ADX >30: Strong trend, proceed normally
+
+WARNING SIGNALS (reduce position or SKIP):
+- OBV opposite to price = whale distribution (DANGER)
+- Volume >3x suddenly without news = potential pump & dump
+- Funding rate >0.05% or <-0.05% = squeeze risk
+- Bollinger squeeze + low volume = likely fake breakout
+
+═══════════════════════════════════════════════════════════════════════
+
+OUTPUT FORMAT (JSON):
+{{
+  "raw_score": 0-100,
+  "score_breakdown": {{
+    "trend": X/40,
+    "momentum": X/30,
+    "volume": X/30
+  }},
+  "adjusted_score": raw_score × {multiplier:.2f},
+  "threshold": {threshold},
+  "decision": "BUY/SELL/NO_TRADE",
+  "action": "open/close/hold",
+  "direction": "LONG/SHORT" (if action=open),
+  "leverage": 1-{self.config.max_leverage},
+  "confidence": 0.0-1.0,
+  "win_rate_expected": "XX%",
+  "position_size_pct": 100 (or 50 if borderline/warning),
+  "reason": "brief explanation",
+  "warnings": ["list any warning signals detected"],
+  "key_factors": ["top 2-3 factors driving decision"]
+}}"""
 
     def _call_ai(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Call OpenRouter API."""
@@ -613,15 +827,30 @@ class MarketDataProvider:
             bb_percent_b = bollinger.get("percent_b", 0.5)
 
             # Extract OBV trend
-            obv_trend = longer_term.get("obv_trend", "neutral")
+            obv_data = analysis.get("obv", {})
+            obv_trend = obv_data.get("trend", "FLAT")
 
             # Extract Pivot Points
             pivot_points = analysis.get("pivot_points", {})
 
+            # Extract Stochastic (NEW)
+            stochastic = analysis.get("stochastic", {})
+            stoch_k = stochastic.get("k", 50)
+            stoch_d = stochastic.get("d", 50)
+            stoch_signal = stochastic.get("signal", "NEUTRAL")
+            stoch_zone = stochastic.get("zone", "NEUTRAL")
+
+            # MACD analysis
+            macd_analysis = analysis.get("macd_analysis", {})
+            macd_hist_trend = macd_analysis.get("histogram_trend", "neutral")
+
             return {
                 "price": price,
                 "macd": current.get("macd", 0),
-                "rsi": current.get("rsi_14", 50),
+                "macd_line": current.get("macd_line", 0),
+                "macd_signal": current.get("macd_signal", 0),
+                "macd_hist_trend": macd_hist_trend,
+                "rsi": current.get("rsi_9", current.get("rsi_14", 50)),  # Prefer RSI 9
                 "adx": current.get("adx", 0),
                 "ema9": ema9,
                 "ema21": ema21,
@@ -637,6 +866,12 @@ class MarketDataProvider:
 
                 # OBV - On Balance Volume (NEW)
                 "obv_trend": obv_trend,
+
+                # Stochastic Oscillator (NEW for RESEARCH_MODE)
+                "stoch_k": stoch_k,
+                "stoch_d": stoch_d,
+                "stoch_signal": stoch_signal,
+                "stoch_zone": stoch_zone,
 
                 # Pivot Points (NEW)
                 "pivot_pp": pivot_points.get("pp", 0),
@@ -1096,6 +1331,8 @@ class BotoneV6:
             logger.info(f"  Bollinger: {market_data.get('bb_position', 'N/A')} | %B={market_data.get('bb_percent_b', 0):.2f} | Squeeze={bb_squeeze}")
             # OBV (NEW)
             logger.info(f"  OBV Trend: {market_data.get('obv_trend', 'N/A')}")
+            # Stochastic (NEW)
+            logger.info(f"  Stochastic: %K={market_data.get('stoch_k', 50):.1f} %D={market_data.get('stoch_d', 50):.1f} | Signal={market_data.get('stoch_signal', 'N/A')} | Zone={market_data.get('stoch_zone', 'N/A')}")
             # Pivot Points (NEW)
             logger.info(f"  Pivot Points: R2=${market_data.get('pivot_r2', 0):,.0f} R1=${market_data.get('pivot_r1', 0):,.0f} PP=${market_data.get('pivot_pp', 0):,.0f} S1=${market_data.get('pivot_s1', 0):,.0f} S2=${market_data.get('pivot_s2', 0):,.0f}")
             logger.info(f"  Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x")

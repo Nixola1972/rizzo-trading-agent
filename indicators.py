@@ -187,6 +187,70 @@ class CryptoTechnicalAnalysisHL:
         """
         return ta.volume.OnBalanceVolumeIndicator(close, volume).on_balance_volume()
 
+    def calculate_stochastic(
+        self, high: pd.Series, low: pd.Series, close: pd.Series,
+        k_period: int = 14, d_period: int = 3, smooth_k: int = 3
+    ) -> Dict[str, pd.Series]:
+        """
+        Calculate Stochastic Oscillator (%K and %D).
+
+        Settings: (14, 3, 3) - standard for crypto
+
+        Interpretation:
+        - %K > %D in oversold (<30): Strong BUY signal (+15 points)
+        - %K < %D in overbought (>70): Strong SELL signal (+15 points)
+        - Crossover in neutral zone (30-70): Weak signal (+8 points)
+
+        Returns dict with:
+        - stoch_k: Fast stochastic (%K)
+        - stoch_d: Slow stochastic (%D) - signal line
+        - stoch_signal: 'BUY', 'SELL', or 'NEUTRAL'
+        - stoch_zone: 'OVERSOLD', 'OVERBOUGHT', or 'NEUTRAL'
+        """
+        stoch = ta.momentum.StochasticOscillator(
+            high=high, low=low, close=close,
+            window=k_period, smooth_window=d_period
+        )
+
+        stoch_k = stoch.stoch()
+        stoch_d = stoch.stoch_signal()
+
+        # Determine signal based on crossover and zone
+        current_k = stoch_k.iloc[-1] if len(stoch_k) > 0 else 50
+        current_d = stoch_d.iloc[-1] if len(stoch_d) > 0 else 50
+        prev_k = stoch_k.iloc[-2] if len(stoch_k) > 1 else current_k
+        prev_d = stoch_d.iloc[-2] if len(stoch_d) > 1 else current_d
+
+        # Detect crossover
+        crossover_up = prev_k <= prev_d and current_k > current_d
+        crossover_down = prev_k >= prev_d and current_k < current_d
+
+        # Determine zone
+        if current_k < 30:
+            zone = "OVERSOLD"
+        elif current_k > 70:
+            zone = "OVERBOUGHT"
+        else:
+            zone = "NEUTRAL"
+
+        # Determine signal
+        signal = "NEUTRAL"
+        if crossover_up and zone == "OVERSOLD":
+            signal = "STRONG_BUY"
+        elif crossover_up and zone == "NEUTRAL":
+            signal = "WEAK_BUY"
+        elif crossover_down and zone == "OVERBOUGHT":
+            signal = "STRONG_SELL"
+        elif crossover_down and zone == "NEUTRAL":
+            signal = "WEAK_SELL"
+
+        return {
+            'stoch_k': stoch_k,
+            'stoch_d': stoch_d,
+            'stoch_signal': signal,
+            'stoch_zone': zone
+        }
+
     def get_obv_trend(self, obv_series: pd.Series, periods: int = 5) -> str:
         """
         Determine OBV trend direction.
@@ -448,8 +512,15 @@ class CryptoTechnicalAnalysisHL:
         df_15m["macd"] = macd_diff
         df_15m["macd_line"] = macd_line      # NEW: MACD line per analisi
         df_15m["macd_signal"] = signal_line  # NEW: Signal line
-        df_15m["rsi_7"] = self.calculate_rsi(df_15m["close"], 7)
-        df_15m["rsi_14"] = self.calculate_rsi(df_15m["close"], 14)
+        df_15m["rsi_9"] = self.calculate_rsi(df_15m["close"], 9)  # Changed from 14 to 9 for crypto
+        df_15m["rsi_14"] = self.calculate_rsi(df_15m["close"], 14)  # Keep for backward compatibility
+
+        # NEW: Stochastic Oscillator (14, 3, 3)
+        stoch = self.calculate_stochastic(df_15m["high"], df_15m["low"], df_15m["close"])
+        df_15m["stoch_k"] = stoch['stoch_k']
+        df_15m["stoch_d"] = stoch['stoch_d']
+        stoch_signal = stoch['stoch_signal']
+        stoch_zone = stoch['stoch_zone']
         df_15m["adx"] = self.calculate_adx(df_15m["high"], df_15m["low"], df_15m["close"], 14)
 
         # NEW: Bollinger Bands
@@ -535,13 +606,15 @@ class CryptoTechnicalAnalysisHL:
             "current": {
                 "price": current_15m["close"],
                 "ema20": current_15m["ema_20"],
-                "ema50": current_15m["ema_50"],  # NEW
+                "ema50": current_15m["ema_50"],
                 "macd": current_15m["macd"],
-                "macd_line": current_15m["macd_line"],  # NEW
-                "macd_signal": current_15m["macd_signal"],  # NEW
-                "rsi_7": current_15m["rsi_7"],
-                "rsi_14": current_15m["rsi_14"],  # NEW: aggiunto anche rsi_14 a current
+                "macd_line": current_15m["macd_line"],
+                "macd_signal": current_15m["macd_signal"],
+                "rsi_9": current_15m["rsi_9"],  # Changed from 14 to 9 for crypto
+                "rsi_14": current_15m["rsi_14"],  # Keep for backward compatibility
                 "adx": current_15m["adx"],
+                "stoch_k": current_15m["stoch_k"],  # NEW: Stochastic %K
+                "stoch_d": current_15m["stoch_d"],  # NEW: Stochastic %D
             },
             "volume": self.get_orderbook_volume(ticker),
             "pivot_points": pivot_points,
@@ -572,6 +645,14 @@ class CryptoTechnicalAnalysisHL:
             # NEW: EMA alignment
             "ema_alignment": ema_alignment,
 
+            # NEW: Stochastic Oscillator section
+            "stochastic": {
+                "k": current_15m["stoch_k"],
+                "d": current_15m["stoch_d"],
+                "signal": stoch_signal,  # STRONG_BUY, WEAK_BUY, NEUTRAL, WEAK_SELL, STRONG_SELL
+                "zone": stoch_zone,  # OVERSOLD, NEUTRAL, OVERBOUGHT
+            },
+
             "derivatives": {
                 "open_interest_latest": oi_data["latest"],
                 "open_interest_average": oi_data["average"],
@@ -582,15 +663,17 @@ class CryptoTechnicalAnalysisHL:
             "intraday": {
                 "mid_prices": last_10_15m["close"].tolist(),
                 "ema_20": last_10_15m["ema_20"].tolist(),
-                "ema_50": last_10_15m["ema_50"].tolist(),  # NEW
+                "ema_50": last_10_15m["ema_50"].tolist(),
                 "macd": last_10_15m["macd"].tolist(),
-                "rsi_7": last_10_15m["rsi_7"].tolist(),
+                "rsi_9": last_10_15m["rsi_9"].tolist(),  # Changed from 7 to 9
                 "rsi_14": last_10_15m["rsi_14"].tolist(),
                 "adx": last_10_15m["adx"].tolist(),
-                "bb_upper": last_10_15m["bb_upper"].tolist(),  # NEW
-                "bb_lower": last_10_15m["bb_lower"].tolist(),  # NEW
-                "bb_bandwidth": last_10_15m["bb_bandwidth"].tolist(),  # NEW
-                "obv": last_10_15m["obv"].tolist(),  # NEW
+                "bb_upper": last_10_15m["bb_upper"].tolist(),
+                "bb_lower": last_10_15m["bb_lower"].tolist(),
+                "bb_bandwidth": last_10_15m["bb_bandwidth"].tolist(),
+                "obv": last_10_15m["obv"].tolist(),
+                "stoch_k": last_10_15m["stoch_k"].tolist(),  # NEW
+                "stoch_d": last_10_15m["stoch_d"].tolist(),  # NEW
             },
 
             "longer_term_15m": {
