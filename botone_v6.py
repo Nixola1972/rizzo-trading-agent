@@ -94,11 +94,16 @@ class BotoneV6Config:
         self.min_profit_to_close = float(os.getenv("MIN_PROFIT_TO_CLOSE", "0.5"))  # Min profit % for AI to close
         self.ai_loss_threshold_pct = float(os.getenv("AI_LOSS_THRESHOLD_PCT", "50"))  # AI can close if loss > X% of SL
 
-        # Leverage limits per style (configurable via env)
+        # Leverage limits per style (configurable via env) - both MIN and MAX
+        # MIN = minimum for trailing stops to work, MAX = maximum allowed
+        self.leverage_prudent_min = int(os.getenv("LEVERAGE_PRUDENT_MIN", "2"))
         self.leverage_prudent_max = int(os.getenv("LEVERAGE_PRUDENT_MAX", "3"))
+        self.leverage_moderate_min = int(os.getenv("LEVERAGE_MODERATE_MIN", "3"))
         self.leverage_moderate_max = int(os.getenv("LEVERAGE_MODERATE_MAX", "5"))
         self.leverage_aggressive_min = int(os.getenv("LEVERAGE_AGGRESSIVE_MIN", "5"))
-        self.leverage_macro_max = int(os.getenv("LEVERAGE_MACRO_MAX", "2"))
+        self.leverage_aggressive_max = int(os.getenv("LEVERAGE_AGGRESSIVE_MAX", "10"))
+        self.leverage_macro_min = int(os.getenv("LEVERAGE_MACRO_MIN", "2"))
+        self.leverage_macro_max = int(os.getenv("LEVERAGE_MACRO_MAX", "3"))
 
         # Trailing Stop
         self.trailing_enabled = os.getenv("TRAILING_ENABLED", "true").lower() == "true"
@@ -158,7 +163,7 @@ class BotoneV6Config:
         logger.info(f"  Symbols: {self.symbols}")
         logger.info(f"  Position Size: ${self.position_size_usd}")
         logger.info(f"  Max Leverage: {self.max_leverage}x")
-        logger.info(f"  Style Leverage Limits: PRUDENT={self.leverage_prudent_max}x, MODERATE={self.leverage_moderate_max}x, AGGRESSIVE={self.leverage_aggressive_min}-{self.max_leverage}x, MACRO={self.leverage_macro_max}x")
+        logger.info(f"  Style Leverage: PRUDENT={self.leverage_prudent_min}-{self.leverage_prudent_max}x, MODERATE={self.leverage_moderate_min}-{self.leverage_moderate_max}x, AGGRESSIVE={self.leverage_aggressive_min}-{self.leverage_aggressive_max}x, MACRO={self.leverage_macro_min}-{self.leverage_macro_max}x")
         logger.info(f"  SL: {self.stop_loss_pct}% | TP: {self.take_profit_pct}%")
         logger.info(f"  Min Profit to Close: {self.min_profit_to_close}%")
         logger.info(f"  AI Loss Threshold: {self.ai_loss_threshold_pct}% of SL (={self.stop_loss_pct * self.ai_loss_threshold_pct / 100:.1f}%)")
@@ -691,16 +696,19 @@ OUTPUT FORMAT (JSON):
             else:
                 action = "hold"  # Can't open without direction
 
-            # Parse leverage
+            # Parse leverage - enforce min/max based on style
             try:
                 ai_leverage = int(response.get("leverage", 3))
-                # Enforce minimum leverage based on style for trailing stops to work
                 min_leverage = self._get_min_leverage_for_style()
-                leverage = max(min_leverage, min(ai_leverage, self.config.max_leverage))
+                max_leverage = self._get_max_leverage_for_style()
+                leverage = max(min_leverage, min(ai_leverage, max_leverage))
+
                 if ai_leverage < min_leverage:
                     logger.info(f"[AI] Leverage {ai_leverage}x → enforced minimum {min_leverage}x for {self.config.prompt_style} style")
+                elif ai_leverage > max_leverage:
+                    logger.info(f"[AI] Leverage {ai_leverage}x → capped to max {max_leverage}x for {self.config.prompt_style} style")
             except (ValueError, TypeError):
-                leverage = 3
+                leverage = self._get_min_leverage_for_style()  # Default to min for style
 
         # Build enriched reason with AI reasoning
         base_reason = response.get("reason", "No reason provided")
@@ -757,25 +765,34 @@ OUTPUT FORMAT (JSON):
 
     def _get_min_leverage_for_style(self) -> int:
         """
-        Get minimum leverage based on trading style.
+        Get minimum leverage based on trading style from config.
         This ensures trailing stops can realistically trigger.
-
-        With TRAILING_STEPS=2.5:0.0,... we need enough leverage
-        so a reasonable price move triggers the breakeven level.
-
-        Example: To reach 2.5% profit with 2.5% price move → need 1x
-                 To reach 2.5% profit with 1% price move → need ~3x
         """
         style = self.config.prompt_style
 
         if style == "PRUDENT":
-            return 2  # Minimum 2x, otherwise trailing is too slow
+            return self.config.leverage_prudent_min
         elif style == "AGGRESSIVE":
-            return self.config.leverage_aggressive_min  # Usually 5x
+            return self.config.leverage_aggressive_min
         elif style == "MACRO":
-            return 2  # Macro uses low leverage but at least 2x
+            return self.config.leverage_macro_min
         else:  # MODERATE
-            return 3  # At least 3x for reasonable trailing
+            return self.config.leverage_moderate_min
+
+    def _get_max_leverage_for_style(self) -> int:
+        """
+        Get maximum leverage based on trading style from config.
+        """
+        style = self.config.prompt_style
+
+        if style == "PRUDENT":
+            return self.config.leverage_prudent_max
+        elif style == "AGGRESSIVE":
+            return self.config.leverage_aggressive_max
+        elif style == "MACRO":
+            return self.config.leverage_macro_max
+        else:  # MODERATE
+            return self.config.leverage_moderate_max
 
     def _funding_signal(self, rate: float) -> str:
         if rate > 0.01: return "longs paying - crowded long"
