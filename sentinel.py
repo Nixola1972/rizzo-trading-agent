@@ -227,6 +227,13 @@ PATTERN_CONTRA_MIN_CONFIDENCE = float(os.getenv('PATTERN_CONTRA_MIN_CONFIDENCE',
 ACCELERATE_COOLDOWN_SECONDS = int(os.getenv('ACCELERATE_COOLDOWN_SECONDS', '300'))  # 5 min default
 ACCELERATE_MIN_PROFIT = float(os.getenv('ACCELERATE_MIN_PROFIT', '0.0'))  # 0 = no min profit requirement
 
+# ===== VOLUME VETO CONFIG =====
+# Blocca apertura posizioni se il volume è troppo basso
+# Volume Ratio = current_volume / average_volume (ultimi 20 periodi)
+VOLUME_VETO_ENABLED = os.getenv('VOLUME_VETO_ENABLED', 'false').lower() == 'true'
+VOLUME_VETO_MIN_RATIO = float(os.getenv('VOLUME_VETO_MIN_RATIO', '0.5'))  # Minimo 0.5x average
+VOLUME_VETO_LOG_ONLY = os.getenv('VOLUME_VETO_LOG_ONLY', 'false').lower() == 'true'  # Solo log, non blocca
+
 # Stop Loss from pattern
 PATTERN_SL_USE_ATR = os.getenv('PATTERN_SL_USE_ATR', 'true').lower() == 'true'
 PATTERN_SL_ATR_MULTIPLIER = float(os.getenv('PATTERN_SL_ATR_MULTIPLIER', '1.5'))
@@ -368,6 +375,91 @@ def get_btc_trend() -> str:
         log(f"   ⚠️ Error getting BTC trend: {e}")
 
     return 'neutral'
+
+
+# ===== VOLUME VETO FUNCTIONS =====
+
+# Cache for volume ratio (symbol -> (volume_ratio, timestamp))
+_volume_ratio_cache = {}
+_volume_ratio_cache_ttl = 30  # Cache TTL in seconds (refresh every 30s)
+
+
+def get_volume_ratio(symbol: str) -> float:
+    """
+    Get current volume ratio for a symbol.
+    Volume Ratio = current_volume / average_volume (last 20 periods on 15m candles)
+
+    Returns:
+        float: Volume ratio (1.0 = average, >1.0 = above average, <1.0 = below average)
+               Returns 1.0 if unable to calculate.
+    """
+    import time
+    from indicators import CryptoTechnicalAnalysisHL
+
+    # Check cache
+    now = time.time()
+    if symbol in _volume_ratio_cache:
+        cached_ratio, cached_time = _volume_ratio_cache[symbol]
+        if now - cached_time < _volume_ratio_cache_ttl:
+            return cached_ratio
+
+    try:
+        analyzer = CryptoTechnicalAnalysisHL(testnet=TESTNET)
+        data = analyzer.get_complete_analysis(symbol)
+
+        if data:
+            longer_term = data.get('longer_term_15m', {})
+            volume_current = longer_term.get('volume_current', 0)
+            volume_average = longer_term.get('volume_average', 1)
+
+            if volume_average > 0:
+                ratio = volume_current / volume_average
+                _volume_ratio_cache[symbol] = (ratio, now)
+                return ratio
+    except Exception as e:
+        log(f"   ⚠️ Error getting volume ratio for {symbol}: {e}")
+
+    return 1.0  # Fallback: assume average volume
+
+
+def check_volume_veto(symbol: str) -> dict:
+    """
+    Check if a trade should be vetoed due to low volume.
+
+    Returns:
+        dict: {
+            'vetoed': bool,     # True if trade should be blocked
+            'volume_ratio': float,
+            'min_ratio': float,
+            'reason': str
+        }
+    """
+    if not VOLUME_VETO_ENABLED:
+        return {
+            'vetoed': False,
+            'volume_ratio': 1.0,
+            'min_ratio': VOLUME_VETO_MIN_RATIO,
+            'reason': 'Volume veto disabled'
+        }
+
+    volume_ratio = get_volume_ratio(symbol)
+    vetoed = volume_ratio < VOLUME_VETO_MIN_RATIO
+
+    # If LOG_ONLY mode, don't actually veto
+    if VOLUME_VETO_LOG_ONLY and vetoed:
+        reason = f"VOLUME WARNING: {volume_ratio:.2f}x < {VOLUME_VETO_MIN_RATIO}x (log only, not blocking)"
+        vetoed = False  # Don't block, just log
+    elif vetoed:
+        reason = f"VOLUME VETO: {volume_ratio:.2f}x < {VOLUME_VETO_MIN_RATIO}x minimum"
+    else:
+        reason = f"Volume OK: {volume_ratio:.2f}x >= {VOLUME_VETO_MIN_RATIO}x"
+
+    return {
+        'vetoed': vetoed,
+        'volume_ratio': volume_ratio,
+        'min_ratio': VOLUME_VETO_MIN_RATIO,
+        'reason': reason
+    }
 
 
 # ===== PATTERN DETECTION FUNCTIONS =====
@@ -4969,6 +5061,14 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
 
             log(f"   ✅ {symbol} MICRO_GAIN: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
 
+            # === VOLUME VETO: Blocca se volume troppo basso ===
+            volume_check = check_volume_veto(symbol)
+            if VOLUME_VETO_ENABLED:
+                log(f"   📊 {symbol} Volume: {volume_check['volume_ratio']:.2f}x (min: {volume_check['min_ratio']}x)")
+                if volume_check['vetoed']:
+                    log(f"   🚫 {symbol} {volume_check['reason']}")
+                    continue  # Volume troppo basso, non aprire
+
             # === DOUBLE_CHECK_AI: Validazione AI immediata prima di aprire ===
             ai_leverage = None  # Default: use MICRO_GAIN_LEVERAGE
             if DOUBLE_CHECK_AI_ENABLED:
@@ -5020,6 +5120,14 @@ def check_and_open_micro_gain(bot, existing_symbols: list):
                 continue
 
             log(f"   ✅ {symbol} MICRO_PAY: confirmed ({SCORE_CONFIRMATION_CYCLES} cycles stable)")
+
+            # === VOLUME VETO: Blocca se volume troppo basso ===
+            volume_check = check_volume_veto(symbol)
+            if VOLUME_VETO_ENABLED:
+                log(f"   📊 {symbol} Volume: {volume_check['volume_ratio']:.2f}x (min: {volume_check['min_ratio']}x)")
+                if volume_check['vetoed']:
+                    log(f"   🚫 {symbol} {volume_check['reason']}")
+                    continue  # Volume troppo basso, non aprire
 
             # === DOUBLE_CHECK_AI: Validazione AI immediata prima di aprire ===
             ai_leverage = None  # Default: use MICRO_PAY_LEVERAGE
@@ -5787,6 +5895,12 @@ def run_loop(interval: int = None):
                 log(f"         → Conservative: Requires ALL signals aligned")
             else:
                 log(f"         → Moderate: Requires MACD + EMA confirmation")
+        if VOLUME_VETO_ENABLED:
+            log(f"      📊 VOLUME_VETO: enabled (min ratio: {VOLUME_VETO_MIN_RATIO}x)")
+            if VOLUME_VETO_LOG_ONLY:
+                log(f"         → LOG_ONLY mode: will warn but not block")
+        else:
+            log(f"      📊 VOLUME_VETO: disabled")
     if MICRO_PAY_ENABLED:
         log(f"   💵 MICRO_PAY: enabled")
         log(f"      TP: +{MICRO_PAY_TARGET_PERCENT}%, SL: -{MICRO_PAY_STOP_LOSS_PERCENT}%")
