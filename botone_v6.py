@@ -134,6 +134,8 @@ class BotoneV6Config:
             "SOL": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
             "XRP": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
             "BNB": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
+            "LINK": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
+            "ADA": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
             "SUI": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": 1.0},
             "ARB": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": 1.0},
             # Tier 3 - High risk (need strong signals)
