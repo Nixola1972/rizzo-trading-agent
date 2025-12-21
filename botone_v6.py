@@ -1293,12 +1293,13 @@ class BotoneV6:
 
             # Round SL price appropriately based on asset tick size
             # BTC: 0.1, ETH: 0.1, SOL: 0.01, others: 0.0001
+            # Use string formatting to ensure exact decimal precision (avoids float issues)
             if position.symbol in ["BTC", "ETH"]:
-                sl_price_rounded = round(position.stop_loss_price, 1)
+                sl_price_rounded = float(f"{position.stop_loss_price:.1f}")
             elif position.symbol == "SOL":
-                sl_price_rounded = round(position.stop_loss_price, 2)
+                sl_price_rounded = float(f"{position.stop_loss_price:.2f}")
             else:
-                sl_price_rounded = round(position.stop_loss_price, 4)
+                sl_price_rounded = float(f"{position.stop_loss_price:.4f}")
 
             # Get actual position size from exchange
             status = self.trader.get_account_status()
@@ -1583,12 +1584,13 @@ class BotoneV6:
 
                 # Round SL price appropriately based on asset tick size
                 # BTC: 0.1, ETH: 0.1, SOL: 0.01, others: 0.0001
+                # Use string formatting to ensure exact decimal precision (avoids float issues)
                 if position.symbol in ["BTC", "ETH"]:
-                    sl_price_rounded = round(new_sl, 1)
+                    sl_price_rounded = float(f"{new_sl:.1f}")
                 elif position.symbol == "SOL":
-                    sl_price_rounded = round(new_sl, 2)
+                    sl_price_rounded = float(f"{new_sl:.2f}")
                 else:
-                    sl_price_rounded = round(new_sl, 4)
+                    sl_price_rounded = float(f"{new_sl:.4f}")
 
                 # Get actual position size from exchange
                 status = self.trader.get_account_status()
@@ -1608,7 +1610,7 @@ class BotoneV6:
                 )
 
                 if sl_order.get("status") == "ok":
-                    logger.info(f"[FAST] {position.symbol}: 🛡️ Nuovo SL piazzato @ ${sl_price_rounded:.2f}")
+                    logger.info(f"[FAST] {position.symbol}: 🛡️ Nuovo SL piazzato @ ${sl_price_rounded:.1f}")
 
                     # 3. POI cancella vecchi SL (ora sei coperto dal nuovo)
                     for oid in old_sl_oids:
@@ -1692,12 +1694,13 @@ class BotoneV6:
 
                         # Round SL price appropriately based on asset tick size
                         # BTC: 0.1, ETH: 0.1, SOL: 0.01, others: 0.0001
+                        # Use string formatting to ensure exact decimal precision (avoids float issues)
                         if symbol in ["BTC", "ETH"]:
-                            sl_price_rounded = round(sl_price, 1)
+                            sl_price_rounded = float(f"{sl_price:.1f}")
                         elif symbol == "SOL":
-                            sl_price_rounded = round(sl_price, 2)
+                            sl_price_rounded = float(f"{sl_price:.2f}")
                         else:
-                            sl_price_rounded = round(sl_price, 4)
+                            sl_price_rounded = float(f"{sl_price:.4f}")
 
                         logger.info(f"[TRADE] Piazzando SL: {symbol} is_buy={sl_is_buy} size={actual_size} trigger={sl_price_rounded}")
 
@@ -1738,12 +1741,13 @@ class BotoneV6:
                         if actual_size > 0:
                             sl_is_buy = direction == TradeDirection.SHORT
                             # Round SL price appropriately based on asset tick size
+                            # Use string formatting to ensure exact decimal precision
                             if symbol in ["BTC", "ETH"]:
-                                sl_price_rounded = round(sl_price, 1)
+                                sl_price_rounded = float(f"{sl_price:.1f}")
                             elif symbol == "SOL":
-                                sl_price_rounded = round(sl_price, 2)
+                                sl_price_rounded = float(f"{sl_price:.2f}")
                             else:
-                                sl_price_rounded = round(sl_price, 4)
+                                sl_price_rounded = float(f"{sl_price:.4f}")
                             sl_order = self.trader.exchange.order(
                                 symbol,
                                 sl_is_buy,
@@ -1753,7 +1757,7 @@ class BotoneV6:
                                 reduce_only=True
                             )
                             if sl_order.get("status") == "ok":
-                                logger.info(f"[TRADE] 🛡️ SL piazzato (retry) @ ${sl_price_rounded:.2f}")
+                                logger.info(f"[TRADE] 🛡️ SL piazzato (retry) @ ${sl_price_rounded:.1f}")
                             else:
                                 logger.error(f"[TRADE] ❌ SL fallito anche al retry: {sl_order}")
                         else:
