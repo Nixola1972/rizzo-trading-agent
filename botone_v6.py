@@ -694,7 +694,11 @@ OUTPUT FORMAT (JSON):
             # Parse leverage
             try:
                 ai_leverage = int(response.get("leverage", 3))
-                leverage = max(1, min(ai_leverage, self.config.max_leverage))
+                # Enforce minimum leverage based on style for trailing stops to work
+                min_leverage = self._get_min_leverage_for_style()
+                leverage = max(min_leverage, min(ai_leverage, self.config.max_leverage))
+                if ai_leverage < min_leverage:
+                    logger.info(f"[AI] Leverage {ai_leverage}x → enforced minimum {min_leverage}x for {self.config.prompt_style} style")
             except (ValueError, TypeError):
                 leverage = 3
 
@@ -750,6 +754,28 @@ OUTPUT FORMAT (JSON):
         elif fg < 25: return "extreme fear"
         elif fg < 45: return "fear"
         return "neutral"
+
+    def _get_min_leverage_for_style(self) -> int:
+        """
+        Get minimum leverage based on trading style.
+        This ensures trailing stops can realistically trigger.
+
+        With TRAILING_STEPS=2.5:0.0,... we need enough leverage
+        so a reasonable price move triggers the breakeven level.
+
+        Example: To reach 2.5% profit with 2.5% price move → need 1x
+                 To reach 2.5% profit with 1% price move → need ~3x
+        """
+        style = self.config.prompt_style
+
+        if style == "PRUDENT":
+            return 2  # Minimum 2x, otherwise trailing is too slow
+        elif style == "AGGRESSIVE":
+            return self.config.leverage_aggressive_min  # Usually 5x
+        elif style == "MACRO":
+            return 2  # Macro uses low leverage but at least 2x
+        else:  # MODERATE
+            return 3  # At least 3x for reasonable trailing
 
     def _funding_signal(self, rate: float) -> str:
         if rate > 0.01: return "longs paying - crowded long"
