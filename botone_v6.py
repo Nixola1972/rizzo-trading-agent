@@ -82,9 +82,9 @@ class BotoneV6Config:
         self.ai_model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-235b-a22b-2507")
 
         # Reasoning Tokens (for models that support it: DeepSeek R1, o1, o3, Grok, Gemini Thinking)
-        self.reasoning_enabled = os.getenv("REASONING_ENABLED", "false").lower() == "true"
-        self.reasoning_effort = os.getenv("REASONING_EFFORT", "medium")  # high, medium, low
-        self.reasoning_max_tokens = int(os.getenv("REASONING_MAX_TOKENS", "2000"))
+        self.reasoning_enabled = os.getenv("REASONING_ENABLED", "false").strip().lower() == "true"
+        self.reasoning_effort = os.getenv("REASONING_EFFORT", "medium").strip()  # high, medium, low
+        self.reasoning_max_tokens = int(os.getenv("REASONING_MAX_TOKENS", "2000").strip())
 
         # HyperLiquid credentials (same as sentinel.py)
         self.hl_private_key = os.getenv("PRIVATE_KEY") or os.getenv("HL_PRIVATE_KEY")
