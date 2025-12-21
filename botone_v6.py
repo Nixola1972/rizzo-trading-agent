@@ -81,6 +81,11 @@ class BotoneV6Config:
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.ai_model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-235b-a22b-2507")
 
+        # Reasoning Tokens (for models that support it: DeepSeek R1, o1, o3, Grok, Gemini Thinking)
+        self.reasoning_enabled = os.getenv("REASONING_ENABLED", "false").lower() == "true"
+        self.reasoning_effort = os.getenv("REASONING_EFFORT", "medium")  # high, medium, low
+        self.reasoning_max_tokens = int(os.getenv("REASONING_MAX_TOKENS", "2000"))
+
         # HyperLiquid credentials (same as sentinel.py)
         self.hl_private_key = os.getenv("PRIVATE_KEY") or os.getenv("HL_PRIVATE_KEY")
         self.hl_account_address = os.getenv("WALLET_ADDRESS") or os.getenv("HL_ACCOUNT_ADDRESS")
@@ -157,6 +162,10 @@ class BotoneV6Config:
 
         logger.info(f"=== {self.bot_name.upper()} CONFIGURATION ===")
         logger.info(f"  AI Model: {self.ai_model}")
+        if self.reasoning_enabled:
+            logger.info(f"  🧠 Reasoning: ENABLED (effort={self.reasoning_effort}, max_tokens={self.reasoning_max_tokens})")
+        else:
+            logger.info(f"  🧠 Reasoning: disabled")
         logger.info(f"  Prompt Style: {self.prompt_style}")
         logger.info(f"  🔬 RESEARCH_MODE: {self.research_mode}")
         if self.research_mode:
@@ -616,17 +625,31 @@ OUTPUT FORMAT (JSON):
             "max_tokens": 500,
         }
 
+        # Add reasoning parameters if enabled (for DeepSeek R1, o1, o3, Grok, Gemini Thinking)
+        if self.config.reasoning_enabled:
+            payload["include_reasoning"] = True
+            payload["reasoning"] = {
+                "effort": self.config.reasoning_effort,
+                "max_tokens": self.config.reasoning_max_tokens
+            }
+            logger.debug(f"Reasoning enabled: effort={self.config.reasoning_effort}, max_tokens={self.config.reasoning_max_tokens}")
+
         try:
             response = requests.post(
                 self.api_url,
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=60 if self.config.reasoning_enabled else 30  # Longer timeout for reasoning
             )
             response.raise_for_status()
 
             data = response.json()
             content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+            # Log reasoning if present
+            reasoning = data.get("choices", [{}])[0].get("message", {}).get("reasoning")
+            if reasoning:
+                logger.info(f"AI Reasoning: {reasoning[:300]}...")
 
             logger.info(f"AI Response: {content[:200]}...")
 
