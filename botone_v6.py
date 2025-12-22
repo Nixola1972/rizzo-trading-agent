@@ -661,12 +661,20 @@ OUTPUT FORMAT (JSON):
             logger.error("AI call timeout")
             return None
         except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else 0
+            response_text = ""
+            try:
+                response_text = e.response.text if e.response is not None else ""
+            except:
+                pass
+
             # If 400 error and reasoning was enabled, retry without reasoning
-            if e.response and e.response.status_code == 400 and use_reasoning and retry_without_reasoning:
-                logger.warning(f"⚠️ Model {self.config.ai_model} doesn't support reasoning, retrying without...")
+            if status_code == 400 and use_reasoning and retry_without_reasoning:
+                logger.warning(f"⚠️ Model {self.config.ai_model} doesn't support reasoning (400), retrying without...")
                 return self._call_ai(prompt, retry_without_reasoning=False)
-            logger.error(f"AI call HTTP error: {e}")
-            logger.error(f"Response body: {e.response.text if e.response else 'No response'}")
+
+            logger.error(f"AI call HTTP error {status_code}: {e}")
+            logger.error(f"Response body: {response_text[:500] if response_text else 'empty'}")
             logger.error(f"Model used: {self.config.ai_model}")
             return None
         except Exception as e:
@@ -1274,19 +1282,7 @@ class BotoneV6:
         logger.info(f"[SLOW] 💤 Waiting... (FAST loop monitors SL/TP every 5s)")
 
     def run_fast_loop(self):
-        """Run fast loop - position monitoring."""
-        logger.info("[FAST] 💓 Cycle starting...")
-
-        # Check if wallet has enough balance to operate
-        try:
-            status = self.trader.get_account_status()
-            free_balance = float(status.get("equity", 0)) - float(status.get("margin_used", 0))
-            if free_balance < 10.0:
-                logger.info(f"[FAST] ⚠️ Balance ${free_balance:.2f} < $10, skip")
-                return
-        except Exception as e:
-            logger.warning(f"[FAST] Cannot check balance: {e}")
-
+        """Run fast loop - position monitoring (SL/TP/trailing)."""
         # Sync positions
         self.sync_positions_from_exchange()
 
@@ -1294,6 +1290,8 @@ class BotoneV6:
         if not positions:
             logger.info("[FAST] 📭 No open positions")
             return
+
+        logger.info(f"[FAST] 💓 Monitoring {len(positions)} positions...")
 
         # First, verify all positions have SL orders on exchange
         self._verify_all_sl_orders(positions)
