@@ -608,7 +608,7 @@ OUTPUT FORMAT (JSON):
   "key_factors": ["top 2-3 factors driving decision"]
 }}"""
 
-    def _call_ai(self, prompt: str) -> Optional[Dict[str, Any]]:
+    def _call_ai(self, prompt: str, retry_without_reasoning: bool = True) -> Optional[Dict[str, Any]]:
         """Call OpenRouter API."""
         headers = {
             "Authorization": f"Bearer {self.config.openrouter_api_key}",
@@ -625,21 +625,23 @@ OUTPUT FORMAT (JSON):
             "max_tokens": 500,
         }
 
+        use_reasoning = self.config.reasoning_enabled and retry_without_reasoning
+
         # Add reasoning parameters if enabled (for DeepSeek R1, o1, o3, Grok, Gemini Thinking)
-        if self.config.reasoning_enabled:
+        if use_reasoning:
             payload["include_reasoning"] = True
             payload["reasoning"] = {
                 "effort": self.config.reasoning_effort,
                 "max_tokens": self.config.reasoning_max_tokens
             }
-            logger.debug(f"Reasoning enabled: effort={self.config.reasoning_effort}, max_tokens={self.config.reasoning_max_tokens}")
+            logger.debug(f"Reasoning enabled: effort={self.config.reasoning_effort}")
 
         try:
             response = requests.post(
                 self.api_url,
                 headers=headers,
                 json=payload,
-                timeout=60 if self.config.reasoning_enabled else 30  # Longer timeout for reasoning
+                timeout=60 if use_reasoning else 30
             )
             response.raise_for_status()
 
@@ -659,6 +661,10 @@ OUTPUT FORMAT (JSON):
             logger.error("AI call timeout")
             return None
         except requests.exceptions.HTTPError as e:
+            # If 400 error and reasoning was enabled, retry without reasoning
+            if e.response and e.response.status_code == 400 and use_reasoning and retry_without_reasoning:
+                logger.warning(f"⚠️ Model {self.config.ai_model} doesn't support reasoning, retrying without...")
+                return self._call_ai(prompt, retry_without_reasoning=False)
             logger.error(f"AI call HTTP error: {e}")
             logger.error(f"Response body: {e.response.text if e.response else 'No response'}")
             logger.error(f"Model used: {self.config.ai_model}")
@@ -1269,12 +1275,14 @@ class BotoneV6:
 
     def run_fast_loop(self):
         """Run fast loop - position monitoring."""
+        logger.info("[FAST] 💓 Cycle starting...")
+
         # Check if wallet has enough balance to operate
         try:
             status = self.trader.get_account_status()
             free_balance = float(status.get("equity", 0)) - float(status.get("margin_used", 0))
             if free_balance < 10.0:
-                logger.debug(f"[FAST] Balance residuo ${free_balance:.2f} < $10, skip monitoring")
+                logger.info(f"[FAST] ⚠️ Balance ${free_balance:.2f} < $10, skip")
                 return
         except Exception as e:
             logger.warning(f"[FAST] Cannot check balance: {e}")
@@ -1284,7 +1292,7 @@ class BotoneV6:
 
         positions = self.position_tracker.get_all_positions()
         if not positions:
-            logger.debug("[FAST] No open positions")
+            logger.info("[FAST] 📭 No open positions")
             return
 
         # First, verify all positions have SL orders on exchange
