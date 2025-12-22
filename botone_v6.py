@@ -628,14 +628,15 @@ OUTPUT FORMAT (JSON):
         use_reasoning = self.config.reasoning_enabled and retry_without_reasoning
 
         # Add reasoning parameters if enabled
-        # Supported models: deepseek/deepseek-r1, openai/o1-*, openai/o3-*, anthropic/claude-3.7-*, x-ai/grok-*
-        # NOT supported: deepseek/deepseek-v3, deepseek/deepseek-chat, etc.
+        # DeepSeek V3.2-Exp uses "enabled: true" format
+        # For effort control, use effort param (OpenAI o1/o3, Grok)
         if use_reasoning:
-            # Use effort OR max_tokens (not both) - effort is more universal
-            payload["reasoning"] = {
-                "effort": self.config.reasoning_effort  # high, medium, low
-            }
-            logger.debug(f"Reasoning enabled: effort={self.config.reasoning_effort}")
+            reasoning_config = {"enabled": True}
+            # Add effort if specified (for models that support it)
+            if self.config.reasoning_effort and self.config.reasoning_effort != "medium":
+                reasoning_config["effort"] = self.config.reasoning_effort
+            payload["reasoning"] = reasoning_config
+            logger.debug(f"Reasoning config: {reasoning_config}")
 
         try:
             response = requests.post(
