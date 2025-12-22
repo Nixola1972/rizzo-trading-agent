@@ -615,21 +615,24 @@ OUTPUT FORMAT (JSON):
             "Content-Type": "application/json",
         }
 
+        use_reasoning = self.config.reasoning_enabled and retry_without_reasoning
+
+        # When reasoning enabled, need more tokens for thinking + response
+        # Reasoning tokens count against max_tokens limit
+        max_tokens = 2000 if use_reasoning else 500
+
         payload = {
             "model": self.config.ai_model,
             "messages": [
-                {"role": "system", "content": "You are a crypto trading AI. Respond ONLY with valid JSON."},
+                {"role": "system", "content": "You are a crypto trading AI. After your reasoning, you MUST output a valid JSON response."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.3,
-            "max_tokens": 500,
+            "max_tokens": max_tokens,
         }
-
-        use_reasoning = self.config.reasoning_enabled and retry_without_reasoning
 
         # Add reasoning parameters if enabled
         # DeepSeek V3.2-Exp uses "enabled: true" format
-        # For effort control, use effort param (OpenAI o1/o3, Grok)
         if use_reasoning:
             reasoning_config = {"enabled": True}
             # Add effort if specified (for models that support it)
