@@ -1348,15 +1348,8 @@ class BotoneV6:
         try:
             sl_is_buy = position.direction == TradeDirection.SHORT
 
-            # Round SL price appropriately based on asset tick size
-            # BTC: 0.1, ETH: 0.1, SOL: 0.01, others: 0.0001
-            # Use string formatting to ensure exact decimal precision (avoids float issues)
-            if position.symbol in ["BTC", "ETH"]:
-                sl_price_rounded = float(f"{position.stop_loss_price:.1f}")
-            elif position.symbol == "SOL":
-                sl_price_rounded = float(f"{position.stop_loss_price:.2f}")
-            else:
-                sl_price_rounded = float(f"{position.stop_loss_price:.4f}")
+            # Use trader's _round_to_tick method (same as sentinel.py)
+            sl_price_rounded = self.trader._round_to_tick(position.stop_loss_price, position.symbol)
 
             # Get actual position size from exchange
             status = self.trader.get_account_status()
