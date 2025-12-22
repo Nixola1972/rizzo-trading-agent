@@ -627,12 +627,13 @@ OUTPUT FORMAT (JSON):
 
         use_reasoning = self.config.reasoning_enabled and retry_without_reasoning
 
-        # Add reasoning parameters if enabled (for DeepSeek R1, o1, o3, Grok, Gemini Thinking)
+        # Add reasoning parameters if enabled
+        # Supported models: deepseek/deepseek-r1, openai/o1-*, openai/o3-*, anthropic/claude-3.7-*, x-ai/grok-*
+        # NOT supported: deepseek/deepseek-v3, deepseek/deepseek-chat, etc.
         if use_reasoning:
-            payload["include_reasoning"] = True
+            # Use effort OR max_tokens (not both) - effort is more universal
             payload["reasoning"] = {
-                "effort": self.config.reasoning_effort,
-                "max_tokens": self.config.reasoning_max_tokens
+                "effort": self.config.reasoning_effort  # high, medium, low
             }
             logger.debug(f"Reasoning enabled: effort={self.config.reasoning_effort}")
 
