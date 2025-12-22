@@ -634,12 +634,19 @@ OUTPUT FORMAT (JSON):
         # Add reasoning parameters if enabled
         # DeepSeek V3.2-Exp uses "enabled: true" format
         if use_reasoning:
-            reasoning_config = {"enabled": True}
+            reasoning_config = {
+                "enabled": True,
+                # Limit reasoning tokens, leave room for JSON response
+                "max_tokens": self.config.reasoning_max_tokens
+            }
             # Add effort if specified (for models that support it)
             if self.config.reasoning_effort and self.config.reasoning_effort != "medium":
                 reasoning_config["effort"] = self.config.reasoning_effort
             payload["reasoning"] = reasoning_config
-            logger.debug(f"Reasoning config: {reasoning_config}")
+            # Main max_tokens must be HIGHER than reasoning.max_tokens
+            # to leave room for the actual JSON response
+            payload["max_tokens"] = self.config.reasoning_max_tokens + 1000
+            logger.debug(f"Reasoning config: {reasoning_config}, total max_tokens: {payload['max_tokens']}")
 
         try:
             response = requests.post(
