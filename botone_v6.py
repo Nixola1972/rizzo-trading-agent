@@ -617,9 +617,9 @@ OUTPUT FORMAT (JSON):
 
         use_reasoning = self.config.reasoning_enabled and retry_without_reasoning
 
-        # When reasoning enabled, need more tokens for thinking + response
+        # When reasoning enabled, use REASONING_MAX_TOKENS from env
         # Reasoning tokens count against max_tokens limit
-        max_tokens = 2000 if use_reasoning else 500
+        max_tokens = self.config.reasoning_max_tokens if use_reasoning else 500
 
         payload = {
             "model": self.config.ai_model,
