@@ -99,6 +99,17 @@ class BotoneV6Config:
         self.min_profit_to_close = float(os.getenv("MIN_PROFIT_TO_CLOSE", "0.5"))  # Min profit % for AI to close
         self.ai_loss_threshold_pct = float(os.getenv("AI_LOSS_THRESHOLD_PCT", "50"))  # AI can close if loss > X% of SL
 
+        # AI Conviction Sizing - Dynamic position sizing based on AI tier
+        self.conviction_sizing_enabled = os.getenv("CONVICTION_SIZING_ENABLED", "false").lower() == "true"
+        self.tier1_size_usd = float(os.getenv("TIER1_SIZE_USD", "25"))  # Speculativo
+        self.tier2_size_usd = float(os.getenv("TIER2_SIZE_USD", "35"))  # Standard
+        self.tier3_size_usd = float(os.getenv("TIER3_SIZE_USD", "50"))  # High Conviction
+        self.force_tier = int(os.getenv("FORCE_TIER", "0"))  # 0=disabled, 1/2/3=force tier
+        # TIER 3 safety requirements
+        self.tier3_min_adx = float(os.getenv("TIER3_MIN_ADX", "25"))
+        self.tier3_min_volume_ratio = float(os.getenv("TIER3_MIN_VOLUME_RATIO", "1.2"))
+        self.tier3_min_score_margin = float(os.getenv("TIER3_MIN_SCORE_MARGIN", "15"))
+
         # Leverage limits per style (configurable via env) - both MIN and MAX
         # MIN = minimum for trailing stops to work, MAX = maximum allowed
         self.leverage_prudent_min = int(os.getenv("LEVERAGE_PRUDENT_MIN", "2"))
@@ -201,12 +212,12 @@ class BotoneAIManager:
         has_position: bool,
         current_direction: Optional[TradeDirection],
         current_pnl_pct: float = 0.0,
-    ) -> Tuple[str, Optional[TradeDirection], str, float, int]:
+    ) -> Tuple[str, Optional[TradeDirection], str, float, int, int, str]:
         """
         Get AI trading decision.
 
         Returns:
-            Tuple of (action, direction, reason, confidence, leverage)
+            Tuple of (action, direction, reason, confidence, leverage, conviction_tier, tier_reasoning)
             action: "open", "close", or "hold"
         """
         # RESEARCH MODE: Use weighted scoring with veto checks
@@ -225,7 +236,7 @@ class BotoneAIManager:
             if volume_ratio < min_volume and not has_position:
                 reason = f"VETO: Volume {volume_ratio:.2f}x < {min_volume}x min for Tier-{tier_info['tier']}"
                 logger.info(f"[RESEARCH] {symbol}: 🚫 {reason}")
-                return "hold", None, reason, 0.0, 1
+                return "hold", None, reason, 0.0, 1, 2, "VETO - no tier applicable"
 
             # VETO 2: OBV divergence (only check for new entries)
             if not has_position:
@@ -235,7 +246,7 @@ class BotoneAIManager:
                 if obv_opposite:
                     reason = f"VETO: OBV divergence - price {price_trend} but OBV {obv_trend} (whale distribution risk)"
                     logger.info(f"[RESEARCH] {symbol}: 🚫 {reason}")
-                    return "hold", None, reason, 0.0, 1
+                    return "hold", None, reason, 0.0, 1, 2, "VETO - no tier applicable"
 
             # Build research prompt with tier info
             prompt = self._build_research_prompt(
@@ -249,7 +260,7 @@ class BotoneAIManager:
 
         response = self._call_ai(prompt)
         if not response:
-            return "hold", None, "AI call failed", 0.0, 1
+            return "hold", None, "AI call failed", 0.0, 1, 2, "AI call failed - default tier"
 
         return self._parse_response(response)
 
@@ -585,6 +596,34 @@ WARNING SIGNALS (reduce position or SKIP):
 - Bollinger squeeze + low volume = likely fake breakout
 
 ═══════════════════════════════════════════════════════════════════════
+                    CONVICTION TIER (OBBLIGATORIO)
+═══════════════════════════════════════════════════════════════════════
+
+Valuta la QUALITÀ COMPLESSIVA del setup e assegna un tier per il sizing:
+
+TIER 1 - SPECULATIVO ($25):
+- Segnale presente ma debole
+- ADX < 20 (mercato laterale)
+- Volume < 0.8x (poca partecipazione)
+- Bollinger squeeze (incertezza)
+- Score appena sopra threshold (< 10 punti)
+
+TIER 2 - STANDARD ($35):
+- Indicatori allineati
+- Trend definito (ADX 20-30)
+- Volume normale (0.8x - 1.2x)
+- Setup classico, no red flags
+
+TIER 3 - HIGH CONVICTION ($50):
+RICHIEDE TUTTI questi criteri:
+- ADX > 25 (trend forte)
+- Volume > 1.2x (conferma)
+- NO Bollinger squeeze
+- NO divergenze OBV
+- Score almeno 15 punti sopra threshold
+- Pattern tecnico chiaro (breakout, double bottom, etc.)
+
+═══════════════════════════════════════════════════════════════════════
 
 OUTPUT FORMAT (JSON):
 {{
@@ -601,8 +640,9 @@ OUTPUT FORMAT (JSON):
   "direction": "LONG/SHORT" (if action=open),
   "leverage": 1-{self.config.max_leverage},
   "confidence": 0.0-1.0,
+  "conviction_tier": 1/2/3,
+  "tier_reasoning": "Motivo breve della scelta del tier",
   "win_rate_expected": "XX%",
-  "position_size_pct": 100 (or 50 if borderline/warning),
   "reason": "brief explanation",
   "warnings": ["list any warning signals detected"],
   "key_factors": ["top 2-3 factors driving decision"]
@@ -737,8 +777,12 @@ OUTPUT FORMAT (JSON):
     def _parse_response(
         self,
         response: Dict[str, Any],
-    ) -> Tuple[str, Optional[TradeDirection], str, float, int]:
-        """Parse AI response."""
+    ) -> Tuple[str, Optional[TradeDirection], str, float, int, int, str]:
+        """Parse AI response.
+
+        Returns:
+            Tuple of (action, direction, reason, confidence, leverage, conviction_tier, tier_reasoning)
+        """
         action = response.get("action", response.get("operation", "hold")).lower()
 
         direction = None
@@ -765,6 +809,16 @@ OUTPUT FORMAT (JSON):
             except (ValueError, TypeError):
                 leverage = self._get_min_leverage_for_style()  # Default to min for style
 
+        # Parse conviction tier (default to TIER 2 if not provided)
+        try:
+            conviction_tier = int(response.get("conviction_tier", 2))
+            if conviction_tier not in [1, 2, 3]:
+                conviction_tier = 2  # Default to standard
+        except (ValueError, TypeError):
+            conviction_tier = 2
+
+        tier_reasoning = response.get("tier_reasoning", "No tier reasoning provided")
+
         # Build enriched reason with AI reasoning
         base_reason = response.get("reason", "No reason provided")
         key_factors = response.get("key_factors", [])
@@ -788,7 +842,7 @@ OUTPUT FORMAT (JSON):
         reason = " | ".join(reason_parts)
         confidence = float(response.get("confidence", 0.5))
 
-        return action, direction, reason, confidence, leverage
+        return action, direction, reason, confidence, leverage, conviction_tier, tier_reasoning
 
     # Helper methods for signal interpretation
     def _macd_signal(self, macd: float) -> str:
@@ -1175,6 +1229,82 @@ class BotoneV6:
 
         logger.info(f"Botone V6 initialized - AI Model: {self.config.ai_model}")
 
+    def _calculate_position_size(
+        self,
+        ai_tier: int,
+        tier_reasoning: str,
+        market_data: Dict[str, Any],
+    ) -> Tuple[float, int, str]:
+        """
+        Calculate position size based on AI conviction tier with safety validation.
+
+        Args:
+            ai_tier: AI's suggested tier (1, 2, or 3)
+            tier_reasoning: AI's reasoning for the tier choice
+            market_data: Market data for safety checks
+
+        Returns:
+            Tuple of (position_size_usd, final_tier, log_message)
+        """
+        # If conviction sizing is disabled, use fixed size
+        if not self.config.conviction_sizing_enabled:
+            return self.config.position_size_usd, 0, "Conviction sizing disabled - using fixed size"
+
+        # Check FORCE_TIER override
+        if self.config.force_tier in [1, 2, 3]:
+            forced_tier = self.config.force_tier
+            tier_sizes = {
+                1: self.config.tier1_size_usd,
+                2: self.config.tier2_size_usd,
+                3: self.config.tier3_size_usd,
+            }
+            size = tier_sizes[forced_tier]
+            return size, forced_tier, f"FORCE_TIER={forced_tier} override active"
+
+        # Validate AI tier
+        if ai_tier not in [1, 2, 3]:
+            ai_tier = 2  # Default to standard
+
+        # TIER 1 and TIER 2: Accept as-is
+        if ai_tier in [1, 2]:
+            tier_sizes = {
+                1: self.config.tier1_size_usd,
+                2: self.config.tier2_size_usd,
+            }
+            size = tier_sizes[ai_tier]
+            tier_names = {1: "SPECULATIVO", 2: "STANDARD"}
+            return size, ai_tier, f"TIER {ai_tier} ({tier_names[ai_tier]}): {tier_reasoning}"
+
+        # TIER 3: Requires safety validation
+        adx = market_data.get("adx", 0)
+        volume_ratio = market_data.get("volume_ratio", 0)
+        # Score margin would need to be passed - for now we'll trust TIER 3 if ADX/Volume pass
+
+        safety_failures = []
+
+        # Check ADX (trend strength)
+        if adx < self.config.tier3_min_adx:
+            safety_failures.append(f"ADX {adx:.1f} < {self.config.tier3_min_adx}")
+
+        # Check Volume Ratio
+        if volume_ratio < self.config.tier3_min_volume_ratio:
+            safety_failures.append(f"Volume {volume_ratio:.2f}x < {self.config.tier3_min_volume_ratio}x")
+
+        # Check for Bollinger squeeze (indicates uncertainty)
+        bb_squeeze = market_data.get("bb_squeeze", False)
+        if bb_squeeze:
+            safety_failures.append("Bollinger squeeze active")
+
+        # If any safety check fails, downgrade to TIER 2
+        if safety_failures:
+            downgrade_reason = " | ".join(safety_failures)
+            size = self.config.tier2_size_usd
+            return size, 2, f"TIER 3 → 2 DOWNGRADE: {downgrade_reason} | AI wanted: {tier_reasoning}"
+
+        # TIER 3 approved
+        size = self.config.tier3_size_usd
+        return size, 3, f"TIER 3 (HIGH CONVICTION) ✓: {tier_reasoning}"
+
     def sync_positions_from_exchange(self):
         """Sync positions from HyperLiquid exchange."""
         try:
@@ -1480,7 +1610,7 @@ class BotoneV6:
         # Get AI decision
         logger.info(f"[SLOW] {symbol}: Calling AI ({self.config.prompt_style})...")
 
-        action, direction, reason, confidence, leverage = self.ai_manager.get_decision(
+        action, direction, reason, confidence, leverage, conviction_tier, tier_reasoning = self.ai_manager.get_decision(
             symbol=symbol,
             market_data=market_data,
             has_position=has_position,
@@ -1500,7 +1630,18 @@ class BotoneV6:
 
         # Execute decision
         if action == "open" and direction and not has_position:
-            self._open_position(symbol, direction, market_data.get("price", 0), leverage, reason)
+            # Calculate position size based on conviction tier
+            position_size_usd, final_tier, tier_log = self._calculate_position_size(
+                ai_tier=conviction_tier,
+                tier_reasoning=tier_reasoning,
+                market_data=market_data,
+            )
+
+            # Log tier decision
+            tier_emoji = {0: "📊", 1: "🎲", 2: "📈", 3: "🎯"}
+            logger.info(f"[SLOW] {symbol}: {tier_emoji.get(final_tier, '📊')} SIZE: ${position_size_usd:.0f} | {tier_log}")
+
+            self._open_position(symbol, direction, market_data.get("price", 0), leverage, reason, position_size_usd)
         elif action == "close" and has_position:
             # Logica chiusura AI:
             # 1. Se in profitto >= MIN_PROFIT_TO_CLOSE → chiudi (profit taking)
@@ -1682,9 +1823,21 @@ class BotoneV6:
             except Exception as sl_err:
                 logger.error(f"[FAST] {position.symbol}: ❌ Errore trailing SL update: {sl_err}")
 
-    def _open_position(self, symbol: str, direction: TradeDirection, price: float, leverage: int, reason: str):
-        """Open a new position."""
-        logger.info(f"[TRADE] Opening {direction.value} on {symbol} @ ${price:.2f} lev={leverage}x")
+    def _open_position(self, symbol: str, direction: TradeDirection, price: float, leverage: int, reason: str, position_size_usd: Optional[float] = None):
+        """Open a new position.
+
+        Args:
+            symbol: Trading symbol (BTC, ETH, SOL)
+            direction: LONG or SHORT
+            price: Entry price
+            leverage: Leverage multiplier
+            reason: AI reasoning for the trade
+            position_size_usd: Position size in USD (optional, uses config default if not provided)
+        """
+        # Use provided size or fall back to config default
+        size_usd = position_size_usd if position_size_usd is not None else self.config.position_size_usd
+
+        logger.info(f"[TRADE] Opening {direction.value} on {symbol} @ ${price:.2f} lev={leverage}x size=${size_usd:.0f}")
 
         try:
             # Calculate position size
@@ -1703,7 +1856,7 @@ class BotoneV6:
                 "operation": "open",
                 "symbol": symbol,
                 "direction": direction.value.lower(),
-                "target_portion_of_balance": self.config.position_size_usd / 100,  # Will be adjusted by trader
+                "target_portion_of_balance": size_usd / 100,  # Will be adjusted by trader
                 "leverage": leverage,
                 "reason": reason,
             }
@@ -1718,7 +1871,7 @@ class BotoneV6:
                     symbol=symbol,
                     direction=direction,
                     entry_price=price,
-                    size=self.config.position_size_usd / price,
+                    size=size_usd / price,
                     leverage=leverage,
                     stop_loss_price=sl_price,
                     take_profit_price=tp_price,
@@ -1727,7 +1880,7 @@ class BotoneV6:
                 )
                 self.position_tracker.add_position(position)
 
-                logger.info(f"[TRADE] ✅ Opened {direction.value} {symbol}")
+                logger.info(f"[TRADE] ✅ Opened {direction.value} {symbol} | Size: ${size_usd:.0f}")
                 logger.info(f"[TRADE]    Entry: ${price:.2f} | SL: ${sl_price:.2f} | TP: ${tp_price:.2f}")
 
                 # === PIAZZA SL SU HYPERLIQUID ===
