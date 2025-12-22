@@ -648,16 +648,27 @@ OUTPUT FORMAT (JSON):
             response.raise_for_status()
 
             data = response.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            message = data.get("choices", [{}])[0].get("message", {})
+            content = message.get("content", "")
+            reasoning = message.get("reasoning", "")
 
             # Log reasoning if present
-            reasoning = data.get("choices", [{}])[0].get("message", {}).get("reasoning")
             if reasoning:
                 logger.info(f"AI Reasoning: {reasoning[:300]}...")
 
-            logger.info(f"AI Response: {content[:200]}...")
+            # Log content
+            if content:
+                logger.info(f"AI Response: {content[:200]}...")
+            else:
+                logger.debug("AI Response content is empty (reasoning model may put JSON elsewhere)")
 
-            return self._extract_json(content)
+            # Try to extract JSON from content first, then from reasoning if content is empty/invalid
+            result = self._extract_json(content) if content else None
+            if result is None and reasoning:
+                logger.debug("Trying to extract JSON from reasoning field...")
+                result = self._extract_json(reasoning)
+
+            return result
 
         except requests.exceptions.Timeout:
             logger.error("AI call timeout")
