@@ -33,6 +33,14 @@ from dotenv import load_dotenv
 # Load environment FIRST
 load_dotenv(".env.baseline")
 
+# Import database module (optional - gracefully handles missing psycopg2)
+try:
+    from botone_v6_db import TradeDatabase
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    TradeDatabase = None
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +72,16 @@ class Position:
     take_profit_price: float
     current_sl_level: float  # Current trailing SL level
     opened_at: datetime
+    # MFE/MAE tracking
+    max_price: float = 0.0  # Highest price seen (for MFE)
+    min_price: float = 0.0  # Lowest price seen (for MAE)
+    # Database tracking
+    trade_id: Optional[int] = None  # Database ID for this trade
+    # Entry context (stored for DB)
+    conviction_tier: int = 2
+    ai_confidence: float = 0.0
+    ai_reasoning: str = ""
+    entry_indicators: Optional[Dict[str, Any]] = None
 
 
 # ==============================================================================
@@ -1234,6 +1252,18 @@ class BotoneV6:
             testnet=self.config.hl_testnet,
         )
 
+        # Initialize database for trade tracking (optional)
+        self.db = None
+        if DB_AVAILABLE:
+            try:
+                self.db = TradeDatabase()
+                if self.db.enabled:
+                    logger.info("📊 Database trade tracking: ENABLED")
+                else:
+                    logger.info("📊 Database trade tracking: DISABLED (connection failed)")
+            except Exception as e:
+                logger.warning(f"📊 Database trade tracking: DISABLED ({e})")
+
         # Last AI check times
         self._last_ai_check: Dict[str, datetime] = {}
 
@@ -1666,7 +1696,17 @@ class BotoneV6:
             tier_emoji = {0: "📊", 1: "🎲", 2: "📈", 3: "🎯"}
             logger.info(f"[SLOW] {symbol}: {tier_emoji.get(final_tier, '📊')} SIZE: ${position_size_usd:.0f} | {tier_log}")
 
-            self._open_position(symbol, direction, market_data.get("price", 0), leverage, reason, position_size_usd)
+            self._open_position(
+                symbol=symbol,
+                direction=direction,
+                price=market_data.get("price", 0),
+                leverage=leverage,
+                reason=reason,
+                position_size_usd=position_size_usd,
+                conviction_tier=final_tier,
+                ai_confidence=confidence,
+                market_data=market_data,
+            )
         elif action == "close" and has_position:
             # Logica chiusura AI:
             # 1. Se in profitto >= MIN_PROFIT_TO_CLOSE → chiudi (profit taking)
@@ -1736,6 +1776,23 @@ class BotoneV6:
         price = self.market_data.get_price(position.symbol)
         if price <= 0:
             return
+
+        # === MFE/MAE TRACKING ===
+        # Initialize if needed
+        if position.max_price == 0:
+            position.max_price = position.entry_price
+        if position.min_price == 0:
+            position.min_price = position.entry_price
+
+        # Update max/min prices
+        if price > position.max_price:
+            position.max_price = price
+        if price < position.min_price:
+            position.min_price = price
+
+        # Update database periodically (every update would be too frequent)
+        if self.db and self.db.enabled and position.trade_id:
+            self.db.update_mfe_mae(position.trade_id, position.max_price, position.min_price)
 
         # Calculate P&L
         if position.direction == TradeDirection.LONG:
@@ -1848,7 +1905,18 @@ class BotoneV6:
             except Exception as sl_err:
                 logger.error(f"[FAST] {position.symbol}: ❌ Errore trailing SL update: {sl_err}")
 
-    def _open_position(self, symbol: str, direction: TradeDirection, price: float, leverage: int, reason: str, position_size_usd: Optional[float] = None):
+    def _open_position(
+        self,
+        symbol: str,
+        direction: TradeDirection,
+        price: float,
+        leverage: int,
+        reason: str,
+        position_size_usd: Optional[float] = None,
+        conviction_tier: int = 2,
+        ai_confidence: float = 0.5,
+        market_data: Optional[Dict[str, Any]] = None,
+    ):
         """Open a new position.
 
         Args:
@@ -1858,6 +1926,9 @@ class BotoneV6:
             leverage: Leverage multiplier
             reason: AI reasoning for the trade
             position_size_usd: Position size in USD (optional, uses config default if not provided)
+            conviction_tier: AI conviction tier (1/2/3)
+            ai_confidence: AI confidence (0-1)
+            market_data: Market indicators at entry time
         """
         # Use provided size or fall back to config default
         size_usd = position_size_usd if position_size_usd is not None else self.config.position_size_usd
@@ -1890,6 +1961,45 @@ class BotoneV6:
             result = self.trader.execute_signal(order)
 
             if result.get("status") == "ok" or "response" in result:
+                # Extract indicators for database
+                indicators = {}
+                if market_data:
+                    indicators = {
+                        "macd": market_data.get("macd"),
+                        "rsi": market_data.get("rsi"),
+                        "adx": market_data.get("adx"),
+                        "ema_stack": market_data.get("ema_stack"),
+                        "volume_ratio": market_data.get("volume_ratio"),
+                        "bb_position": market_data.get("bb_position"),
+                        "bb_squeeze": market_data.get("bb_squeeze"),
+                        "obv_trend": market_data.get("obv_trend"),
+                        "funding_rate": market_data.get("funding_rate"),
+                        "open_interest": market_data.get("open_interest"),
+                        "fear_greed": market_data.get("fear_greed"),
+                        "price_vs_pivot": market_data.get("price_vs_pivot"),
+                        "double_bottom": market_data.get("double_bottom", {}).get("detected", False) if isinstance(market_data.get("double_bottom"), dict) else False,
+                        "double_top": market_data.get("double_top", {}).get("detected", False) if isinstance(market_data.get("double_top"), dict) else False,
+                        "pattern_confidence": market_data.get("pattern_confidence"),
+                    }
+
+                # Save to database
+                trade_id = None
+                if self.db and self.db.enabled:
+                    trade_id = self.db.save_trade_entry(
+                        symbol=symbol,
+                        direction=direction.value,
+                        entry_price=price,
+                        size_usd=size_usd,
+                        leverage=leverage,
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                        conviction_tier=conviction_tier,
+                        ai_confidence=ai_confidence,
+                        ai_reasoning=reason,
+                        prompt_style=self.config.prompt_style,
+                        indicators=indicators,
+                    )
+
                 # Track position
                 position = Position(
                     id=f"{symbol}_{int(time.time())}",
@@ -1902,6 +2012,13 @@ class BotoneV6:
                     take_profit_price=tp_price,
                     current_sl_level=-self.config.stop_loss_pct,
                     opened_at=datetime.now(),
+                    max_price=price,
+                    min_price=price,
+                    trade_id=trade_id,
+                    conviction_tier=conviction_tier,
+                    ai_confidence=ai_confidence,
+                    ai_reasoning=reason,
+                    entry_indicators=indicators,
                 )
                 self.position_tracker.add_position(position)
 
@@ -2012,12 +2129,43 @@ class BotoneV6:
         """Close a position."""
         logger.info(f"[TRADE] Closing {symbol} - {exit_type}: {reason}")
 
+        # Get position before closing (for database save)
+        position = self.position_tracker.get_position(symbol)
+
         try:
+            # Get current price for P&L calculation
+            current_price = self.market_data.get_price(symbol)
+
             result = self.trader.exchange.market_close(symbol)
 
             if result.get("status") == "ok" or "response" in result:
+                # Calculate P&L
+                pnl_usd = 0.0
+                pnl_pct = 0.0
+                trailing_level = None
+
+                if position:
+                    if position.direction == TradeDirection.LONG:
+                        pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                    else:
+                        pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
+
+                    pnl_usd = (position.size * position.entry_price) * (pnl_pct / 100)
+                    trailing_level = position.current_sl_level if position.current_sl_level >= 0 else None
+
+                    # Save to database
+                    if self.db and self.db.enabled and position.trade_id:
+                        self.db.close_trade(
+                            trade_id=position.trade_id,
+                            exit_price=current_price,
+                            pnl_usd=pnl_usd,
+                            pnl_pct=pnl_pct,
+                            exit_reason=exit_type,
+                            trailing_level_pct=trailing_level,
+                        )
+
                 self.position_tracker.remove_position(symbol)
-                logger.info(f"[TRADE] ✅ Closed {symbol}")
+                logger.info(f"[TRADE] ✅ Closed {symbol} | P&L: {pnl_pct:+.2f}% (${pnl_usd:+.2f})")
             else:
                 logger.error(f"[TRADE] ❌ Failed to close: {result}")
 
