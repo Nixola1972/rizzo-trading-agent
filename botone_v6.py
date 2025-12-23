@@ -1647,7 +1647,17 @@ class BotoneV6:
             if btc_rsi is None:
                 return
 
-            logger.debug(f"[WATCHDOG] BTC RSI: {btc_rsi:.1f}")
+            # Determine BTC zone for logging
+            if btc_rsi >= self.config.btc_rsi_extreme:
+                zone = "🔴 EXTREME"
+            elif btc_rsi >= self.config.btc_rsi_danger:
+                zone = "🟠 DANGER"
+            elif btc_rsi <= self.config.btc_rsi_oversold:
+                zone = "🔵 OVERSOLD"
+            else:
+                zone = "🟢 NORMAL"
+
+            logger.info(f"[WATCHDOG] 🐕 BTC RSI: {btc_rsi:.1f} | Zone: {zone}")
 
             # Check for extreme conditions
             for position in positions:
@@ -1735,6 +1745,13 @@ class BotoneV6:
         try:
             timeout_delta = timedelta(hours=self.config.timeout_hours)
             now = datetime.now()
+
+            # Log position ages
+            ages = []
+            for p in positions:
+                age_h = (now - p.opened_at).total_seconds() / 3600
+                ages.append(f"{p.symbol}:{age_h:.1f}h")
+            logger.info(f"[TIMEOUT] ⏰ Position ages: {', '.join(ages)} | Threshold: {self.config.timeout_hours}h")
 
             for position in positions:
                 # Calculate position age
