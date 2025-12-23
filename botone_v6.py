@@ -184,6 +184,16 @@ class BotoneV6Config:
         logger.info(f"  AI Interval: {self.ai_interval_minutes} min")
         logger.info(f"  Symbols: {self.symbols}")
         logger.info(f"  Position Size: ${self.position_size_usd}")
+        if self.conviction_sizing_enabled:
+            logger.info(f"  💰 Conviction Sizing: ENABLED")
+            logger.info(f"     TIER 1: ${self.tier1_size_usd} (Speculativo)")
+            logger.info(f"     TIER 2: ${self.tier2_size_usd} (Standard)")
+            logger.info(f"     TIER 3: ${self.tier3_size_usd} (High Conviction)")
+            if self.force_tier > 0:
+                logger.info(f"     ⚠️ FORCE_TIER: {self.force_tier} (override attivo!)")
+            logger.info(f"     TIER3 Safety: ADX>{self.tier3_min_adx}, Vol>{self.tier3_min_volume_ratio}x")
+        else:
+            logger.info(f"  💰 Conviction Sizing: disabled (fixed ${self.position_size_usd})")
         logger.info(f"  Max Leverage: {self.max_leverage}x")
         logger.info(f"  Style Leverage: PRUDENT={self.leverage_prudent_min}-{self.leverage_prudent_max}x, MODERATE={self.leverage_moderate_min}-{self.leverage_moderate_max}x, AGGRESSIVE={self.leverage_aggressive_min}-{self.leverage_aggressive_max}x, MACRO={self.leverage_macro_min}-{self.leverage_macro_max}x")
         logger.info(f"  SL: {self.stop_loss_pct}% | TP: {self.take_profit_pct}%")
