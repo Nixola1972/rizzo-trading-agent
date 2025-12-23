@@ -128,6 +128,21 @@ class BotoneV6Config:
         self.tier3_min_volume_ratio = float(os.getenv("TIER3_MIN_VOLUME_RATIO", "1.2"))
         self.tier3_min_score_margin = float(os.getenv("TIER3_MIN_SCORE_MARGIN", "15"))
 
+        # BTC Watchdog - Protezione correlazione cross-asset
+        self.btc_watchdog_enabled = os.getenv("BTC_WATCHDOG_ENABLED", "true").lower() == "true"
+        self.btc_rsi_extreme = float(os.getenv("BTC_RSI_EXTREME", "70"))  # RSI >= 70 → azione immediata
+        self.btc_rsi_danger = float(os.getenv("BTC_RSI_DANGER", "65"))    # RSI >= 65 → stringi se in profitto
+        self.btc_rsi_oversold = float(os.getenv("BTC_RSI_OVERSOLD", "30")) # RSI <= 30 → proteggi LONG
+        # SL tightening amounts (% from entry price)
+        self.btc_watchdog_extreme_sl_pct = float(os.getenv("BTC_WATCHDOG_EXTREME_SL_PCT", "0.5"))  # SL a breakeven + X%
+        self.btc_watchdog_danger_sl_pct = float(os.getenv("BTC_WATCHDOG_DANGER_SL_PCT", "1.0"))    # SL a profit - X%
+
+        # Timeout Exit - Chiudi trade stagnanti
+        self.timeout_enabled = os.getenv("TIMEOUT_ENABLED", "true").lower() == "true"
+        self.timeout_hours = float(os.getenv("TIMEOUT_HOURS", "12"))
+        self.timeout_loss_threshold = float(os.getenv("TIMEOUT_LOSS_THRESHOLD", "-3"))  # Chiudi se P&L < -3%
+        self.timeout_stale_max = float(os.getenv("TIMEOUT_STALE_MAX", "1"))  # Chiudi se P&L < +1% (stagnante)
+
         # Leverage limits per style (configurable via env) - both MIN and MAX
         # MIN = minimum for trailing stops to work, MAX = maximum allowed
         self.leverage_prudent_min = int(os.getenv("LEVERAGE_PRUDENT_MIN", "2"))
@@ -218,6 +233,20 @@ class BotoneV6Config:
         logger.info(f"  Min Profit to Close: {self.min_profit_to_close}%")
         logger.info(f"  AI Loss Threshold: {self.ai_loss_threshold_pct}% of SL (={self.stop_loss_pct * self.ai_loss_threshold_pct / 100:.1f}%)")
         logger.info(f"  Trailing: {self.trailing_enabled} - {self.trailing_steps}")
+        # BTC Watchdog logging
+        if self.btc_watchdog_enabled:
+            logger.info(f"  🐕 BTC Watchdog: ENABLED")
+            logger.info(f"     RSI Extreme: >={self.btc_rsi_extreme} → SL +{self.btc_watchdog_extreme_sl_pct}%")
+            logger.info(f"     RSI Danger: >={self.btc_rsi_danger} → SL profit-{self.btc_watchdog_danger_sl_pct}%")
+            logger.info(f"     RSI Oversold: <={self.btc_rsi_oversold} → proteggi LONG")
+        else:
+            logger.info(f"  🐕 BTC Watchdog: disabled")
+        # Timeout logging
+        if self.timeout_enabled:
+            logger.info(f"  ⏰ Timeout Exit: ENABLED ({self.timeout_hours}h)")
+            logger.info(f"     Close if P&L < {self.timeout_loss_threshold}% or stagnante < {self.timeout_stale_max}%")
+        else:
+            logger.info(f"  ⏰ Timeout Exit: disabled")
         logger.info(f"  Testnet: {self.hl_testnet}")
         logger.info("=" * 50)
 
@@ -1482,6 +1511,14 @@ class BotoneV6:
         # First, verify all positions have SL orders on exchange
         self._verify_all_sl_orders(positions)
 
+        # BTC Watchdog - Check BTC RSI for cross-asset protection
+        if self.config.btc_watchdog_enabled:
+            self._check_btc_watchdog(positions)
+
+        # Timeout Exit - Check for stale positions
+        if self.config.timeout_enabled:
+            self._check_timeout_exit(positions)
+
         for position in positions:
             try:
                 self._monitor_position(position)
@@ -1589,6 +1626,222 @@ class BotoneV6:
 
         except Exception as e:
             logger.error(f"[FAST] {position.symbol}: ❌ Errore _place_sl_order: {e}")
+
+    def _check_btc_watchdog(self, positions: list):
+        """
+        BTC Watchdog - Cross-asset protection based on BTC RSI.
+
+        When BTC shows extreme RSI readings, it often precedes market-wide moves.
+        This protects altcoin positions by tightening SL when BTC shows warning signs.
+
+        Logic:
+        - BTC RSI >= 70 (EXTREME): Tighten SHORT SL to breakeven + X%
+        - BTC RSI >= 65 (DANGER): Tighten SHORT SL if in profit
+        - BTC RSI <= 30 (OVERSOLD): Tighten LONG SL to protect from BTC bounce
+        """
+        try:
+            # Get BTC RSI
+            btc_data = self.market_data.get_market_data("BTC")
+            btc_rsi = btc_data.get("rsi", 50)
+
+            if btc_rsi is None:
+                return
+
+            logger.debug(f"[WATCHDOG] BTC RSI: {btc_rsi:.1f}")
+
+            # Check for extreme conditions
+            for position in positions:
+                # Skip BTC itself
+                if position.symbol == "BTC":
+                    continue
+
+                current_price = self.market_data.get_price(position.symbol)
+                if current_price <= 0:
+                    continue
+
+                # Calculate current P&L
+                if position.direction == TradeDirection.LONG:
+                    pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                else:
+                    pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
+
+                new_sl = None
+                trigger_reason = None
+
+                # === BTC EXTREME OVERBOUGHT (RSI >= 70) ===
+                # BTC molto alto → probabile correzione → SHORT altcoin a rischio
+                if btc_rsi >= self.config.btc_rsi_extreme and position.direction == TradeDirection.SHORT:
+                    # Stringi SL a breakeven + configured %
+                    if position.direction == TradeDirection.SHORT:
+                        # For SHORT: SL is ABOVE entry, so tightening means lowering it
+                        # Breakeven = entry price, then add configured %
+                        potential_sl = position.entry_price * (1 + self.config.btc_watchdog_extreme_sl_pct / 100)
+                        # Only tighten if new SL is better (lower for SHORT)
+                        if potential_sl < position.stop_loss_price:
+                            new_sl = potential_sl
+                            trigger_reason = f"BTC RSI {btc_rsi:.0f} EXTREME → SL a BE+{self.config.btc_watchdog_extreme_sl_pct}%"
+
+                # === BTC DANGER ZONE (RSI >= 65) ===
+                # BTC alto → cautela → stringi SL se in profitto
+                elif btc_rsi >= self.config.btc_rsi_danger and position.direction == TradeDirection.SHORT:
+                    # Only act if in profit
+                    if pnl_pct > 0:
+                        # Tighten SL to lock some profit
+                        # For SHORT: lock profit means lowering the SL
+                        lock_pct = max(0, pnl_pct - self.config.btc_watchdog_danger_sl_pct)
+                        potential_sl = position.entry_price * (1 + (lock_pct / position.leverage) / 100)
+                        if potential_sl < position.stop_loss_price:
+                            new_sl = potential_sl
+                            trigger_reason = f"BTC RSI {btc_rsi:.0f} DANGER → lock +{lock_pct:.1f}%"
+
+                # === BTC OVERSOLD (RSI <= 30) ===
+                # BTC molto basso → probabile bounce → LONG altcoin a rischio
+                elif btc_rsi <= self.config.btc_rsi_oversold and position.direction == TradeDirection.LONG:
+                    # BTC bounce could drag altcoins up quickly
+                    # For LONG positions, tighten SL to protect from sudden dump before BTC bounce
+                    if pnl_pct > 0:
+                        # Lock some profit
+                        lock_pct = max(0, pnl_pct - self.config.btc_watchdog_danger_sl_pct)
+                        potential_sl = position.entry_price * (1 - (lock_pct / position.leverage) / 100)
+                        if potential_sl > position.stop_loss_price:
+                            new_sl = potential_sl
+                            trigger_reason = f"BTC RSI {btc_rsi:.0f} OVERSOLD → lock +{lock_pct:.1f}%"
+
+                # Apply new SL if needed
+                if new_sl is not None:
+                    logger.warning(f"[WATCHDOG] 🐕 {position.symbol}: {trigger_reason}")
+                    logger.warning(f"[WATCHDOG] 🐕 {position.symbol}: SL ${position.stop_loss_price:.2f} → ${new_sl:.2f}")
+
+                    # Update position
+                    old_sl = position.stop_loss_price
+                    position.stop_loss_price = new_sl
+
+                    # Update on exchange
+                    self._update_sl_on_exchange(position, old_sl, new_sl)
+
+        except Exception as e:
+            logger.error(f"[WATCHDOG] Error in BTC watchdog: {e}")
+
+    def _check_timeout_exit(self, positions: list):
+        """
+        Timeout Exit - Close stale positions that are not moving.
+
+        Logic:
+        - Position open > TIMEOUT_HOURS (default 12h)
+        - If P&L < TIMEOUT_LOSS_THRESHOLD (-3%): Close (cut loss)
+        - If P&L between TIMEOUT_LOSS_THRESHOLD and TIMEOUT_STALE_MAX (+1%): Close (stale)
+        - If P&L > TIMEOUT_STALE_MAX: Keep open (in profit, let trailing work)
+        """
+        try:
+            timeout_delta = timedelta(hours=self.config.timeout_hours)
+            now = datetime.now()
+
+            for position in positions:
+                # Calculate position age
+                duration = now - position.opened_at
+                duration_hours = duration.total_seconds() / 3600
+
+                # Skip if not old enough
+                if duration < timeout_delta:
+                    continue
+
+                # Calculate current P&L
+                current_price = self.market_data.get_price(position.symbol)
+                if current_price <= 0:
+                    continue
+
+                if position.direction == TradeDirection.LONG:
+                    pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                else:
+                    pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
+
+                # Check timeout conditions
+                if pnl_pct < self.config.timeout_loss_threshold:
+                    # CASE 1: Losing and old → cut loss
+                    logger.warning(f"[TIMEOUT] ⏰ {position.symbol}: {duration_hours:.1f}h con P&L {pnl_pct:+.2f}% < {self.config.timeout_loss_threshold}%")
+                    logger.warning(f"[TIMEOUT] ⏰ {position.symbol}: CHIUDO per timeout + perdita")
+                    self._close_position(position.symbol, "TIMEOUT_LOSS",
+                                        f"Position > {self.config.timeout_hours}h with P&L {pnl_pct:+.2f}%")
+
+                elif pnl_pct < self.config.timeout_stale_max:
+                    # CASE 2: Stale (not losing much but not profiting) → close
+                    logger.warning(f"[TIMEOUT] ⏰ {position.symbol}: {duration_hours:.1f}h con P&L {pnl_pct:+.2f}% (stagnante)")
+                    logger.warning(f"[TIMEOUT] ⏰ {position.symbol}: CHIUDO per timeout + stagnazione")
+                    self._close_position(position.symbol, "TIMEOUT_STALE",
+                                        f"Position > {self.config.timeout_hours}h with P&L {pnl_pct:+.2f}%")
+                else:
+                    # CASE 3: In profit → keep open, let trailing work
+                    logger.info(f"[TIMEOUT] {position.symbol}: {duration_hours:.1f}h ma P&L {pnl_pct:+.2f}% → mantengo (trailing)")
+
+        except Exception as e:
+            logger.error(f"[TIMEOUT] Error in timeout check: {e}")
+
+    def _update_sl_on_exchange(self, position: Position, old_sl: float, new_sl: float):
+        """Update stop loss on exchange (cancel old, place new)."""
+        try:
+            # 1. Find old SL orders
+            old_sl_oids = []
+            try:
+                open_orders = self.trader.exchange.info.frontend_open_orders(self.config.hl_account_address)
+            except AttributeError:
+                open_orders = self.trader.exchange.info.open_orders(self.config.hl_account_address)
+
+            for order in open_orders:
+                if order.get("coin") == position.symbol:
+                    trigger_px = order.get("triggerPx")
+                    if trigger_px and trigger_px != "0.0":
+                        old_sl_oids.append(order.get("oid"))
+
+            # 2. Place new SL first (so we're always protected)
+            sl_is_buy = position.direction == TradeDirection.SHORT
+
+            # Round SL price appropriately
+            sl_price_rounded = self.trader._round_to_tick(new_sl, position.symbol)
+
+            # Get actual position size
+            status = self.trader.get_account_status()
+            actual_size = position.size
+            for pos in status.get("open_positions", []):
+                if pos.get("symbol") == position.symbol:
+                    actual_size = abs(float(pos.get("size", 0)))
+                    break
+
+            sl_order = self.trader.exchange.order(
+                position.symbol,
+                sl_is_buy,
+                actual_size,
+                sl_price_rounded,
+                {"trigger": {"triggerPx": sl_price_rounded, "isMarket": True, "tpsl": "sl"}},
+                reduce_only=True
+            )
+
+            if sl_order.get("status") == "ok":
+                # Check for nested errors
+                response_data = sl_order.get("response", {}).get("data", {})
+                statuses = response_data.get("statuses", [])
+
+                has_error = False
+                for status in statuses:
+                    if "error" in status:
+                        logger.error(f"[WATCHDOG] {position.symbol}: ❌ SL RIFIUTATO: {status['error']}")
+                        has_error = True
+                        break
+
+                if not has_error:
+                    logger.info(f"[WATCHDOG] {position.symbol}: ✅ Nuovo SL @ ${sl_price_rounded:.2f}")
+
+                    # 3. Cancel old SL orders
+                    for oid in old_sl_oids:
+                        try:
+                            self.trader.exchange.cancel(position.symbol, oid)
+                            logger.info(f"[WATCHDOG] {position.symbol}: Cancellato vecchio SL (oid: {oid})")
+                        except Exception as cancel_err:
+                            logger.warning(f"[WATCHDOG] {position.symbol}: Errore cancellazione: {cancel_err}")
+            else:
+                logger.warning(f"[WATCHDOG] {position.symbol}: ⚠️ Errore piazzamento SL: {sl_order}")
+
+        except Exception as e:
+            logger.error(f"[WATCHDOG] {position.symbol}: ❌ Errore update SL: {e}")
 
     def _process_symbol(self, symbol: str):
         """Process a symbol for potential trades."""
