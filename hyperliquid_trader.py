@@ -39,6 +39,25 @@ class HyperLiquidTrader:
 
     def _get_tick_size(self, symbol: str) -> float:
         """Ottiene il tick size per un simbolo da meta usando pxDecimals dall'API."""
+        # Fallback mapping for common symbols (used if API doesn't return pxDecimals)
+        TICK_SIZE_FALLBACK = {
+            "BTC": 1.0,
+            "ETH": 0.1,
+            "SOL": 0.01,
+            "BNB": 0.1,       # BNB ~$600-900, needs 0.1 precision
+            "LINK": 0.001,    # LINK ~$10-30
+            "AVAX": 0.01,     # AVAX ~$20-50
+            "DOGE": 0.00001,  # DOGE ~$0.05-0.20
+            "XRP": 0.0001,    # XRP ~$0.50-2.00
+            "ARB": 0.0001,    # ARB ~$0.50-2.00
+            "SUI": 0.0001,    # SUI ~$1-5
+            "ADA": 0.0001,    # ADA ~$0.30-1.00
+            "MATIC": 0.0001,  # MATIC ~$0.50-1.50
+            "DOT": 0.001,     # DOT ~$5-10
+            "ATOM": 0.001,    # ATOM ~$7-15
+            "OP": 0.001,      # OP ~$1-3
+        }
+
         try:
             for asset in self.meta.get("universe", []):
                 if asset.get("name") == symbol:
@@ -48,18 +67,11 @@ class HyperLiquidTrader:
                     if px_decimals is not None:
                         tick_size = 10 ** (-int(px_decimals))
                         return tick_size
-                    # Fallback se pxDecimals non disponibile
-                    if symbol == "BTC":
-                        return 1.0
-                    elif symbol == "ETH":
-                        return 0.1
-                    elif symbol == "SOL":
-                        return 0.01
-                    else:
-                        return 0.0001  # Default più fine per altcoin
-            return 0.0001
+
+            # Use fallback mapping or default
+            return TICK_SIZE_FALLBACK.get(symbol, 0.0001)
         except Exception:
-            return 0.0001
+            return TICK_SIZE_FALLBACK.get(symbol, 0.0001)
 
     def _round_to_tick(self, price: float, symbol: str) -> float:
         """Arrotonda il prezzo al tick size più vicino."""

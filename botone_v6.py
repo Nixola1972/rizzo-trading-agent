@@ -1488,8 +1488,13 @@ class BotoneV6:
         try:
             sl_is_buy = position.direction == TradeDirection.SHORT
 
+            # Get tick size for debugging
+            tick_size = self.trader._get_tick_size(position.symbol)
+
             # Use trader's _round_to_tick method (same as sentinel.py)
             sl_price_rounded = self.trader._round_to_tick(position.stop_loss_price, position.symbol)
+
+            logger.debug(f"[FAST] {position.symbol}: SL Debug - raw={position.stop_loss_price:.6f}, tick={tick_size}, rounded={sl_price_rounded}")
 
             # Get actual position size from exchange
             status = self.trader.get_account_status()
@@ -1512,8 +1517,18 @@ class BotoneV6:
                 logger.warning(f"[FAST] {position.symbol}: Position too small (${position_value_usd:.2f} < $10), skip SL")
                 return
 
+            # Validate SL is on correct side
+            if position.direction == TradeDirection.LONG:
+                if sl_price_rounded >= current_price:
+                    logger.error(f"[FAST] {position.symbol}: ❌ SL ${sl_price_rounded:.4f} >= current ${current_price:.4f} for LONG - INVALID!")
+                    return
+            else:  # SHORT
+                if sl_price_rounded <= current_price:
+                    logger.error(f"[FAST] {position.symbol}: ❌ SL ${sl_price_rounded:.4f} <= current ${current_price:.4f} for SHORT - INVALID!")
+                    return
+
             sl_distance_pct = abs(sl_price_rounded - current_price) / current_price * 100
-            logger.info(f"[FAST] {position.symbol}: Placing SL - size={actual_size}, price=${sl_price_rounded:.2f}, is_buy={sl_is_buy}, current=${current_price:.2f}, distance={sl_distance_pct:.1f}%")
+            logger.info(f"[FAST] {position.symbol}: Placing SL - size={actual_size}, price=${sl_price_rounded}, is_buy={sl_is_buy}, current=${current_price:.2f}, distance={sl_distance_pct:.1f}%, tick={tick_size}")
 
             sl_order = self.trader.exchange.order(
                 position.symbol,
