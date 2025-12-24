@@ -2225,7 +2225,7 @@ class BotoneV6:
             # Stochastic (NEW)
             logger.info(f"  Stochastic: %K={market_data.get('stoch_k', 50):.1f} %D={market_data.get('stoch_d', 50):.1f} | Signal={market_data.get('stoch_signal', 'N/A')} | Zone={market_data.get('stoch_zone', 'N/A')}")
             # Pivot Points (NEW)
-            logger.info(f"  Pivot Points: R2=${market_data.get('pivot_r2', 0):,.0f} R1=${market_data.get('pivot_r1', 0):,.0f} PP=${market_data.get('pivot_pp', 0):,.0f} S1=${market_data.get('pivot_s1', 0):,.0f} S2=${market_data.get('pivot_s2', 0):,.0f}")
+            logger.info(f"  Pivot Points: R2=${market_data.get('pivot_r2', 0):,.4f} R1=${market_data.get('pivot_r1', 0):,.4f} PP=${market_data.get('pivot_pp', 0):,.4f} S1=${market_data.get('pivot_s1', 0):,.4f} S2=${market_data.get('pivot_s2', 0):,.4f}")
             logger.info(f"  Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x")
             logger.info(f"  Funding Rate: {market_data.get('funding_rate', 0):.4%}")
             logger.info(f"  Open Interest: ${market_data.get('open_interest', 0):,.0f}")
