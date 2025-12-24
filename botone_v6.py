@@ -1025,6 +1025,9 @@ class MarketDataProvider:
         self.config = config
         self._analyzer = None
         self._info = None  # Cached Info object to avoid creating new connections
+        # Cache for hybrid volume ratio (refresh every 60s to avoid FAST loop API spam)
+        self._volume_cache: Dict[str, Tuple[float, float, float, datetime]] = {}  # symbol -> (ratio, current, baseline, timestamp)
+        self._volume_cache_ttl = 60  # seconds
 
     def _get_info(self):
         """Lazy load Info object - reuse to avoid 100 connection limit."""
@@ -1053,15 +1056,26 @@ class MarketDataProvider:
             logger.error(f"Error getting price for {symbol}: {e}")
             return 0.0
 
-    def get_hybrid_volume_ratio(self, symbol: str) -> Tuple[float, float, float]:
+    def get_hybrid_volume_ratio(self, symbol: str, force_refresh: bool = False) -> Tuple[float, float, float]:
         """
         Get hybrid volume ratio using 1m candles for current activity
-        and 15m candle for baseline.
+        and 15m candle for baseline. CACHED for 60s to avoid FAST loop API spam.
+
+        Args:
+            symbol: Trading symbol
+            force_refresh: If True, bypass cache and fetch fresh data (use in SLOW loop)
 
         Returns:
             Tuple of (ratio, current_volume, baseline_volume)
             ratio = sum(last N 1m candles) / sum(baseline 15m candles normalized)
         """
+        # Check cache first (unless force_refresh)
+        if not force_refresh and symbol in self._volume_cache:
+            cached_ratio, cached_current, cached_baseline, cached_time = self._volume_cache[symbol]
+            age_seconds = (datetime.now() - cached_time).total_seconds()
+            if age_seconds < self._volume_cache_ttl:
+                return (cached_ratio, cached_current, cached_baseline)
+
         try:
             analyzer = self.get_analyzer()
 
@@ -1104,14 +1118,22 @@ class MarketDataProvider:
             else:
                 ratio = 1.0
 
+            # Update cache
+            self._volume_cache[symbol] = (ratio, current_volume, baseline_volume, datetime.now())
+
             return (ratio, current_volume, baseline_volume)
 
         except Exception as e:
             logger.error(f"[VOLUME] Error calculating hybrid volume for {symbol}: {e}")
             return (1.0, 0, 0)  # Default ratio = 1.0 (neutral)
 
-    def get_market_data(self, symbol: str) -> Dict[str, Any]:
-        """Get full market data for a symbol."""
+    def get_market_data(self, symbol: str, force_refresh_volume: bool = False) -> Dict[str, Any]:
+        """Get full market data for a symbol.
+
+        Args:
+            symbol: Trading symbol
+            force_refresh_volume: If True, bypass volume cache (use in SLOW loop for VETO check)
+        """
         try:
             analyzer = self.get_analyzer()
             analysis = analyzer.get_complete_analysis(symbol)
@@ -1166,7 +1188,8 @@ class MarketDataProvider:
             macd_hist_trend = macd_analysis.get("histogram_trend", "neutral")
 
             # HYBRID VOLUME CHECK - use 1m candles for real-time detection
-            hybrid_vol_ratio, hybrid_current_vol, hybrid_baseline_vol = self.get_hybrid_volume_ratio(symbol)
+            # force_refresh_volume=True in SLOW loop for accurate VETO check
+            hybrid_vol_ratio, hybrid_current_vol, hybrid_baseline_vol = self.get_hybrid_volume_ratio(symbol, force_refresh=force_refresh_volume)
 
             return {
                 "price": price,
@@ -2288,8 +2311,8 @@ class BotoneV6:
 
         self._last_ai_check[check_key] = datetime.now()
 
-        # Get market data
-        market_data = self.market_data.get_market_data(symbol)
+        # Get market data (force_refresh_volume=True for accurate VETO check in SLOW loop)
+        market_data = self.market_data.get_market_data(symbol, force_refresh_volume=True)
         if market_data.get("price", 0) == 0:
             logger.warning(f"[SLOW] {symbol}: No price data")
             return
@@ -2315,6 +2338,9 @@ class BotoneV6:
             logger.info(f"  Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x (2m={market_data.get('volume_current', 0):.0f} / 15m={market_data.get('volume_baseline', 0):.0f})")
             logger.info(f"  Funding Rate: {market_data.get('funding_rate', 0):.4%}")
             logger.info(f"  Open Interest: ${market_data.get('open_interest', 0):,.0f}")
+        else:
+            # Always show volume ratio even without verbose logging
+            logger.info(f"[SLOW] {symbol}: 📊 Volume {market_data.get('volume_ratio', 1.0):.2f}x (2m={market_data.get('volume_current', 0):.0f} / 15m={market_data.get('volume_baseline', 0):.0f})")
 
         # Check if we have a position
         position = self.position_tracker.get_position(symbol)
