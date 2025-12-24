@@ -184,6 +184,20 @@ class BotoneV6Config:
         self.research_mode = os.getenv("RESEARCH_MODE", "false").lower() == "true"
         self.research_min_volume_ratio = float(os.getenv("RESEARCH_MIN_VOLUME_RATIO", "0.5"))
 
+        # HYBRID VOLUME CHECK - Real-time volume detection
+        # Baseline: 15m candle for stable reference
+        # Current: 1m candles for real-time activity detection
+        self.volume_baseline_timeframe = os.getenv("VOLUME_BASELINE_TIMEFRAME", "15m")
+        self.volume_baseline_candles = int(os.getenv("VOLUME_BASELINE_CANDLES", "1"))
+        self.volume_check_timeframe = os.getenv("VOLUME_CHECK_TIMEFRAME", "1m")
+        self.volume_check_candles = int(os.getenv("VOLUME_CHECK_CANDLES", "2"))
+        # Minimum volume ratio per tier (current_volume / baseline_volume)
+        self.volume_min_tier1 = float(os.getenv("VOLUME_MIN_TIER1", "0.3"))  # BTC, ETH
+        self.volume_min_tier2 = float(os.getenv("VOLUME_MIN_TIER2", "0.5"))  # SOL, XRP, etc
+        self.volume_min_tier3 = float(os.getenv("VOLUME_MIN_TIER3", "0.7"))  # DOGE, AVAX
+        # Action when volume is low: VETO (block), WARN (log only)
+        self.volume_low_action = os.getenv("VOLUME_LOW_ACTION", "VETO").upper()
+
         # Symbols to trade (all available cryptos)
         symbols_str = os.getenv("TRADING_SYMBOLS", "BTC,ETH,SOL")
         self.symbols = [s.strip() for s in symbols_str.split(",")]
@@ -192,21 +206,22 @@ class BotoneV6Config:
         # Tier 1: High liquidity, low manipulation - threshold 60
         # Tier 2: Medium liquidity - threshold 70
         # Tier 3: High volatility/manipulation - threshold 80
+        # min_volume now uses ENV values (volume_min_tier1/2/3)
         self.crypto_tiers = {
             # Tier 1 - Low risk
-            "BTC": {"tier": 1, "multiplier": 1.00, "threshold": 60, "min_volume": 0.5},
-            "ETH": {"tier": 1, "multiplier": 1.05, "threshold": 57, "min_volume": 0.5},
+            "BTC": {"tier": 1, "multiplier": 1.00, "threshold": 60, "min_volume": self.volume_min_tier1},
+            "ETH": {"tier": 1, "multiplier": 1.05, "threshold": 57, "min_volume": self.volume_min_tier1},
             # Tier 2 - Medium risk
-            "SOL": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
-            "XRP": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
-            "BNB": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
-            "LINK": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
-            "ADA": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": 1.0},
-            "SUI": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": 1.0},
-            "ARB": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": 1.0},
+            "SOL": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
+            "XRP": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
+            "BNB": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
+            "LINK": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
+            "ADA": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
+            "SUI": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": self.volume_min_tier2},
+            "ARB": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": self.volume_min_tier2},
             # Tier 3 - High risk (need strong signals)
-            "DOGE": {"tier": 3, "multiplier": 0.70, "threshold": 114, "min_volume": 2.0},
-            "AVAX": {"tier": 3, "multiplier": 0.75, "threshold": 107, "min_volume": 1.5},
+            "DOGE": {"tier": 3, "multiplier": 0.70, "threshold": 114, "min_volume": self.volume_min_tier3},
+            "AVAX": {"tier": 3, "multiplier": 0.75, "threshold": 107, "min_volume": self.volume_min_tier3},
         }
 
         # Loop intervals
@@ -271,6 +286,9 @@ class BotoneV6Config:
             logger.info(f"     Time Decay: {self.health_time_decay_start}h/-1, {self.health_time_decay_medium}h/-2, {self.health_time_decay_severe}h/-3")
         else:
             logger.info(f"  🏥 Health Check: disabled")
+        # Volume Check logging
+        logger.info(f"  📊 Volume Check: Hybrid ({self.volume_check_timeframe}x{self.volume_check_candles} / {self.volume_baseline_timeframe}x{self.volume_baseline_candles})")
+        logger.info(f"     Min Volume: T1={self.volume_min_tier1}x, T2={self.volume_min_tier2}x, T3={self.volume_min_tier3}x | Action={self.volume_low_action}")
         logger.info(f"  Testnet: {self.hl_testnet}")
         logger.info("=" * 50)
 
@@ -313,11 +331,17 @@ class BotoneAIManager:
             min_volume = tier_info.get("min_volume", 0.5)
             obv_trend = market_data.get('obv_trend', 'neutral')
 
-            # VETO 1: Volume too low
+            # VETO 1: Volume too low (hybrid check: 2m vs 15m)
             if volume_ratio < min_volume and not has_position:
-                reason = f"VETO: Volume {volume_ratio:.2f}x < {min_volume}x min for Tier-{tier_info['tier']}"
-                logger.info(f"[RESEARCH] {symbol}: 🚫 {reason}")
-                return "hold", None, reason, 0.0, 1, 2, "VETO - no tier applicable"
+                vol_current = market_data.get('volume_current', 0)
+                vol_baseline = market_data.get('volume_baseline', 0)
+                reason = f"Volume {volume_ratio:.2f}x < {min_volume}x min for Tier-{tier_info['tier']} (2m={vol_current:.0f}/15m={vol_baseline:.0f})"
+
+                if self.config.volume_low_action == "VETO":
+                    logger.info(f"[RESEARCH] {symbol}: 🚫 VETO: {reason}")
+                    return "hold", None, f"VETO: {reason}", 0.0, 1, 2, "VETO - no tier applicable"
+                else:  # WARN mode
+                    logger.warning(f"[RESEARCH] {symbol}: ⚠️ WARN: {reason} (continuing anyway)")
 
             # VETO 2: OBV divergence (only check for new entries)
             if not has_position:
@@ -1029,6 +1053,63 @@ class MarketDataProvider:
             logger.error(f"Error getting price for {symbol}: {e}")
             return 0.0
 
+    def get_hybrid_volume_ratio(self, symbol: str) -> Tuple[float, float, float]:
+        """
+        Get hybrid volume ratio using 1m candles for current activity
+        and 15m candle for baseline.
+
+        Returns:
+            Tuple of (ratio, current_volume, baseline_volume)
+            ratio = sum(last N 1m candles) / sum(baseline 15m candles normalized)
+        """
+        try:
+            analyzer = self.get_analyzer()
+
+            # Get 1m candles for current activity (last 2 candles by default)
+            check_tf = self.config.volume_check_timeframe  # "1m"
+            check_candles = self.config.volume_check_candles  # 2
+
+            # Get baseline candles (15m by default)
+            baseline_tf = self.config.volume_baseline_timeframe  # "15m"
+            baseline_candles = self.config.volume_baseline_candles  # 1
+
+            # Fetch candles using the analyzer's fetch_ohlcv method
+            # Need a bit more candles to ensure we have enough data
+            df_check = analyzer.fetch_ohlcv(symbol, check_tf, limit=check_candles + 5)
+            df_baseline = analyzer.fetch_ohlcv(symbol, baseline_tf, limit=baseline_candles + 5)
+
+            if df_check.empty or df_baseline.empty:
+                logger.warning(f"[VOLUME] Empty candles for {symbol}")
+                return (1.0, 0, 0)  # Default ratio = 1.0 (neutral)
+
+            # Get the last N candles for each
+            recent_check = df_check.tail(check_candles)
+            recent_baseline = df_baseline.tail(baseline_candles)
+
+            # Sum volumes
+            current_volume = float(recent_check['volume'].sum())
+            baseline_volume = float(recent_baseline['volume'].sum())
+
+            # Normalize baseline to same time window
+            # If checking 2 x 1m = 2 minutes, baseline 1 x 15m = 15 minutes
+            # Normalize: baseline_per_minute = baseline_volume / 15
+            # Then compare: current (2 min) vs expected (2 min at baseline rate)
+            check_minutes = check_candles  # 1m candles
+            baseline_minutes = baseline_candles * 15  # 15m candles
+
+            if baseline_minutes > 0 and baseline_volume > 0:
+                baseline_per_minute = baseline_volume / baseline_minutes
+                expected_volume = baseline_per_minute * check_minutes
+                ratio = current_volume / expected_volume if expected_volume > 0 else 1.0
+            else:
+                ratio = 1.0
+
+            return (ratio, current_volume, baseline_volume)
+
+        except Exception as e:
+            logger.error(f"[VOLUME] Error calculating hybrid volume for {symbol}: {e}")
+            return (1.0, 0, 0)  # Default ratio = 1.0 (neutral)
+
     def get_market_data(self, symbol: str) -> Dict[str, Any]:
         """Get full market data for a symbol."""
         try:
@@ -1084,6 +1165,9 @@ class MarketDataProvider:
             macd_analysis = analysis.get("macd_analysis", {})
             macd_hist_trend = macd_analysis.get("histogram_trend", "neutral")
 
+            # HYBRID VOLUME CHECK - use 1m candles for real-time detection
+            hybrid_vol_ratio, hybrid_current_vol, hybrid_baseline_vol = self.get_hybrid_volume_ratio(symbol)
+
             return {
                 "price": price,
                 "macd": current.get("macd", 0),
@@ -1120,9 +1204,11 @@ class MarketDataProvider:
                 "pivot_s1": pivot_points.get("s1", 0),
                 "pivot_s2": pivot_points.get("s2", 0),
 
-                # Volume - from longer_term (volume key is a string, not dict)
-                "volume_24h": longer_term.get("volume_current", 0),
-                "volume_ratio": longer_term.get("volume_current", 0) / max(longer_term.get("volume_average", 1), 1),
+                # Volume - HYBRID: 1m candles for current, 15m for baseline
+                "volume_24h": longer_term.get("volume_current", 0),  # Kept for reference
+                "volume_ratio": hybrid_vol_ratio,  # NEW: real-time hybrid check
+                "volume_current": hybrid_current_vol,  # Sum of last 2x 1m candles
+                "volume_baseline": hybrid_baseline_vol,  # Sum of last 1x 15m candle
 
                 # Open Interest
                 "open_interest": analysis.get("derivatives", {}).get("open_interest_latest", 0),
@@ -2226,7 +2312,7 @@ class BotoneV6:
             logger.info(f"  Stochastic: %K={market_data.get('stoch_k', 50):.1f} %D={market_data.get('stoch_d', 50):.1f} | Signal={market_data.get('stoch_signal', 'N/A')} | Zone={market_data.get('stoch_zone', 'N/A')}")
             # Pivot Points (NEW)
             logger.info(f"  Pivot Points: R2=${market_data.get('pivot_r2', 0):,.4f} R1=${market_data.get('pivot_r1', 0):,.4f} PP=${market_data.get('pivot_pp', 0):,.4f} S1=${market_data.get('pivot_s1', 0):,.4f} S2=${market_data.get('pivot_s2', 0):,.4f}")
-            logger.info(f"  Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x")
+            logger.info(f"  Volume Ratio: {market_data.get('volume_ratio', 1.0):.2f}x (2m={market_data.get('volume_current', 0):.0f} / 15m={market_data.get('volume_baseline', 0):.0f})")
             logger.info(f"  Funding Rate: {market_data.get('funding_rate', 0):.4%}")
             logger.info(f"  Open Interest: ${market_data.get('open_interest', 0):,.0f}")
 
