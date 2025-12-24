@@ -143,6 +143,23 @@ class BotoneV6Config:
         self.timeout_loss_threshold = float(os.getenv("TIMEOUT_LOSS_THRESHOLD", "-3"))  # Chiudi se P&L < -3%
         self.timeout_stale_max = float(os.getenv("TIMEOUT_STALE_MAX", "1"))  # Chiudi se P&L < +1% (stagnante)
 
+        # Smart Exit System - Health Check per posizioni
+        self.health_check_enabled = os.getenv("HEALTH_CHECK_ENABLED", "true").lower() == "true"
+        self.health_check_interval = int(os.getenv("HEALTH_CHECK_INTERVAL", "30"))  # Secondi tra check
+        # Score thresholds
+        self.health_score_healthy = int(os.getenv("HEALTH_SCORE_HEALTHY", "4"))      # >= questo = tutto ok
+        self.health_score_caution = int(os.getenv("HEALTH_SCORE_CAUTION", "0"))      # >= questo = stringi SL
+        self.health_score_danger = int(os.getenv("HEALTH_SCORE_DANGER", "-3"))       # >= questo = SL a breakeven
+        self.health_score_emergency = int(os.getenv("HEALTH_SCORE_EMERGENCY", "-4")) # < questo = chiudi
+        # Profit thresholds per azioni
+        self.health_min_profit_caution = float(os.getenv("HEALTH_MIN_PROFIT_CAUTION", "0.5"))
+        self.health_min_profit_danger = float(os.getenv("HEALTH_MIN_PROFIT_DANGER", "0.0"))
+        self.health_min_profit_emergency = float(os.getenv("HEALTH_MIN_PROFIT_EMERGENCY", "0.5"))
+        # Time decay settings
+        self.health_time_decay_start = float(os.getenv("HEALTH_TIME_DECAY_START", "4"))   # Ore prima di penalità
+        self.health_time_decay_medium = float(os.getenv("HEALTH_TIME_DECAY_MEDIUM", "8")) # Ore per penalità media
+        self.health_time_decay_severe = float(os.getenv("HEALTH_TIME_DECAY_SEVERE", "12")) # Ore per penalità grave
+
         # Leverage limits per style (configurable via env) - both MIN and MAX
         # MIN = minimum for trailing stops to work, MAX = maximum allowed
         self.leverage_prudent_min = int(os.getenv("LEVERAGE_PRUDENT_MIN", "2"))
@@ -247,6 +264,13 @@ class BotoneV6Config:
             logger.info(f"     Close if P&L < {self.timeout_loss_threshold}% or stagnante < {self.timeout_stale_max}%")
         else:
             logger.info(f"  ⏰ Timeout Exit: disabled")
+        # Health Check logging
+        if self.health_check_enabled:
+            logger.info(f"  🏥 Health Check: ENABLED (every {self.health_check_interval}s)")
+            logger.info(f"     Scores: HEALTHY>={self.health_score_healthy}, CAUTION>={self.health_score_caution}, DANGER>={self.health_score_danger}, EMERGENCY<{self.health_score_emergency}")
+            logger.info(f"     Time Decay: {self.health_time_decay_start}h/-1, {self.health_time_decay_medium}h/-2, {self.health_time_decay_severe}h/-3")
+        else:
+            logger.info(f"  🏥 Health Check: disabled")
         logger.info(f"  Testnet: {self.hl_testnet}")
         logger.info("=" * 50)
 
@@ -1296,6 +1320,9 @@ class BotoneV6:
         # Last AI check times
         self._last_ai_check: Dict[str, datetime] = {}
 
+        # Health check timing
+        self._last_health_check: datetime = datetime.min
+
         logger.info(f"Botone V6 initialized - AI Model: {self.config.ai_model}")
 
     def _calculate_position_size(
@@ -1518,6 +1545,14 @@ class BotoneV6:
         # Timeout Exit - Check for stale positions
         if self.config.timeout_enabled:
             self._check_timeout_exit(positions)
+
+        # Smart Exit - Health Check (with interval control)
+        if self.config.health_check_enabled:
+            now = datetime.now()
+            seconds_since_last = (now - self._last_health_check).total_seconds()
+            if seconds_since_last >= self.config.health_check_interval:
+                self._last_health_check = now
+                self._check_position_health(positions)
 
         for position in positions:
             try:
@@ -1792,6 +1827,299 @@ class BotoneV6:
 
         except Exception as e:
             logger.error(f"[TIMEOUT] Error in timeout check: {e}")
+
+    def _calculate_position_health(self, position: Position, market_data: Dict[str, Any], pnl_pct: float) -> Tuple[int, str]:
+        """
+        Calculate health score for a position.
+
+        Components:
+        - EMA Stack: bullish=+2, neutral=0, bearish=-2
+        - RSI: favorable=+1, neutral=0, unfavorable=-1
+        - MACD: strong favorable=+1, weak=0, against=-2
+        - Volume: good=+1, low=0, very low=-1
+        - Bollinger: favorable=+1, neutral=0, dangerous=-2
+        - OBV: aligned=+1, neutral=0, against=-1
+        - Time Decay: penalties based on hours without profit
+        - Resilience Bonus: +1 if profitable despite time
+
+        Returns:
+            Tuple of (score, breakdown_string)
+        """
+        score = 0
+        breakdown = []
+        is_long = position.direction == TradeDirection.LONG
+
+        # 1. EMA Stack (weight: high)
+        ema_stack = market_data.get('ema_stack', '')
+        if 'bullish' in ema_stack.lower():
+            if is_long:
+                score += 2
+                breakdown.append("EMA:+2")
+            else:
+                score -= 2
+                breakdown.append("EMA:-2")
+        elif 'bearish' in ema_stack.lower():
+            if is_long:
+                score -= 2
+                breakdown.append("EMA:-2")
+            else:
+                score += 2
+                breakdown.append("EMA:+2")
+        else:
+            breakdown.append("EMA:0")
+
+        # 2. RSI
+        rsi = market_data.get('rsi', 50)
+        if is_long:
+            if rsi > 50:
+                score += 1
+                breakdown.append("RSI:+1")
+            elif rsi < 40:
+                score -= 1
+                breakdown.append("RSI:-1")
+            else:
+                breakdown.append("RSI:0")
+        else:  # SHORT
+            if rsi < 50:
+                score += 1
+                breakdown.append("RSI:+1")
+            elif rsi > 60:
+                score -= 1
+                breakdown.append("RSI:-1")
+            else:
+                breakdown.append("RSI:0")
+
+        # 3. MACD
+        macd = market_data.get('macd', 0)
+        if is_long:
+            if macd > 0.1:
+                score += 1
+                breakdown.append("MACD:+1")
+            elif macd < -0.1:
+                score -= 2
+                breakdown.append("MACD:-2")
+            else:
+                breakdown.append("MACD:0")
+        else:  # SHORT
+            if macd < -0.1:
+                score += 1
+                breakdown.append("MACD:+1")
+            elif macd > 0.1:
+                score -= 2
+                breakdown.append("MACD:-2")
+            else:
+                breakdown.append("MACD:0")
+
+        # 4. Volume Ratio
+        vol_ratio = market_data.get('volume_ratio', 1.0)
+        if vol_ratio > 0.8:
+            score += 1
+            breakdown.append("VOL:+1")
+        elif vol_ratio < 0.3:
+            score -= 1
+            breakdown.append("VOL:-1")
+        else:
+            breakdown.append("VOL:0")
+
+        # 5. Bollinger Bands
+        bb_pos = market_data.get('bb_position', 'MIDDLE')
+        bb_squeeze = market_data.get('bb_squeeze', False)
+        if is_long:
+            if 'UPPER' in bb_pos:
+                score += 1
+                breakdown.append("BB:+1")
+            elif 'LOWER' in bb_pos and bb_squeeze:
+                score -= 2
+                breakdown.append("BB:-2(squeeze)")
+            elif 'LOWER' in bb_pos:
+                score -= 1
+                breakdown.append("BB:-1")
+            else:
+                breakdown.append("BB:0")
+        else:  # SHORT
+            if 'LOWER' in bb_pos:
+                score += 1
+                breakdown.append("BB:+1")
+            elif 'UPPER' in bb_pos and bb_squeeze:
+                score -= 2
+                breakdown.append("BB:-2(squeeze)")
+            elif 'UPPER' in bb_pos:
+                score -= 1
+                breakdown.append("BB:-1")
+            else:
+                breakdown.append("BB:0")
+
+        # 6. OBV Trend
+        obv = market_data.get('obv_trend', 'FLAT')
+        if isinstance(obv, str):
+            obv = obv.upper()
+        if is_long:
+            if obv == 'RISING':
+                score += 1
+                breakdown.append("OBV:+1")
+            elif obv == 'FALLING':
+                score -= 1
+                breakdown.append("OBV:-1")
+            else:
+                breakdown.append("OBV:0")
+        else:  # SHORT
+            if obv == 'FALLING':
+                score += 1
+                breakdown.append("OBV:+1")
+            elif obv == 'RISING':
+                score -= 1
+                breakdown.append("OBV:-1")
+            else:
+                breakdown.append("OBV:0")
+
+        # 7. Time Decay (only if NOT in profit)
+        hours_open = (datetime.now() - position.opened_at).total_seconds() / 3600
+        if pnl_pct <= 0:
+            if hours_open >= self.config.health_time_decay_severe:
+                score -= 3
+                breakdown.append(f"TIME:-3({hours_open:.1f}h)")
+            elif hours_open >= self.config.health_time_decay_medium:
+                score -= 2
+                breakdown.append(f"TIME:-2({hours_open:.1f}h)")
+            elif hours_open >= self.config.health_time_decay_start:
+                score -= 1
+                breakdown.append(f"TIME:-1({hours_open:.1f}h)")
+            else:
+                breakdown.append(f"TIME:0({hours_open:.1f}h)")
+        else:
+            # 8. Resilience Bonus (in profit despite time)
+            if pnl_pct > 2 and hours_open > self.config.health_time_decay_start:
+                score += 1
+                breakdown.append(f"RESILIENT:+1")
+            else:
+                breakdown.append(f"TIME:0({hours_open:.1f}h)")
+
+        return score, " | ".join(breakdown)
+
+    def _check_position_health(self, positions: list):
+        """
+        Check health of all positions and take action based on score.
+
+        Actions:
+        - HEALTHY (score >= 4): Normal trailing, no action
+        - CAUTION (score 0-3): Tighten SL one step if in profit
+        - DANGER (score -3 to -1): Set SL to breakeven if any profit
+        - EMERGENCY (score < -4): Close immediately if in profit
+        """
+        try:
+            for position in positions:
+                # Get LIVE price for accurate P&L
+                current_price = self.market_data.get_price(position.symbol)
+                if current_price <= 0:
+                    continue
+
+                # Calculate P&L on LIVE price
+                if position.direction == TradeDirection.LONG:
+                    pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                else:
+                    pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
+
+                # Get market data (from Slow Loop cache - acceptable for trends)
+                market_data = self.market_data.get_market_data(position.symbol)
+
+                # Calculate health score
+                score, breakdown = self._calculate_position_health(position, market_data, pnl_pct)
+
+                # Determine action based on score
+                if score >= self.config.health_score_healthy:
+                    # HEALTHY - Normal operation
+                    logger.info(f"[HEALTH] {position.symbol}: Score {score} ✅ HEALTHY | {breakdown}")
+
+                elif score >= self.config.health_score_caution:
+                    # CAUTION - Tighten SL if in profit
+                    logger.warning(f"[HEALTH] {position.symbol}: Score {score} ⚠️ CAUTION | {breakdown}")
+                    if pnl_pct >= self.config.health_min_profit_caution:
+                        logger.warning(f"[HEALTH] {position.symbol}: Tightening SL (P&L: {pnl_pct:+.2f}%)")
+                        self._health_tighten_sl_one_step(position, current_price)
+
+                elif score >= self.config.health_score_danger:
+                    # DANGER - Set SL to breakeven + small profit
+                    logger.warning(f"[HEALTH] {position.symbol}: Score {score} 🔶 DANGER | {breakdown}")
+                    if pnl_pct >= self.config.health_min_profit_danger:
+                        logger.warning(f"[HEALTH] {position.symbol}: Setting SL to breakeven (P&L: {pnl_pct:+.2f}%)")
+                        self._health_set_breakeven_sl(position, current_price, lock_pct=0.3)
+
+                else:
+                    # EMERGENCY - Close if in profit
+                    logger.error(f"[HEALTH] {position.symbol}: Score {score} 🔴 EMERGENCY | {breakdown}")
+                    if pnl_pct >= self.config.health_min_profit_emergency:
+                        logger.error(f"[HEALTH] {position.symbol}: CLOSING - Score critical, locking profit {pnl_pct:+.2f}%")
+                        self._close_position(position.symbol, "HEALTH_EMERGENCY",
+                                           f"Health score {score} critical, P&L {pnl_pct:+.2f}%")
+                    else:
+                        logger.error(f"[HEALTH] {position.symbol}: Score critical but P&L {pnl_pct:+.2f}% < min {self.config.health_min_profit_emergency}%")
+                        # Still try to protect by tightening SL
+                        self._health_set_breakeven_sl(position, current_price, lock_pct=0.0)
+
+        except Exception as e:
+            logger.error(f"[HEALTH] Error in health check: {e}")
+
+    def _health_tighten_sl_one_step(self, position: Position, current_price: float):
+        """Tighten SL by one trailing step."""
+        try:
+            # Get current P&L
+            if position.direction == TradeDirection.LONG:
+                pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+            else:
+                pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
+
+            # Use trailing manager to get next step
+            was_updated, new_sl, new_level = self.trailing_sl.get_new_sl(
+                direction=position.direction,
+                entry_price=position.entry_price,
+                current_price=current_price,
+                leverage=position.leverage,
+                current_sl_level=position.current_sl_level,
+            )
+
+            if was_updated and new_sl != position.stop_loss_price:
+                logger.info(f"[HEALTH] {position.symbol}: Trailing SL tightened ${position.stop_loss_price:.2f} → ${new_sl:.2f}")
+                old_sl = position.stop_loss_price
+                position.stop_loss_price = new_sl
+                position.current_sl_level = new_level
+                self._update_sl_on_exchange(position, old_sl, new_sl)
+            else:
+                logger.info(f"[HEALTH] {position.symbol}: No tighter SL step available yet")
+
+        except Exception as e:
+            logger.error(f"[HEALTH] Error tightening SL: {e}")
+
+    def _health_set_breakeven_sl(self, position: Position, current_price: float, lock_pct: float = 0.0):
+        """Set SL to breakeven + lock_pct profit."""
+        try:
+            # Calculate breakeven + lock price
+            if position.direction == TradeDirection.LONG:
+                # For LONG: SL should be above entry by lock_pct
+                new_sl = position.entry_price * (1 + (lock_pct / position.leverage) / 100)
+                # Only update if new SL is higher (better) than current
+                if new_sl > position.stop_loss_price:
+                    logger.info(f"[HEALTH] {position.symbol}: SL to breakeven+{lock_pct}%: ${position.stop_loss_price:.2f} → ${new_sl:.2f}")
+                    old_sl = position.stop_loss_price
+                    position.stop_loss_price = new_sl
+                    position.current_sl_level = lock_pct
+                    self._update_sl_on_exchange(position, old_sl, new_sl)
+                else:
+                    logger.info(f"[HEALTH] {position.symbol}: SL already better than breakeven (${position.stop_loss_price:.2f})")
+            else:
+                # For SHORT: SL should be below entry by lock_pct
+                new_sl = position.entry_price * (1 - (lock_pct / position.leverage) / 100)
+                # Only update if new SL is lower (better) than current
+                if new_sl < position.stop_loss_price:
+                    logger.info(f"[HEALTH] {position.symbol}: SL to breakeven+{lock_pct}%: ${position.stop_loss_price:.2f} → ${new_sl:.2f}")
+                    old_sl = position.stop_loss_price
+                    position.stop_loss_price = new_sl
+                    position.current_sl_level = lock_pct
+                    self._update_sl_on_exchange(position, old_sl, new_sl)
+                else:
+                    logger.info(f"[HEALTH] {position.symbol}: SL already better than breakeven (${position.stop_loss_price:.2f})")
+
+        except Exception as e:
+            logger.error(f"[HEALTH] Error setting breakeven SL: {e}")
 
     def _update_sl_on_exchange(self, position: Position, old_sl: float, new_sl: float):
         """Update stop loss on exchange (cancel old, place new)."""
