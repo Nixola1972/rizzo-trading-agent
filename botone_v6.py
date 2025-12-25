@@ -136,6 +136,10 @@ class BotoneV6Config:
         # SL tightening amounts (% from entry price)
         self.btc_watchdog_extreme_sl_pct = float(os.getenv("BTC_WATCHDOG_EXTREME_SL_PCT", "0.5"))  # SL a breakeven + X%
         self.btc_watchdog_danger_sl_pct = float(os.getenv("BTC_WATCHDOG_DANGER_SL_PCT", "1.0"))    # SL a profit - X%
+        # Entry VETO based on BTC RSI - block new entries in extreme zones
+        self.btc_entry_veto_enabled = os.getenv("BTC_ENTRY_VETO_ENABLED", "true").lower() == "true"
+        self.btc_entry_veto_long_rsi = float(os.getenv("BTC_ENTRY_VETO_LONG_RSI", "70"))   # Block LONG if BTC RSI >= this
+        self.btc_entry_veto_short_rsi = float(os.getenv("BTC_ENTRY_VETO_SHORT_RSI", "30")) # Block SHORT if BTC RSI <= this
 
         # Timeout Exit - Chiudi trade stagnanti
         self.timeout_enabled = os.getenv("TIMEOUT_ENABLED", "true").lower() == "true"
@@ -273,6 +277,13 @@ class BotoneV6Config:
             logger.info(f"     RSI Oversold: <={self.btc_rsi_oversold} → proteggi LONG")
         else:
             logger.info(f"  🐕 BTC Watchdog: disabled")
+        # BTC Entry Veto logging
+        if self.btc_entry_veto_enabled:
+            logger.info(f"  🚫 BTC Entry Veto: ENABLED")
+            logger.info(f"     Block LONG if BTC RSI >= {self.btc_entry_veto_long_rsi}")
+            logger.info(f"     Block SHORT if BTC RSI <= {self.btc_entry_veto_short_rsi}")
+        else:
+            logger.info(f"  🚫 BTC Entry Veto: disabled")
         # Timeout logging
         if self.timeout_enabled:
             logger.info(f"  ⏰ Timeout Exit: ENABLED ({self.timeout_hours}h)")
@@ -2395,6 +2406,28 @@ class BotoneV6:
 
         # Execute decision
         if action == "open" and direction and not has_position:
+            # === BTC ENTRY VETO CHECK ===
+            # Block new entries when BTC is in extreme zones (cross-asset correlation risk)
+            if self.config.btc_entry_veto_enabled and symbol != "BTC":
+                try:
+                    btc_data = self.market_data.get_market_data("BTC")
+                    btc_rsi = btc_data.get("rsi", 50)
+
+                    if btc_rsi is not None:
+                        # Block LONG if BTC RSI is overbought (may correct, dragging altcoins down)
+                        if direction == TradeDirection.LONG and btc_rsi >= self.config.btc_entry_veto_long_rsi:
+                            logger.warning(f"[VETO] 🚫 {symbol}: BLOCKED LONG entry - BTC RSI {btc_rsi:.1f} >= {self.config.btc_entry_veto_long_rsi}")
+                            logger.warning(f"[VETO] 🚫 {symbol}: BTC overbought may correct → altcoins at risk")
+                            return
+
+                        # Block SHORT if BTC RSI is oversold (may bounce, dragging altcoins up)
+                        if direction == TradeDirection.SHORT and btc_rsi <= self.config.btc_entry_veto_short_rsi:
+                            logger.warning(f"[VETO] 🚫 {symbol}: BLOCKED SHORT entry - BTC RSI {btc_rsi:.1f} <= {self.config.btc_entry_veto_short_rsi}")
+                            logger.warning(f"[VETO] 🚫 {symbol}: BTC oversold may bounce → altcoins at risk")
+                            return
+                except Exception as e:
+                    logger.warning(f"[VETO] Could not check BTC RSI: {e}")
+
             # Calculate position size based on conviction tier
             position_size_usd, final_tier, tier_log = self._calculate_position_size(
                 ai_tier=conviction_tier,
