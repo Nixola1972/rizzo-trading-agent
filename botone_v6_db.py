@@ -11,6 +11,33 @@ from decimal import Decimal
 
 logger = logging.getLogger("BOTONE-V6")
 
+
+def _to_python_type(value):
+    """
+    Convert numpy types to Python native types for database compatibility.
+    psycopg2 cannot handle numpy.float64, numpy.int64, numpy.bool_, etc.
+    """
+    if value is None:
+        return None
+
+    # Check for numpy types by checking the type name
+    # This avoids importing numpy just to check types
+    type_name = type(value).__name__
+
+    if type_name in ('float64', 'float32', 'float16'):
+        return float(value)
+    elif type_name in ('int64', 'int32', 'int16', 'int8', 'uint64', 'uint32', 'uint16', 'uint8'):
+        return int(value)
+    elif type_name in ('bool_', 'bool8'):
+        return bool(value)
+    elif type_name == 'ndarray':
+        # Convert array to list, then take first element if single value
+        arr = value.tolist()
+        return arr[0] if len(arr) == 1 else arr
+
+    # Already a Python native type
+    return value
+
 # Try to import psycopg2, fallback gracefully if not available
 try:
     import psycopg2
@@ -175,32 +202,32 @@ class TradeDatabase:
                     symbol,
                     direction,
                     datetime.now(),
-                    entry_price,
-                    size_usd,
-                    leverage,
-                    entry_price,  # Initial max_price = entry
-                    entry_price,  # Initial min_price = entry
-                    sl_price,
-                    tp_price,
-                    conviction_tier,
-                    ai_confidence,
+                    _to_python_type(entry_price),
+                    _to_python_type(size_usd),
+                    _to_python_type(leverage),
+                    _to_python_type(entry_price),  # Initial max_price = entry
+                    _to_python_type(entry_price),  # Initial min_price = entry
+                    _to_python_type(sl_price),
+                    _to_python_type(tp_price),
+                    _to_python_type(conviction_tier),
+                    _to_python_type(ai_confidence),
                     ai_reasoning[:2000] if ai_reasoning else None,  # Truncate long reasoning
                     prompt_style,
-                    indicators.get("macd"),
-                    indicators.get("rsi"),
-                    indicators.get("adx"),
-                    indicators.get("ema_stack"),
-                    indicators.get("volume_ratio"),
-                    indicators.get("bb_position"),
-                    bool(indicators.get("bb_squeeze", False)),  # Convert numpy.bool to Python bool
-                    indicators.get("obv_trend"),
-                    indicators.get("funding_rate"),
-                    indicators.get("open_interest"),
-                    indicators.get("fear_greed"),
-                    indicators.get("price_vs_pivot"),
-                    bool(indicators.get("double_bottom", False)),  # Convert numpy.bool to Python bool
-                    bool(indicators.get("double_top", False)),  # Convert numpy.bool to Python bool
-                    indicators.get("pattern_confidence"),
+                    _to_python_type(indicators.get("macd")),
+                    _to_python_type(indicators.get("rsi")),
+                    _to_python_type(indicators.get("adx")),
+                    indicators.get("ema_stack"),  # string, no conversion needed
+                    _to_python_type(indicators.get("volume_ratio")),
+                    indicators.get("bb_position"),  # string, no conversion needed
+                    bool(indicators.get("bb_squeeze", False)),  # Convert to Python bool
+                    indicators.get("obv_trend"),  # string, no conversion needed
+                    _to_python_type(indicators.get("funding_rate")),
+                    _to_python_type(indicators.get("open_interest")),
+                    _to_python_type(indicators.get("fear_greed")),
+                    indicators.get("price_vs_pivot"),  # string, no conversion needed
+                    bool(indicators.get("double_bottom", False)),  # Convert to Python bool
+                    bool(indicators.get("double_top", False)),  # Convert to Python bool
+                    _to_python_type(indicators.get("pattern_confidence")),
                 ))
                 trade_id = cur.fetchone()[0]
                 logger.info(f"[DB] Trade #{trade_id} saved: {direction} {symbol} @ ${entry_price}")
@@ -222,7 +249,7 @@ class TradeDatabase:
                     SET max_price = GREATEST(max_price, %s),
                         min_price = LEAST(min_price, %s)
                     WHERE id = %s
-                """, (max_price, min_price, trade_id))
+                """, (_to_python_type(max_price), _to_python_type(min_price), trade_id))
         except Exception as e:
             logger.error(f"[DB] Error updating MFE/MAE: {e}")
 
@@ -285,13 +312,13 @@ class TradeDatabase:
                     WHERE id = %s
                 """, (
                     datetime.now(),
-                    exit_price,
-                    pnl_usd,
-                    pnl_pct,
-                    mfe_pct,
-                    mae_pct,
+                    _to_python_type(exit_price),
+                    _to_python_type(pnl_usd),
+                    _to_python_type(pnl_pct),
+                    _to_python_type(mfe_pct),
+                    _to_python_type(mae_pct),
                     exit_reason,
-                    trailing_level_pct,
+                    _to_python_type(trailing_level_pct),
                     duration_seconds,
                     trade_id,
                 ))
