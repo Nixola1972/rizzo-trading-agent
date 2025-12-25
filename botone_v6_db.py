@@ -192,14 +192,14 @@ class TradeDatabase:
                     indicators.get("ema_stack"),
                     indicators.get("volume_ratio"),
                     indicators.get("bb_position"),
-                    indicators.get("bb_squeeze"),
+                    bool(indicators.get("bb_squeeze", False)),  # Convert numpy.bool to Python bool
                     indicators.get("obv_trend"),
                     indicators.get("funding_rate"),
                     indicators.get("open_interest"),
                     indicators.get("fear_greed"),
                     indicators.get("price_vs_pivot"),
-                    indicators.get("double_bottom", False),
-                    indicators.get("double_top", False),
+                    bool(indicators.get("double_bottom", False)),  # Convert numpy.bool to Python bool
+                    bool(indicators.get("double_top", False)),  # Convert numpy.bool to Python bool
                     indicators.get("pattern_confidence"),
                 ))
                 trade_id = cur.fetchone()[0]
