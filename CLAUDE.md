@@ -1112,6 +1112,284 @@ docker exec -it memory_postgres psql -U memory_user -d postgres -c "CREATE DATAB
 
 ---
 
+## Database Schema & Trade Tracking
+
+### Tabelle Principali per Trade
+
+Ci sono **due sistemi** di tracking trade separati:
+
+| Tabella | Bot | File | Scopo |
+|---------|-----|------|-------|
+| `trades` | Rizzo | `trade_journal.py` | Trade tracking completo per Rizzo |
+| `botone_trades` | Botone V6 | `botone_v6_db.py` | Trade tracking per Botone V6 |
+
+### Schema `botone_trades` (Botone V6)
+
+```sql
+CREATE TABLE botone_trades (
+    id SERIAL PRIMARY KEY,
+
+    -- Basic Info
+    symbol VARCHAR(10) NOT NULL,
+    direction VARCHAR(5) NOT NULL,           -- LONG / SHORT
+    opened_at TIMESTAMP NOT NULL,
+    closed_at TIMESTAMP,
+    duration_seconds INTEGER,
+
+    -- Prices
+    entry_price DECIMAL(20,8) NOT NULL,
+    exit_price DECIMAL(20,8),
+    size_usd DECIMAL(10,2),
+    leverage INTEGER,
+
+    -- P&L
+    pnl_usd DECIMAL(10,4),
+    pnl_pct DECIMAL(8,4),
+
+    -- MFE/MAE (Max Favorable/Adverse Excursion)
+    max_price DECIMAL(20,8),                 -- Updated by FAST loop
+    min_price DECIMAL(20,8),                 -- Updated by FAST loop
+    mfe_pct DECIMAL(8,4),                    -- Calculated at close
+    mae_pct DECIMAL(8,4),                    -- Calculated at close
+
+    -- AI Decision at Entry
+    conviction_tier INTEGER,                 -- 1=Speculativo, 2=Standard, 3=High
+    ai_confidence DECIMAL(5,4),              -- 0.0 - 1.0
+    ai_reasoning TEXT,                       -- Full AI explanation
+    prompt_style VARCHAR(20),                -- PRUDENT/MODERATE/AGGRESSIVE
+
+    -- Indicators at Entry (saved by SLOW loop)
+    entry_macd DECIMAL(12,6),
+    entry_rsi DECIMAL(6,2),
+    entry_adx DECIMAL(6,2),
+    entry_ema_stack VARCHAR(20),             -- bullish/bearish/neutral
+    entry_volume_ratio DECIMAL(6,3),
+    entry_bb_position VARCHAR(20),           -- UPPER/MIDDLE/LOWER
+    entry_bb_squeeze BOOLEAN,
+    entry_obv_trend VARCHAR(10),             -- RISING/FALLING/FLAT
+    entry_funding_rate DECIMAL(12,8),
+    entry_open_interest DECIMAL(20,2),
+    entry_fear_greed INTEGER,
+    entry_price_vs_pivot VARCHAR(30),
+
+    -- Pattern Detection at Entry
+    entry_double_bottom BOOLEAN DEFAULT FALSE,
+    entry_double_top BOOLEAN DEFAULT FALSE,
+    entry_pattern_confidence DECIMAL(5,4),
+
+    -- Exit Info
+    exit_reason VARCHAR(30),                 -- SL_HIT, TP_HIT, TRAILING_SL, AI_CLOSE, etc.
+    trailing_level_pct DECIMAL(6,3),
+    sl_price DECIMAL(20,8),
+    tp_price DECIMAL(20,8),
+
+    -- Metadata
+    bot_name VARCHAR(50) DEFAULT 'botone-v6',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Chi Salva Cosa
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    DATABASE WRITE FLOW                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   SLOW LOOP (ogni N minuti)                                                 │
+│   ├─ save_trade_entry()                                                     │
+│   │   └─ Salva: symbol, direction, entry_price, size, leverage,             │
+│   │            conviction_tier, ai_confidence, ai_reasoning,                │
+│   │            TUTTI gli indicatori (MACD, RSI, ADX, EMA, BB, OBV...)       │
+│   │                                                                         │
+│   └─ Può chiamare close_trade() se AI decide di chiudere                    │
+│                                                                             │
+│   FAST LOOP (ogni 5 secondi)                                                │
+│   ├─ update_mfe_mae()                                                       │
+│   │   └─ Aggiorna: max_price, min_price (per MFE/MAE tracking)              │
+│   │                                                                         │
+│   └─ close_trade()                                                          │
+│       └─ Salva: closed_at, exit_price, pnl_usd, pnl_pct,                    │
+│                mfe_pct, mae_pct, exit_reason, trailing_level_pct,           │
+│                duration_seconds                                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### MFE/MAE Tracking
+
+**MFE** (Max Favorable Excursion) = Massimo profitto raggiunto durante il trade
+**MAE** (Max Adverse Excursion) = Massima perdita raggiunta durante il trade
+
+```
+Esempio LONG:
+- Entry: $100
+- Durante il trade: min=$98, max=$105
+- MFE = +5% (quanto potevi guadagnare)
+- MAE = -2% (quanto hai rischiato)
+
+Esempio SHORT:
+- Entry: $100
+- Durante il trade: min=$95, max=$102
+- MFE = +5% (profitto se chiuso al minimo)
+- MAE = -2% (perdita se chiuso al massimo)
+```
+
+### Exit Reasons
+
+| Reason | Descrizione | Chi lo trigga |
+|--------|-------------|---------------|
+| `SL_HIT` | Stop Loss raggiunto | FAST loop |
+| `TP_HIT` | Take Profit raggiunto | FAST loop |
+| `TRAILING_SL` | Trailing Stop Loss attivato | FAST loop |
+| `AI_CLOSE` | AI ha deciso di chiudere | SLOW loop |
+| `TIMEOUT` | Posizione aperta troppo a lungo | FAST loop |
+| `HEALTH_EXIT` | Health Check ha forzato uscita | FAST loop |
+| `BTC_WATCHDOG` | BTC Watchdog ha protetto | FAST loop |
+| `MANUAL` | Chiusura manuale | Dashboard/API |
+
+### Schema `trades` (Rizzo)
+
+```sql
+CREATE TABLE trades (
+    id BIGSERIAL PRIMARY KEY,
+    trade_uuid UUID NOT NULL UNIQUE,
+
+    -- Identification
+    symbol TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    trading_mode TEXT NOT NULL,              -- MICRO_GAIN / NORMAL
+    status TEXT NOT NULL DEFAULT 'OPEN',
+
+    -- Timestamps
+    opened_at TIMESTAMPTZ NOT NULL,
+    closed_at TIMESTAMPTZ,
+    duration_seconds INTEGER,
+
+    -- Prices & Size
+    entry_price NUMERIC(30,10) NOT NULL,
+    exit_price NUMERIC(30,10),
+    size NUMERIC(30,10) NOT NULL,
+    leverage INTEGER DEFAULT 1,
+    notional_value NUMERIC(30,10),
+    margin_used NUMERIC(30,10),
+
+    -- P&L
+    pnl_percent NUMERIC(10,4),
+    pnl_usd NUMERIC(20,8),
+    net_pnl_usd NUMERIC(20,8),               -- After fees
+    net_pnl_percent NUMERIC(10,4),
+    profitable BOOLEAN,
+
+    -- Fees
+    fee_open NUMERIC(20,8),
+    fee_close NUMERIC(20,8),
+    fee_funding NUMERIC(20,8),
+    fee_total NUMERIC(20,8),
+
+    -- Source
+    open_source TEXT,                        -- MICRO_GAIN_AUTO, AI_DECISION, MANUAL
+    close_reason TEXT,                       -- TP_HIT, SL_HIT, TRAILING_SL, etc.
+
+    -- Indicators at open
+    open_score NUMERIC(10,2),
+    open_rsi NUMERIC(10,4),
+    open_macd NUMERIC(20,8),
+    open_fg INTEGER,                         -- Fear & Greed
+    open_volume_ratio NUMERIC(10,4),
+
+    -- Peak tracking
+    peak_price NUMERIC(30,10),
+    peak_pnl_percent NUMERIC(10,4),
+
+    -- Config used
+    sl_percent_config NUMERIC(10,4),
+    tp_percent_config NUMERIC(10,4),
+    trailing_activation NUMERIC(10,4),
+    trailing_gap NUMERIC(10,4),
+
+    -- Metadata
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+```
+
+### Altre Tabelle Utili
+
+| Tabella | Scopo |
+|---------|-------|
+| `signal_scores` | Storico score calcolati per ogni symbol |
+| `sentinel_logs` | Log delle azioni del Sentinel |
+| `position_tracking` | Stato attuale delle posizioni (usato per coordinare SLOW/FAST) |
+| `ai_prompt_logs` | Log completo prompt/risposta AI per debug |
+| `trade_events` | Ogni singola modifica su un trade (cambio SL, trailing, etc.) |
+| `errors` | Log errori per debugging |
+
+### Query Utili per Analisi
+
+```bash
+# Ultimi 10 trade chiusi con P&L
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT id, symbol, direction,
+       ROUND(pnl_pct::numeric, 2) as pnl_pct,
+       ROUND(mfe_pct::numeric, 2) as mfe_pct,
+       ROUND(mae_pct::numeric, 2) as mae_pct,
+       exit_reason
+FROM botone_trades
+WHERE closed_at IS NOT NULL
+ORDER BY closed_at DESC
+LIMIT 10;"
+
+# Win rate per symbol
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol,
+       COUNT(*) as trades,
+       COUNT(CASE WHEN pnl_usd > 0 THEN 1 END) as wins,
+       ROUND(100.0 * COUNT(CASE WHEN pnl_usd > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+       ROUND(SUM(pnl_usd)::numeric, 2) as total_pnl
+FROM botone_trades
+WHERE closed_at IS NOT NULL
+GROUP BY symbol
+ORDER BY total_pnl DESC;"
+
+# Profitti sprecati (MFE alto ma chiuso in perdita)
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT id, symbol, direction,
+       ROUND(mfe_pct::numeric, 2) as max_profit,
+       ROUND(pnl_pct::numeric, 2) as actual_pnl,
+       exit_reason
+FROM botone_trades
+WHERE closed_at IS NOT NULL
+  AND pnl_usd < 0
+  AND mfe_pct > 1.0
+ORDER BY mfe_pct DESC;"
+
+# Performance per exit_reason
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT exit_reason,
+       COUNT(*) as count,
+       ROUND(100.0 * COUNT(CASE WHEN pnl_usd > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+       ROUND(SUM(pnl_usd)::numeric, 2) as total_pnl
+FROM botone_trades
+WHERE closed_at IS NOT NULL
+GROUP BY exit_reason
+ORDER BY count DESC;"
+```
+
+### Script di Analisi
+
+```bash
+# Analisi completa Botone V6 trades
+python3 analyze_botone_trades.py
+
+# Analisi Rizzo trades (usa tabella `trades`)
+python3 analyze_trades.py
+
+# Nota: eseguire dallo host con DATABASE_URL modificato
+DATABASE_URL='postgresql://tradingbot:BotoneDB2025@localhost:5433/botone_baseline' python3 analyze_botone_trades.py
+```
+
+---
+
 ## Production Bots
 
 ### Rizzo (Production Bot)
