@@ -4,6 +4,7 @@ Stores trades with MFE/MAE, indicators at entry, and AI decision context.
 """
 
 import os
+import json
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
