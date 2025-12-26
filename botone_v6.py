@@ -354,6 +354,8 @@ class BotoneAIManager:
 
                 if self.config.volume_low_action == "VETO":
                     logger.info(f"[RESEARCH] {symbol}: 🚫 VETO: {reason}")
+                    # Salva VETO nel database per analisi
+                    self._save_veto_log(symbol, "VOLUME_VETO", reason, market_data)
                     return "hold", None, f"VETO: {reason}", 0.0, 1, 2, "VETO - no tier applicable"
                 else:  # WARN mode
                     logger.warning(f"[RESEARCH] {symbol}: ⚠️ WARN: {reason} (continuing anyway)")
@@ -366,6 +368,8 @@ class BotoneAIManager:
                 if obv_opposite:
                     reason = f"VETO: OBV divergence - price {price_trend} but OBV {obv_trend} (whale distribution risk)"
                     logger.info(f"[RESEARCH] {symbol}: 🚫 {reason}")
+                    # Salva VETO nel database per analisi
+                    self._save_veto_log(symbol, "OBV_VETO", reason, market_data)
                     return "hold", None, reason, 0.0, 1, 2, "VETO - no tier applicable"
 
             # Build research prompt with tier info
@@ -404,6 +408,37 @@ class BotoneAIManager:
             )
         except Exception as e:
             logger.warning(f"[AI] Failed to save decision log: {e}")
+
+    def _save_veto_log(self, symbol: str, veto_type: str, reason: str, market_data: Dict) -> None:
+        """Save VETO decision to database for debugging (before AI is called)."""
+        if not self.db or not hasattr(self.db, 'save_ai_decision'):
+            return
+        try:
+            # Salva il VETO come se fosse una decisione AI con info speciali
+            veto_decision = {
+                "action": "hold",
+                "veto_type": veto_type,
+                "reason": reason,
+                "market_snapshot": {
+                    "price": market_data.get("price"),
+                    "macd": market_data.get("macd"),
+                    "rsi": market_data.get("rsi"),
+                    "adx": market_data.get("adx"),
+                    "volume_ratio": market_data.get("volume_ratio"),
+                    "obv_trend": market_data.get("obv_trend"),
+                }
+            }
+            self.db.save_ai_decision(
+                symbol=symbol,
+                full_prompt=f"[VETO - AI NOT CALLED] {veto_type}: {reason}",
+                ai_raw_response=f"BLOCKED BY {veto_type}",
+                parsed_decision=veto_decision,
+                model_used="VETO_SYSTEM",
+                duration_ms=0,
+            )
+            logger.debug(f"[AI] Saved {veto_type} for {symbol}")
+        except Exception as e:
+            logger.warning(f"[AI] Failed to save veto log: {e}")
 
     def _build_v6_prompt(
         self,
