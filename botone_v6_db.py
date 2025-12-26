@@ -392,6 +392,43 @@ class TradeDatabase:
             logger.error(f"[DB] Error getting trade: {e}")
             return None
 
+    def save_ai_decision(
+        self,
+        symbol: str,
+        full_prompt: str,
+        ai_raw_response: str,
+        parsed_decision: dict,
+        model_used: str,
+        duration_ms: int,
+    ) -> Optional[int]:
+        """Save AI decision to ai_prompt_logs for debugging."""
+        if not self.enabled:
+            return None
+
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO ai_prompt_logs (
+                        symbol, full_prompt, ai_raw_response,
+                        parsed_decision, model_used, duration_ms
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    symbol,
+                    full_prompt,
+                    ai_raw_response,
+                    json.dumps(parsed_decision) if parsed_decision else '{}',
+                    model_used,
+                    duration_ms,
+                ))
+                log_id = cur.fetchone()[0]
+                self.conn.commit()
+                logger.debug(f"[DB] AI decision saved for {symbol} (log_id={log_id})")
+                return log_id
+        except Exception as e:
+            logger.error(f"[DB] Error saving AI decision: {e}")
+            return None
+
     def close(self):
         """Close database connection."""
         if self.conn:
