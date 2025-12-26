@@ -2881,6 +2881,11 @@ class BotoneV6:
 
             result = self.trader.exchange.market_close(symbol)
 
+            # Gestisce il caso in cui market_close restituisce None
+            if result is None:
+                logger.error(f"[TRADE] ❌ market_close returned None for {symbol}")
+                return
+
             if result.get("status") == "ok" or "response" in result:
                 # Calculate P&L
                 pnl_usd = 0.0
