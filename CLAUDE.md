@@ -1820,4 +1820,198 @@ Esempio con SL=10% e AI_LOSS_THRESHOLD_PCT=50:
 
 ---
 
+## HEALTH Check System (Smart Exit)
+
+### Overview
+
+Il sistema HEALTH Check monitora continuamente le posizioni aperte e prende azioni protettive basate su uno **score di salute** calcolato dagli indicatori di mercato.
+
+### Architettura
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         HEALTH CHECK FLOW                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   FAST LOOP (ogni 5-30 secondi)                                             │
+│   │                                                                         │
+│   ├─→ Per ogni posizione aperta:                                            │
+│   │   │                                                                     │
+│   │   ├─→ 1. GRACE PERIOD CHECK                                             │
+│   │   │   └─ Se posizione < HEALTH_GRACE_PERIOD_MINUTES → SKIP              │
+│   │   │                                                                     │
+│   │   ├─→ 2. CALCOLA SCORE da indicatori                                    │
+│   │   │   ├─ EMA Stack: favorevole/contrario                                │
+│   │   │   ├─ RSI: favorevole/contrario                                      │
+│   │   │   ├─ MACD: favorevole/contrario                                     │
+│   │   │   ├─ Volume: buono/basso                                            │
+│   │   │   ├─ Bollinger: favorevole/squeeze                                  │
+│   │   │   ├─ OBV: allineato/contrario                                       │
+│   │   │   └─ Time Decay: penalità se in perdita da ore                      │
+│   │   │                                                                     │
+│   │   └─→ 3. AZIONE basata su score                                         │
+│   │       ├─ HEALTHY (>= 2): Nessuna azione                                 │
+│   │       ├─ CAUTION (0-1): Stringi SL se in profitto                       │
+│   │       ├─ DANGER (-3 a -1): SL a breakeven                               │
+│   │       └─ EMERGENCY (< -4): Chiudi se in profitto                        │
+│   │                                                                         │
+│   └─→ Log: [HEALTH] BTC: Score 3 ✅ HEALTHY | EMA:+2 | RSI:0 | MACD:+1...   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Grace Period
+
+**Problema risolto**: L'AI apriva una posizione e HEALTH la chiudeva immediatamente perché gli indicatori davano score basso.
+
+**Soluzione**: `HEALTH_GRACE_PERIOD_MINUTES` (default: 5 minuti) impedisce a HEALTH di intervenire su posizioni troppo nuove, dando tempo alla decisione AI di "giocarsi".
+
+```python
+# Se posizione ha meno di 5 minuti, HEALTH non interviene
+if position_age_minutes < config.health_grace_period_minutes:
+    logger.info(f"[HEALTH] {symbol}: ⏳ Grace period - skipping")
+    continue
+```
+
+### Score Calculation (Pesi Configurabili)
+
+Ogni indicatore contribuisce allo score con pesi configurabili via `.env`:
+
+| Indicatore | Favorevole | Neutro | Contrario | Env Variable |
+|------------|------------|--------|-----------|--------------|
+| **EMA Stack** | +2 | 0 | -2 | `HEALTH_WEIGHT_EMA_POS/NEG` |
+| **RSI** | +1 | 0 | -1 | `HEALTH_WEIGHT_RSI_POS/NEG` |
+| **MACD** | +1 | 0 | -1 | `HEALTH_WEIGHT_MACD_POS/NEG` |
+| **Volume** | +1 | 0 | -1 | `HEALTH_WEIGHT_VOL_POS/NEG` |
+| **Bollinger** | +1 | 0 | -1 | `HEALTH_WEIGHT_BB_POS/NEG` |
+| **BB Squeeze** | - | - | -1 | `HEALTH_WEIGHT_BB_SQUEEZE` |
+| **OBV** | +1 | 0 | -1 | `HEALTH_WEIGHT_OBV_POS/NEG` |
+| **Time (loss)** | - | 0 | -1/-2/-3 | `HEALTH_WEIGHT_TIME_*` |
+| **Resilience** | +1 | - | - | `HEALTH_WEIGHT_RESILIENCE` |
+
+**Range Score**: da **-9** (tutto contro) a **+9** (tutto favorevole)
+
+### Condizioni Indicatori
+
+| Indicatore | Favorevole (LONG) | Contrario (LONG) |
+|------------|-------------------|------------------|
+| EMA Stack | "bullish" | "bearish" |
+| RSI | > 50 | < 40 |
+| MACD | > +0.1 | < -0.1 |
+| Volume | > 0.8x | < 0.3x |
+| Bollinger | UPPER zone | LOWER zone |
+| OBV | RISING | FALLING |
+
+*Per SHORT, le condizioni sono invertite.*
+
+### Time Decay
+
+Penalità progressiva per posizioni in **perdita** da troppo tempo:
+
+| Ore Aperta | Penalità | Env Variable |
+|------------|----------|--------------|
+| >= 4h | -1 | `HEALTH_TIME_DECAY_START` |
+| >= 8h | -2 | `HEALTH_TIME_DECAY_MEDIUM` |
+| >= 12h | -3 | `HEALTH_TIME_DECAY_SEVERE` |
+
+**Nota**: Il time decay si applica SOLO se P&L <= 0. Se in profitto, nessuna penalità (anzi, bonus resilienza +1 se profit > 2%).
+
+### Thresholds e Azioni
+
+| Score | Status | Azione | Condizione |
+|-------|--------|--------|------------|
+| >= 2 | ✅ HEALTHY | Nessuna | - |
+| 0-1 | ⚠️ CAUTION | Stringi SL | P&L >= 0.5% |
+| -3 a -1 | 🔶 DANGER | SL a breakeven | P&L >= 0% |
+| < -4 | 🔴 EMERGENCY | Chiudi posizione | P&L >= 0.5% |
+
+### Configurazione Completa (.env)
+
+```bash
+# ═══════════════════════════════════════════════════════════════════════════
+# HEALTH CHECK SYSTEM - Smart Exit
+# ═══════════════════════════════════════════════════════════════════════════
+
+# --- Master Switch ---
+HEALTH_CHECK_ENABLED=true
+HEALTH_CHECK_INTERVAL=30              # Secondi tra check
+
+# --- Grace Period (IMPORTANTE!) ---
+HEALTH_GRACE_PERIOD_MINUTES=5         # Minuti prima che HEALTH possa intervenire
+
+# --- Score Thresholds ---
+HEALTH_SCORE_HEALTHY=2                # >= questo = tutto ok
+HEALTH_SCORE_CAUTION=0                # >= questo = stringi SL
+HEALTH_SCORE_DANGER=-3                # >= questo = SL a breakeven
+HEALTH_SCORE_EMERGENCY=-4             # < questo = chiudi
+
+# --- Profit Thresholds per Azioni ---
+HEALTH_MIN_PROFIT_CAUTION=0.5         # Min P&L% per azione CAUTION
+HEALTH_MIN_PROFIT_DANGER=0.0          # Min P&L% per azione DANGER
+HEALTH_MIN_PROFIT_EMERGENCY=0.5       # Min P&L% per azione EMERGENCY
+
+# --- Time Decay (ore) ---
+HEALTH_TIME_DECAY_START=4             # Ore prima di penalità -1
+HEALTH_TIME_DECAY_MEDIUM=8            # Ore per penalità -2
+HEALTH_TIME_DECAY_SEVERE=12           # Ore per penalità -3
+
+# --- Pesi Indicatori (tutti configurabili) ---
+HEALTH_WEIGHT_EMA_POS=2
+HEALTH_WEIGHT_EMA_NEG=-2
+HEALTH_WEIGHT_RSI_POS=1
+HEALTH_WEIGHT_RSI_NEG=-1
+HEALTH_WEIGHT_MACD_POS=1
+HEALTH_WEIGHT_MACD_NEG=-1
+HEALTH_WEIGHT_VOL_POS=1
+HEALTH_WEIGHT_VOL_NEG=-1
+HEALTH_WEIGHT_BB_POS=1
+HEALTH_WEIGHT_BB_NEG=-1
+HEALTH_WEIGHT_BB_SQUEEZE=-1
+HEALTH_WEIGHT_OBV_POS=1
+HEALTH_WEIGHT_OBV_NEG=-1
+HEALTH_WEIGHT_TIME_LIGHT=-1
+HEALTH_WEIGHT_TIME_MEDIUM=-2
+HEALTH_WEIGHT_TIME_SEVERE=-3
+HEALTH_WEIGHT_RESILIENCE=1
+```
+
+### Esempio Log
+
+```
+[HEALTH] BTC: ⏳ Grace period (2.3m < 5.0m) - skipping
+[HEALTH] ETH: Score 4 ✅ HEALTHY | EMA:+2 | RSI:+1 | MACD:+1 | VOL:0 | BB:0 | OBV:0 | TIME:0(0.5h)
+[HEALTH] SOL: Score 1 ⚠️ CAUTION | EMA:+2 | RSI:-1 | MACD:0 | VOL:0 | BB:0 | OBV:0 | TIME:0(1.2h)
+[HEALTH] SOL: Tightening SL (P&L: +1.25%)
+[HEALTH] BTC: Score -2 🔶 DANGER | EMA:-2 | RSI:-1 | MACD:-1 | VOL:+1 | BB:0 | OBV:+1 | TIME:0(3.5h)
+[HEALTH] BTC: Setting SL to breakeven (P&L: +0.35%)
+```
+
+### Bilanciamento Pesi (Storico)
+
+**Problema originale**: I pesi erano asimmetrici e penalizzavano troppo:
+- MACD contrario: -2 (ma favorevole solo +1)
+- Bollinger squeeze: -2
+- Threshold HEALTHY: 4 (quasi irraggiungibile)
+
+**Soluzione applicata** (Dicembre 2025):
+- Tutti i pesi resi simmetrici (+1/-1)
+- EMA rimane +2/-2 (indicatore principale)
+- Threshold HEALTHY abbassato da 4 a 2
+- Tutti i pesi configurabili via `.env`
+
+**Range score dopo fix**:
+- Max positivo: +9 (era +8)
+- Max negativo: -9 (era -12)
+- Sistema bilanciato
+
+### File Reference
+
+| File | Funzione |
+|------|----------|
+| `botone_v6.py` | `_check_position_health()` - Loop principale |
+| `botone_v6.py` | `_calculate_position_health()` - Calcolo score |
+| `botone_v6.py` | `BotoneV6Config` (linee 150-186) - Configurazione |
+
+---
+
 *Last updated: December 2025*
