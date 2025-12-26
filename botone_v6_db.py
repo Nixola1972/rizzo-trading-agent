@@ -150,6 +150,25 @@ class TradeDatabase:
                 CREATE INDEX IF NOT EXISTS idx_botone_trades_opened_at ON botone_trades(opened_at);
                 CREATE INDEX IF NOT EXISTS idx_botone_trades_closed_at ON botone_trades(closed_at);
             """)
+
+            # AI decision logs table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ai_prompt_logs (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    symbol TEXT,
+                    full_prompt TEXT,
+                    ai_raw_response TEXT,
+                    parsed_decision JSONB,
+                    model_used TEXT,
+                    duration_ms INTEGER
+                );
+
+                -- Index for common queries
+                CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_symbol ON ai_prompt_logs(symbol);
+                CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_created_at ON ai_prompt_logs(created_at);
+                CREATE INDEX IF NOT EXISTS idx_ai_prompt_logs_model ON ai_prompt_logs(model_used);
+            """)
             logger.info("Database tables created/verified")
 
     def save_trade_entry(
