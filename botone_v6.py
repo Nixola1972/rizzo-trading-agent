@@ -152,7 +152,7 @@ class BotoneV6Config:
         self.health_check_interval = int(os.getenv("HEALTH_CHECK_INTERVAL", "30"))  # Secondi tra check
         self.health_grace_period_minutes = float(os.getenv("HEALTH_GRACE_PERIOD_MINUTES", "5"))  # Minuti prima che HEALTH possa intervenire
         # Score thresholds
-        self.health_score_healthy = int(os.getenv("HEALTH_SCORE_HEALTHY", "4"))      # >= questo = tutto ok
+        self.health_score_healthy = int(os.getenv("HEALTH_SCORE_HEALTHY", "2"))      # >= questo = tutto ok (era 4, troppo severo)
         self.health_score_caution = int(os.getenv("HEALTH_SCORE_CAUTION", "0"))      # >= questo = stringi SL
         self.health_score_danger = int(os.getenv("HEALTH_SCORE_DANGER", "-3"))       # >= questo = SL a breakeven
         self.health_score_emergency = int(os.getenv("HEALTH_SCORE_EMERGENCY", "-4")) # < questo = chiudi
@@ -164,6 +164,26 @@ class BotoneV6Config:
         self.health_time_decay_start = float(os.getenv("HEALTH_TIME_DECAY_START", "4"))   # Ore prima di penalità
         self.health_time_decay_medium = float(os.getenv("HEALTH_TIME_DECAY_MEDIUM", "8")) # Ore per penalità media
         self.health_time_decay_severe = float(os.getenv("HEALTH_TIME_DECAY_SEVERE", "12")) # Ore per penalità grave
+
+        # Health Score Weights (configurable via env)
+        # Positive = when indicator favors position, Negative = when against
+        self.health_weight_ema_pos = int(os.getenv("HEALTH_WEIGHT_EMA_POS", "2"))
+        self.health_weight_ema_neg = int(os.getenv("HEALTH_WEIGHT_EMA_NEG", "-2"))
+        self.health_weight_rsi_pos = int(os.getenv("HEALTH_WEIGHT_RSI_POS", "1"))
+        self.health_weight_rsi_neg = int(os.getenv("HEALTH_WEIGHT_RSI_NEG", "-1"))
+        self.health_weight_macd_pos = int(os.getenv("HEALTH_WEIGHT_MACD_POS", "1"))
+        self.health_weight_macd_neg = int(os.getenv("HEALTH_WEIGHT_MACD_NEG", "-1"))  # Era -2, ora simmetrico
+        self.health_weight_vol_pos = int(os.getenv("HEALTH_WEIGHT_VOL_POS", "1"))
+        self.health_weight_vol_neg = int(os.getenv("HEALTH_WEIGHT_VOL_NEG", "-1"))
+        self.health_weight_bb_pos = int(os.getenv("HEALTH_WEIGHT_BB_POS", "1"))
+        self.health_weight_bb_neg = int(os.getenv("HEALTH_WEIGHT_BB_NEG", "-1"))  # Era -2, ora simmetrico
+        self.health_weight_bb_squeeze = int(os.getenv("HEALTH_WEIGHT_BB_SQUEEZE", "-1"))  # Era -2
+        self.health_weight_obv_pos = int(os.getenv("HEALTH_WEIGHT_OBV_POS", "1"))
+        self.health_weight_obv_neg = int(os.getenv("HEALTH_WEIGHT_OBV_NEG", "-1"))
+        self.health_weight_time_light = int(os.getenv("HEALTH_WEIGHT_TIME_LIGHT", "-1"))
+        self.health_weight_time_medium = int(os.getenv("HEALTH_WEIGHT_TIME_MEDIUM", "-2"))
+        self.health_weight_time_severe = int(os.getenv("HEALTH_WEIGHT_TIME_SEVERE", "-3"))
+        self.health_weight_resilience = int(os.getenv("HEALTH_WEIGHT_RESILIENCE", "1"))
 
         # Leverage limits per style (configurable via env) - both MIN and MAX
         # MIN = minimum for trailing stops to work, MAX = maximum allowed
@@ -2093,149 +2113,150 @@ class BotoneV6:
         score = 0
         breakdown = []
         is_long = position.direction == TradeDirection.LONG
+        cfg = self.config  # Shorthand
 
-        # 1. EMA Stack (weight: high)
+        # 1. EMA Stack (configurable weights)
         ema_stack = market_data.get('ema_stack', '')
         if 'bullish' in ema_stack.lower():
             if is_long:
-                score += 2
-                breakdown.append("EMA:+2")
+                score += cfg.health_weight_ema_pos
+                breakdown.append(f"EMA:{cfg.health_weight_ema_pos:+d}")
             else:
-                score -= 2
-                breakdown.append("EMA:-2")
+                score += cfg.health_weight_ema_neg
+                breakdown.append(f"EMA:{cfg.health_weight_ema_neg:+d}")
         elif 'bearish' in ema_stack.lower():
             if is_long:
-                score -= 2
-                breakdown.append("EMA:-2")
+                score += cfg.health_weight_ema_neg
+                breakdown.append(f"EMA:{cfg.health_weight_ema_neg:+d}")
             else:
-                score += 2
-                breakdown.append("EMA:+2")
+                score += cfg.health_weight_ema_pos
+                breakdown.append(f"EMA:{cfg.health_weight_ema_pos:+d}")
         else:
             breakdown.append("EMA:0")
 
-        # 2. RSI
+        # 2. RSI (configurable weights)
         rsi = market_data.get('rsi', 50)
         if is_long:
             if rsi > 50:
-                score += 1
-                breakdown.append("RSI:+1")
+                score += cfg.health_weight_rsi_pos
+                breakdown.append(f"RSI:{cfg.health_weight_rsi_pos:+d}")
             elif rsi < 40:
-                score -= 1
-                breakdown.append("RSI:-1")
+                score += cfg.health_weight_rsi_neg
+                breakdown.append(f"RSI:{cfg.health_weight_rsi_neg:+d}")
             else:
                 breakdown.append("RSI:0")
         else:  # SHORT
             if rsi < 50:
-                score += 1
-                breakdown.append("RSI:+1")
+                score += cfg.health_weight_rsi_pos
+                breakdown.append(f"RSI:{cfg.health_weight_rsi_pos:+d}")
             elif rsi > 60:
-                score -= 1
-                breakdown.append("RSI:-1")
+                score += cfg.health_weight_rsi_neg
+                breakdown.append(f"RSI:{cfg.health_weight_rsi_neg:+d}")
             else:
                 breakdown.append("RSI:0")
 
-        # 3. MACD
+        # 3. MACD (configurable weights - now symmetric by default)
         macd = market_data.get('macd', 0)
         if is_long:
             if macd > 0.1:
-                score += 1
-                breakdown.append("MACD:+1")
+                score += cfg.health_weight_macd_pos
+                breakdown.append(f"MACD:{cfg.health_weight_macd_pos:+d}")
             elif macd < -0.1:
-                score -= 2
-                breakdown.append("MACD:-2")
+                score += cfg.health_weight_macd_neg
+                breakdown.append(f"MACD:{cfg.health_weight_macd_neg:+d}")
             else:
                 breakdown.append("MACD:0")
         else:  # SHORT
             if macd < -0.1:
-                score += 1
-                breakdown.append("MACD:+1")
+                score += cfg.health_weight_macd_pos
+                breakdown.append(f"MACD:{cfg.health_weight_macd_pos:+d}")
             elif macd > 0.1:
-                score -= 2
-                breakdown.append("MACD:-2")
+                score += cfg.health_weight_macd_neg
+                breakdown.append(f"MACD:{cfg.health_weight_macd_neg:+d}")
             else:
                 breakdown.append("MACD:0")
 
-        # 4. Volume Ratio
+        # 4. Volume Ratio (configurable weights)
         vol_ratio = market_data.get('volume_ratio', 1.0)
         if vol_ratio > 0.8:
-            score += 1
-            breakdown.append("VOL:+1")
+            score += cfg.health_weight_vol_pos
+            breakdown.append(f"VOL:{cfg.health_weight_vol_pos:+d}")
         elif vol_ratio < 0.3:
-            score -= 1
-            breakdown.append("VOL:-1")
+            score += cfg.health_weight_vol_neg
+            breakdown.append(f"VOL:{cfg.health_weight_vol_neg:+d}")
         else:
             breakdown.append("VOL:0")
 
-        # 5. Bollinger Bands
+        # 5. Bollinger Bands (configurable weights)
         bb_pos = market_data.get('bb_position', 'MIDDLE')
         bb_squeeze = market_data.get('bb_squeeze', False)
         if is_long:
             if 'UPPER' in bb_pos:
-                score += 1
-                breakdown.append("BB:+1")
+                score += cfg.health_weight_bb_pos
+                breakdown.append(f"BB:{cfg.health_weight_bb_pos:+d}")
             elif 'LOWER' in bb_pos and bb_squeeze:
-                score -= 2
-                breakdown.append("BB:-2(squeeze)")
+                score += cfg.health_weight_bb_squeeze
+                breakdown.append(f"BB:{cfg.health_weight_bb_squeeze:+d}(sq)")
             elif 'LOWER' in bb_pos:
-                score -= 1
-                breakdown.append("BB:-1")
+                score += cfg.health_weight_bb_neg
+                breakdown.append(f"BB:{cfg.health_weight_bb_neg:+d}")
             else:
                 breakdown.append("BB:0")
         else:  # SHORT
             if 'LOWER' in bb_pos:
-                score += 1
-                breakdown.append("BB:+1")
+                score += cfg.health_weight_bb_pos
+                breakdown.append(f"BB:{cfg.health_weight_bb_pos:+d}")
             elif 'UPPER' in bb_pos and bb_squeeze:
-                score -= 2
-                breakdown.append("BB:-2(squeeze)")
+                score += cfg.health_weight_bb_squeeze
+                breakdown.append(f"BB:{cfg.health_weight_bb_squeeze:+d}(sq)")
             elif 'UPPER' in bb_pos:
-                score -= 1
-                breakdown.append("BB:-1")
+                score += cfg.health_weight_bb_neg
+                breakdown.append(f"BB:{cfg.health_weight_bb_neg:+d}")
             else:
                 breakdown.append("BB:0")
 
-        # 6. OBV Trend
+        # 6. OBV Trend (configurable weights)
         obv = market_data.get('obv_trend', 'FLAT')
         if isinstance(obv, str):
             obv = obv.upper()
         if is_long:
             if obv == 'RISING':
-                score += 1
-                breakdown.append("OBV:+1")
+                score += cfg.health_weight_obv_pos
+                breakdown.append(f"OBV:{cfg.health_weight_obv_pos:+d}")
             elif obv == 'FALLING':
-                score -= 1
-                breakdown.append("OBV:-1")
+                score += cfg.health_weight_obv_neg
+                breakdown.append(f"OBV:{cfg.health_weight_obv_neg:+d}")
             else:
                 breakdown.append("OBV:0")
         else:  # SHORT
             if obv == 'FALLING':
-                score += 1
-                breakdown.append("OBV:+1")
+                score += cfg.health_weight_obv_pos
+                breakdown.append(f"OBV:{cfg.health_weight_obv_pos:+d}")
             elif obv == 'RISING':
-                score -= 1
-                breakdown.append("OBV:-1")
+                score += cfg.health_weight_obv_neg
+                breakdown.append(f"OBV:{cfg.health_weight_obv_neg:+d}")
             else:
                 breakdown.append("OBV:0")
 
-        # 7. Time Decay (only if NOT in profit)
+        # 7. Time Decay (only if NOT in profit, configurable weights)
         hours_open = (datetime.now() - position.opened_at).total_seconds() / 3600
         if pnl_pct <= 0:
-            if hours_open >= self.config.health_time_decay_severe:
-                score -= 3
-                breakdown.append(f"TIME:-3({hours_open:.1f}h)")
-            elif hours_open >= self.config.health_time_decay_medium:
-                score -= 2
-                breakdown.append(f"TIME:-2({hours_open:.1f}h)")
-            elif hours_open >= self.config.health_time_decay_start:
-                score -= 1
-                breakdown.append(f"TIME:-1({hours_open:.1f}h)")
+            if hours_open >= cfg.health_time_decay_severe:
+                score += cfg.health_weight_time_severe
+                breakdown.append(f"TIME:{cfg.health_weight_time_severe:+d}({hours_open:.1f}h)")
+            elif hours_open >= cfg.health_time_decay_medium:
+                score += cfg.health_weight_time_medium
+                breakdown.append(f"TIME:{cfg.health_weight_time_medium:+d}({hours_open:.1f}h)")
+            elif hours_open >= cfg.health_time_decay_start:
+                score += cfg.health_weight_time_light
+                breakdown.append(f"TIME:{cfg.health_weight_time_light:+d}({hours_open:.1f}h)")
             else:
                 breakdown.append(f"TIME:0({hours_open:.1f}h)")
         else:
             # 8. Resilience Bonus (in profit despite time)
-            if pnl_pct > 2 and hours_open > self.config.health_time_decay_start:
-                score += 1
-                breakdown.append(f"RESILIENT:+1")
+            if pnl_pct > 2 and hours_open > cfg.health_time_decay_start:
+                score += cfg.health_weight_resilience
+                breakdown.append(f"RESILIENT:{cfg.health_weight_resilience:+d}")
             else:
                 breakdown.append(f"TIME:0({hours_open:.1f}h)")
 
