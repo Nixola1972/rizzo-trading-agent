@@ -1586,6 +1586,24 @@ class BotoneV6:
                         sl_price = entry_price * (1 + self.config.stop_loss_pct / 100 / actual_leverage)
                         tp_price = entry_price * (1 - self.config.take_profit_pct / 100 / actual_leverage)
 
+                    # === RECUPERA trade_id DAL DATABASE ===
+                    # Questo è critico per poter chiudere correttamente il trade nel DB
+                    trade_id = None
+                    max_price = entry_price
+                    min_price = entry_price
+                    opened_at = datetime.now()
+
+                    if self.db and self.db.enabled:
+                        db_trade = self.db.get_trade_by_symbol(symbol)
+                        if db_trade:
+                            trade_id = db_trade.get('id')
+                            max_price = float(db_trade.get('max_price', entry_price) or entry_price)
+                            min_price = float(db_trade.get('min_price', entry_price) or entry_price)
+                            opened_at = db_trade.get('opened_at', datetime.now())
+                            logger.info(f"[SYNC] ✅ {symbol}: Recuperato trade_id={trade_id} dal DB (MFE/MAE: max={max_price:.2f}, min={min_price:.2f})")
+                        else:
+                            logger.warning(f"[SYNC] ⚠️ {symbol}: Nessun trade aperto trovato nel DB - il trade non sarà tracciato correttamente!")
+
                     position = Position(
                         id=f"{symbol}_{int(time.time())}",
                         symbol=symbol,
@@ -1596,14 +1614,46 @@ class BotoneV6:
                         stop_loss_price=sl_price,
                         take_profit_price=tp_price,
                         current_sl_level=-self.config.stop_loss_pct,
-                        opened_at=datetime.now(),
+                        opened_at=opened_at,
+                        trade_id=trade_id,  # Recuperato dal DB!
+                        max_price=max_price,  # Recuperato dal DB per MFE
+                        min_price=min_price,  # Recuperato dal DB per MAE
                     )
                     self.position_tracker.add_position(position)
-                    logger.info(f"Synced position from exchange: {symbol} {direction.value}")
+                    logger.info(f"Synced position from exchange: {symbol} {direction.value} (trade_id={trade_id})")
 
             # Remove positions that no longer exist on exchange
+            # E CHIUDI IL TRADE NEL DATABASE!
             for symbol in list(self.position_tracker.positions.keys()):
                 if symbol not in exchange_symbols:
+                    # === CHIUDI IL TRADE NEL DATABASE ===
+                    position = self.position_tracker.get_position(symbol)
+                    if position and position.trade_id and self.db and self.db.enabled:
+                        try:
+                            # Recupera ultimo prezzo per calcolo P&L
+                            current_price = self.market_data.get_price(symbol)
+
+                            # Calcola P&L
+                            if position.direction == TradeDirection.LONG:
+                                pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                            else:
+                                pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100 * position.leverage
+                            pnl_usd = (position.size * position.entry_price) * (pnl_pct / 100)
+
+                            self.db.close_trade(
+                                trade_id=position.trade_id,
+                                exit_price=current_price,
+                                pnl_usd=pnl_usd,
+                                pnl_pct=pnl_pct,
+                                exit_reason="SYNC_CLOSED",  # Chiuso fuori dal bot (manualmente o altro)
+                                trailing_level_pct=None,
+                            )
+                            logger.info(f"[SYNC] ✅ Trade DB chiuso per {symbol} (trade_id={position.trade_id}): P&L {pnl_pct:+.2f}%")
+                        except Exception as e:
+                            logger.error(f"[SYNC] ❌ Errore chiusura trade DB per {symbol}: {e}")
+                    elif position and not position.trade_id:
+                        logger.warning(f"[SYNC] ⚠️ {symbol}: Posizione chiusa ma senza trade_id, DB non aggiornato")
+
                     self.position_tracker.remove_position(symbol)
                     logger.info(f"Position closed on exchange: {symbol}")
 
@@ -2742,6 +2792,10 @@ class BotoneV6:
                         prompt_style=self.config.prompt_style,
                         indicators=indicators,
                     )
+                    if trade_id:
+                        logger.info(f"[DB] ✅ Trade salvato con trade_id={trade_id}")
+                    else:
+                        logger.error(f"[DB] ❌ save_trade_entry ha restituito None! Il trade non sarà tracciato nel DB")
 
                 # Track position
                 position = Position(
