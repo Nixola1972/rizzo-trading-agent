@@ -241,7 +241,33 @@ class HyperLiquidTrader:
 
         if op == "close":
             print(f"[HyperLiquidTrader] Market CLOSE per {symbol}")
-            return self.exchange.market_close(symbol)
+
+            # Verifica che esista una posizione aperta per questo simbolo
+            user_state = self.info.user_state(self.account_address)
+            asset_positions = user_state.get("assetPositions", [])
+
+            position_found = False
+            for p in asset_positions:
+                pos = p.get("position", {}) if isinstance(p, dict) else {}
+                coin = pos.get("coin", "")
+                size = float(pos.get("szi", 0))
+                if coin == symbol and size != 0:
+                    position_found = True
+                    break
+
+            if not position_found:
+                print(f"[HyperLiquidTrader] ⚠️ Nessuna posizione aperta per {symbol}, skip close")
+                return {"status": "skipped", "message": f"No open position for {symbol}"}
+
+            try:
+                result = self.exchange.market_close(symbol)
+                # Gestisce il caso in cui market_close restituisce None
+                if result is None:
+                    return {"status": "error", "message": "market_close returned None"}
+                return result
+            except Exception as e:
+                print(f"[HyperLiquidTrader] ❌ Errore durante market_close: {e}")
+                return {"status": "error", "message": str(e)}
 
         # OPEN --------------------------------------------------------
         # Prima di aprire la posizione, imposta la leva desiderata
