@@ -311,9 +311,13 @@ class BotoneV6Config:
 class BotoneAIManager:
     """AI Manager for Botone V6 - uses same prompts as Arena V6."""
 
-    def __init__(self, config: BotoneV6Config):
+    def __init__(self, config: BotoneV6Config, db=None):
         self.config = config
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
+        self.db = db  # Database per logging decisioni AI
+        self._last_prompt = ""  # Per logging
+        self._last_raw_response = ""  # Per logging
+        self._last_duration_ms = 0  # Per logging
 
     def get_decision(
         self,
@@ -376,9 +380,30 @@ class BotoneAIManager:
 
         response = self._call_ai(prompt)
         if not response:
+            # Salva anche i fallimenti nel DB per debug
+            self._save_decision_log(symbol, response)
             return "hold", None, "AI call failed", 0.0, 1, 2, "AI call failed - default tier"
 
+        # Salva la decisione nel database per analisi
+        self._save_decision_log(symbol, response)
+
         return self._parse_response(response)
+
+    def _save_decision_log(self, symbol: str, parsed_response: Optional[Dict]) -> None:
+        """Save AI decision to database for debugging."""
+        if not self.db or not hasattr(self.db, 'save_ai_decision'):
+            return
+        try:
+            self.db.save_ai_decision(
+                symbol=symbol,
+                full_prompt=self._last_prompt[:10000] if self._last_prompt else "",  # Limita lunghezza
+                ai_raw_response=self._last_raw_response[:5000] if self._last_raw_response else "",
+                parsed_decision=parsed_response or {},
+                model_used=self.config.ai_model,
+                duration_ms=self._last_duration_ms,
+            )
+        except Exception as e:
+            logger.warning(f"[AI] Failed to save decision log: {e}")
 
     def _build_v6_prompt(
         self,
@@ -766,6 +791,14 @@ OUTPUT FORMAT (JSON):
 
     def _call_ai(self, prompt: str, retry_without_reasoning: bool = True) -> Optional[Dict[str, Any]]:
         """Call OpenRouter API."""
+        import time as time_module
+        start_time = time_module.time()
+
+        # Salva prompt per logging
+        self._last_prompt = prompt
+        self._last_raw_response = ""
+        self._last_duration_ms = 0
+
         headers = {
             "Authorization": f"Bearer {self.config.openrouter_api_key}",
             "Content-Type": "application/json",
@@ -826,6 +859,10 @@ OUTPUT FORMAT (JSON):
             if result is None and reasoning:
                 logger.debug("Trying to extract JSON from reasoning field...")
                 result = self._extract_json(reasoning)
+
+            # Salva dati per logging
+            self._last_raw_response = content or reasoning or ""
+            self._last_duration_ms = int((time_module.time() - start_time) * 1000)
 
             return result
 
@@ -1412,7 +1449,21 @@ class BotoneV6:
 
     def __init__(self):
         self.config = BotoneV6Config()
-        self.ai_manager = BotoneAIManager(self.config)
+
+        # Initialize database FIRST (needed by ai_manager for logging)
+        self.db = None
+        if DB_AVAILABLE:
+            try:
+                self.db = TradeDatabase()
+                if self.db.enabled:
+                    logger.info("📊 Database trade tracking: ENABLED")
+                else:
+                    logger.info("📊 Database trade tracking: DISABLED (connection failed)")
+            except Exception as e:
+                logger.warning(f"📊 Database trade tracking: DISABLED ({e})")
+
+        # Now initialize ai_manager WITH database reference for decision logging
+        self.ai_manager = BotoneAIManager(self.config, db=self.db)
         self.market_data = MarketDataProvider(self.config)
         self.trailing_sl = TrailingSLManager(self.config)
         self.position_tracker = PositionTracker()
@@ -1424,18 +1475,6 @@ class BotoneV6:
             account_address=self.config.hl_account_address,
             testnet=self.config.hl_testnet,
         )
-
-        # Initialize database for trade tracking (optional)
-        self.db = None
-        if DB_AVAILABLE:
-            try:
-                self.db = TradeDatabase()
-                if self.db.enabled:
-                    logger.info("📊 Database trade tracking: ENABLED")
-                else:
-                    logger.info("📊 Database trade tracking: DISABLED (connection failed)")
-            except Exception as e:
-                logger.warning(f"📊 Database trade tracking: DISABLED ({e})")
 
         # Last AI check times
         self._last_ai_check: Dict[str, datetime] = {}
