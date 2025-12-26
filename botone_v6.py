@@ -150,6 +150,7 @@ class BotoneV6Config:
         # Smart Exit System - Health Check per posizioni
         self.health_check_enabled = os.getenv("HEALTH_CHECK_ENABLED", "true").lower() == "true"
         self.health_check_interval = int(os.getenv("HEALTH_CHECK_INTERVAL", "30"))  # Secondi tra check
+        self.health_grace_period_minutes = float(os.getenv("HEALTH_GRACE_PERIOD_MINUTES", "5"))  # Minuti prima che HEALTH possa intervenire
         # Score thresholds
         self.health_score_healthy = int(os.getenv("HEALTH_SCORE_HEALTHY", "4"))      # >= questo = tutto ok
         self.health_score_caution = int(os.getenv("HEALTH_SCORE_CAUTION", "0"))      # >= questo = stringi SL
@@ -2252,6 +2253,13 @@ class BotoneV6:
         """
         try:
             for position in positions:
+                # === GRACE PERIOD CHECK ===
+                # Skip positions that are too new - give AI decision time to prove itself
+                position_age_minutes = (datetime.now() - position.opened_at).total_seconds() / 60
+                if position_age_minutes < self.config.health_grace_period_minutes:
+                    logger.info(f"[HEALTH] {position.symbol}: ⏳ Grace period ({position_age_minutes:.1f}m < {self.config.health_grace_period_minutes}m) - skipping")
+                    continue
+
                 # Get LIVE price for accurate P&L
                 current_price = self.market_data.get_price(position.symbol)
                 if current_price <= 0:
