@@ -704,7 +704,8 @@ def load_hyperliquid_data(
 def main():
     """Main training loop."""
     parser = argparse.ArgumentParser(description='AlphaTrader Trainer')
-    parser.add_argument('--episodes', type=int, default=1000, help='Number of episodes')
+    parser.add_argument('--episodes', type=int, default=1000, help='Target total episodes (epochs × data)')
+    parser.add_argument('--epochs', type=int, default=None, help='Number of epochs (passes through data)')
     parser.add_argument('--checkpoint-dir', type=str, default='alpha/checkpoints')
     parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint')
     parser.add_argument('--data-source', type=str, default='synthetic',
@@ -744,71 +745,87 @@ def main():
         logger.info("Generating synthetic training data...")
         episodes = generate_synthetic_data(num_episodes=args.episodes, episode_length=100)
 
-    # Shuffle episodes for better training
-    np.random.shuffle(episodes)
+    # Calculate epochs - repeat data multiple times for more training
+    num_data_episodes = len(episodes)
+    if args.epochs:
+        num_epochs = args.epochs
+    else:
+        # Calculate epochs needed to reach target episodes
+        num_epochs = max(1, args.episodes // num_data_episodes)
 
-    # Training loop
-    logger.info(f"Starting training for {len(episodes)} episodes...")
+    total_training_episodes = num_epochs * num_data_episodes
+
+    logger.info(f"Data episodes: {num_data_episodes}")
+    logger.info(f"Epochs: {num_epochs}")
+    logger.info(f"Total training iterations: {total_training_episodes}")
     logger.info(f"Data source: {args.data_source}")
 
     best_avg_reward = float('-inf')
-    log_interval = min(100, max(10, len(episodes) // 10))  # Adaptive logging
+    log_interval = min(100, max(10, total_training_episodes // 50))  # Log ~50 times
+    global_step = 0
 
-    for i, episode_data in enumerate(episodes):
-        # Extract symbol from episode if available
-        symbol = args.symbol
+    for epoch in range(num_epochs):
+        # Shuffle episodes each epoch for better generalization
+        np.random.shuffle(episodes)
 
-        stats = trainer.train_episode(episode_data, symbol=symbol)
-        trainer.episode_stats.append(stats)
+        for i, episode_data in enumerate(episodes):
+            global_step += 1
+            # Extract symbol from episode if available
+            symbol = args.symbol
 
-        # Log progress
-        if (i + 1) % log_interval == 0 or i == len(episodes) - 1:
-            recent_stats = trainer.episode_stats[-log_interval:]
-            avg_reward = np.mean([s.total_reward for s in recent_stats])
-            avg_win_rate = np.mean([s.win_rate for s in recent_stats])
-            avg_trades = np.mean([s.num_trades for s in recent_stats])
-            avg_pnl = np.mean([s.avg_pnl for s in recent_stats])
+            stats = trainer.train_episode(episode_data, symbol=symbol)
+            trainer.episode_stats.append(stats)
 
-            logger.info(
-                f"Episode {i + 1}/{len(episodes)} | "
-                f"Reward: {avg_reward:.3f} | "
-                f"Win Rate: {avg_win_rate:.1%} | "
-                f"Trades: {avg_trades:.1f} | "
-                f"Avg P&L: {avg_pnl:.2f}% | "
-                f"Policy Loss: {stats.policy_loss:.4f}"
-            )
+            # Log progress
+            if global_step % log_interval == 0 or global_step == total_training_episodes:
+                recent_stats = trainer.episode_stats[-log_interval:]
+                avg_reward = np.mean([s.total_reward for s in recent_stats])
+                avg_win_rate = np.mean([s.win_rate for s in recent_stats])
+                avg_trades = np.mean([s.num_trades for s in recent_stats])
+                avg_pnl = np.mean([s.avg_pnl for s in recent_stats])
 
-            # Save progress status to JSON (for monitoring)
-            progress_pct = ((i + 1) / len(episodes)) * 100
-            status = {
-                "status": "training",
-                "episode": i + 1,
-                "total_episodes": len(episodes),
-                "progress_pct": round(progress_pct, 1),
-                "avg_reward": round(avg_reward, 4),
-                "win_rate": round(avg_win_rate * 100, 1),
-                "avg_trades": round(avg_trades, 1),
-                "avg_pnl": round(avg_pnl, 2),
-                "policy_loss": round(stats.policy_loss, 6),
-                "best_reward": round(best_avg_reward, 4),
-                "last_update": datetime.utcnow().isoformat(),
-            }
-            status_path = os.path.join(args.checkpoint_dir, "training_status.json")
-            os.makedirs(args.checkpoint_dir, exist_ok=True)
-            with open(status_path, "w") as f:
-                json.dump(status, f, indent=2)
+                logger.info(
+                    f"Epoch {epoch + 1}/{num_epochs} | Step {global_step}/{total_training_episodes} | "
+                    f"Reward: {avg_reward:.3f} | "
+                    f"Win Rate: {avg_win_rate:.1%} | "
+                    f"Trades: {avg_trades:.1f} | "
+                    f"Avg P&L: {avg_pnl:.2f}% | "
+                    f"Policy Loss: {stats.policy_loss:.4f}"
+                )
 
-            # Track best model
-            if avg_reward > best_avg_reward:
-                best_avg_reward = avg_reward
-                best_path = os.path.join(args.checkpoint_dir, "best_model.pt")
-                trainer.save_checkpoint(best_path)
-                logger.info(f"New best model saved (reward: {avg_reward:.3f})")
+                # Save progress status to JSON (for monitoring)
+                progress_pct = (global_step / total_training_episodes) * 100
+                status = {
+                    "status": "training",
+                    "epoch": epoch + 1,
+                    "total_epochs": num_epochs,
+                    "step": global_step,
+                    "total_steps": total_training_episodes,
+                    "progress_pct": round(progress_pct, 1),
+                    "avg_reward": round(avg_reward, 4),
+                    "win_rate": round(avg_win_rate * 100, 1),
+                    "avg_trades": round(avg_trades, 1),
+                    "avg_pnl": round(avg_pnl, 2),
+                    "policy_loss": round(stats.policy_loss, 6),
+                    "best_reward": round(best_avg_reward, 4),
+                    "last_update": datetime.utcnow().isoformat(),
+                }
+                status_path = os.path.join(args.checkpoint_dir, "training_status.json")
+                os.makedirs(args.checkpoint_dir, exist_ok=True)
+                with open(status_path, "w") as f:
+                    json.dump(status, f, indent=2)
 
-        # Regular checkpoint
-        if (i + 1) % 500 == 0:
-            checkpoint_path = os.path.join(args.checkpoint_dir, f"checkpoint_{i + 1}.pt")
-            trainer.save_checkpoint(checkpoint_path)
+                # Track best model
+                if avg_reward > best_avg_reward:
+                    best_avg_reward = avg_reward
+                    best_path = os.path.join(args.checkpoint_dir, "best_model.pt")
+                    trainer.save_checkpoint(best_path)
+                    logger.info(f"New best model saved (reward: {avg_reward:.3f})")
+
+            # Regular checkpoint every 500 steps
+            if global_step % 500 == 0:
+                checkpoint_path = os.path.join(args.checkpoint_dir, f"checkpoint_{global_step}.pt")
+                trainer.save_checkpoint(checkpoint_path)
 
     # Save final model
     final_path = os.path.join(args.checkpoint_dir, "final_model.pt")
