@@ -239,6 +239,15 @@ class AlphaConfig:
         config.trading.base_position_usd = _env_float("ALPHA_POSITION_USD", 25.0)
         config.trading.max_leverage = _env_int("ALPHA_MAX_LEVERAGE", 5)
 
+        # Symbols from SYMBOLS env var (comma-separated)
+        symbols_env = os.getenv("SYMBOLS", "")
+        if symbols_env:
+            config.trading.symbols = [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
+
+        # Loop intervals
+        config.trading.slow_loop_interval = _env_int("ALPHA_SLOW_INTERVAL", 300)
+        config.trading.fast_loop_interval = _env_int("ALPHA_FAST_INTERVAL", 5)
+
         return config
 
     def validate(self) -> List[str]:
