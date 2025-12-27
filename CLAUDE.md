@@ -1,5 +1,93 @@
 # CLAUDE.md - AI Prompt Architecture
 
+---
+
+## 🗂️ Project Structure & Branches
+
+### Two Separate Deployments
+
+Questo repository contiene **due sistemi di trading indipendenti** che girano su cartelle separate sul VPS:
+
+| Progetto | Cartella VPS | Branch | Descrizione |
+|----------|--------------|--------|-------------|
+| **Rizzo/Botone** | `~/rizzo-trading-agent` | `main` | Bot di produzione con AI LLM (DeepSeek) |
+| **AlphaTrader** | `~/alphatrader` | `claude/continue-latest-branch-Wvo2L` | Sistema RL ispirato ad AlphaGo |
+
+### Rizzo/Botone (Production)
+
+```
+Cartella: ~/rizzo-trading-agent
+Branch: main (o branch stabile di produzione)
+
+Containers:
+├─ rizzo_sentinel_slow   (entry logic)
+├─ rizzo_sentinel_fast   (SL/TP monitoring)
+├─ botone_v6_slow        (AI decisions)
+├─ botone_v6_fast        (position monitoring)
+└─ rizzo-arena           (simulazione)
+
+Database: rizzo_trading, botone_baseline
+Decisioni: AI LLM (DeepSeek via OpenRouter)
+```
+
+### AlphaTrader (Experimental)
+
+```
+Cartella: ~/alphatrader
+Branch: claude/continue-latest-branch-Wvo2L
+
+Containers:
+├─ alpha_training        (training RL)
+└─ alpha_trader          (paper/live trading)
+
+Database: Nessuno (usa file pickle locali)
+Decisioni: Neural Network + MCTS (locale, no API)
+```
+
+### Differenze Chiave
+
+| Aspetto | Rizzo/Botone | AlphaTrader |
+|---------|--------------|-------------|
+| **Decisioni** | AI LLM (DeepSeek) | Neural Network |
+| **Costo API** | $$ (chiamate OpenRouter) | $0 (tutto locale) |
+| **Latenza** | 2-5 secondi | <100ms |
+| **Apprendimento** | Nessuno (prompt fissi) | PPO Reinforcement Learning |
+| **Validazione** | DOUBLE_CHECK AI | MCTS (Monte Carlo Tree Search) |
+| **Maturità** | Produzione | Sperimentale |
+
+### Setup Iniziale VPS
+
+```bash
+# 1. Rizzo/Botone (già esistente)
+cd ~/rizzo-trading-agent
+git checkout main
+# ... già configurato
+
+# 2. AlphaTrader (nuovo, separato)
+cd ~
+git clone -b claude/continue-latest-branch-Wvo2L \
+  https://github.com/Nixola1972/rizzo-trading-agent.git alphatrader
+cd ~/alphatrader
+mkdir -p alpha/data alpha/checkpoints
+docker build -t alphatrader -f Dockerfile.alpha .
+```
+
+### Aggiornamenti
+
+```bash
+# Aggiornare Rizzo/Botone
+cd ~/rizzo-trading-agent
+git pull origin main
+docker-compose up -d --build
+
+# Aggiornare AlphaTrader
+cd ~/alphatrader
+git pull origin claude/continue-latest-branch-Wvo2L
+docker build --no-cache -t alphatrader -f Dockerfile.alpha .
+```
+
+---
+
 This document describes how AI prompts work in the Rizzo Trading Agent.
 
 ## Overview
