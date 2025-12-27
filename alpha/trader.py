@@ -501,15 +501,24 @@ class AlphaTrader:
         fast_interval = self.config.trading.fast_loop_interval
         last_slow = datetime.min
 
+        print(f"Entering main loop... slow={slow_interval}s, fast={fast_interval}s", flush=True)
+        loop_count = 0
+
         while True:
             try:
+                loop_count += 1
                 now = datetime.utcnow()
+
+                if loop_count <= 3 or loop_count % 10 == 0:
+                    print(f"[Loop {loop_count}] {now.strftime('%H:%M:%S')}", flush=True)
 
                 # Fast loop: update positions
                 self.update_positions()
 
                 # Slow loop: make decisions
-                if (now - last_slow).total_seconds() >= slow_interval:
+                seconds_since_last = (now - last_slow).total_seconds()
+                if seconds_since_last >= slow_interval:
+                    print(f"[Slow loop triggered] {seconds_since_last:.0f}s since last", flush=True)
                     last_slow = now
 
                     for symbol in self.config.trading.symbols:
