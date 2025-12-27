@@ -5,12 +5,20 @@ AlphaTrader RL Trainer
 Training loop for the Policy and Value networks using PPO (Proximal Policy Optimization).
 
 Training modes:
-1. Historical: Train on historical price data
+1. Historical: Train on historical price data from HyperLiquid
 2. Arena: Train using the Arena simulator
 3. Self-Play: Two policies compete (future)
 
 Usage:
-    python -m alpha.trainer --episodes 10000 --checkpoint-dir alpha/checkpoints
+    # Train on HyperLiquid historical data
+    python -m alpha.trainer --data-source hyperliquid --episodes 1000
+
+    # First download data, then train
+    python -m alpha.data_loader --symbols BTC ETH SOL --days 60 --interval 15m
+    python -m alpha.trainer --data-source hyperliquid --episodes 1000
+
+    # Train on synthetic data (for testing)
+    python -m alpha.trainer --data-source synthetic --episodes 100
 """
 
 import os
@@ -458,7 +466,7 @@ def generate_synthetic_data(num_episodes: int = 100, episode_length: int = 100) 
     """
     Generate synthetic market data for testing training loop.
 
-    This is a placeholder - real training should use historical data from Arena DB.
+    This is a placeholder - real training should use historical data.
     """
     episodes = []
 
@@ -503,12 +511,204 @@ def generate_synthetic_data(num_episodes: int = 100, episode_length: int = 100) 
     return episodes
 
 
+def load_hyperliquid_data(
+    data_path: str = "alpha/data/training_episodes.pkl",
+    max_episodes: Optional[int] = None,
+) -> List[List[Dict]]:
+    """
+    Load training episodes from HyperLiquid historical data.
+
+    The data should be downloaded first using:
+        python -m alpha.data_loader --symbols BTC ETH SOL --days 60
+
+    Args:
+        data_path: Path to the training episodes pickle file
+        max_episodes: Maximum number of episodes to load (None = all)
+
+    Returns:
+        List of episodes, each episode is a list of market state dicts
+    """
+    import pickle
+
+    if not os.path.exists(data_path):
+        logger.error(f"Data file not found: {data_path}")
+        logger.error("Please download data first:")
+        logger.error("  python -m alpha.data_loader --symbols BTC ETH SOL --days 60")
+        return []
+
+    # Load episodes from pickle
+    with open(data_path, "rb") as f:
+        raw_episodes = pickle.load(f)
+
+    logger.info(f"Loaded {len(raw_episodes)} episodes from {data_path}")
+
+    if max_episodes:
+        raw_episodes = raw_episodes[:max_episodes]
+
+    # Convert TrainingEpisode format to train_episode format
+    episodes = []
+
+    for ep in raw_episodes:
+        episode = []
+
+        for candle in ep.candles:
+            # Extract price and indicators from candle
+            price = candle.get('close', candle.get('price', 0))
+            ema20 = candle.get('ema20', price)
+            ema50 = candle.get('ema50', price)
+            rsi_14 = candle.get('rsi_14', 50)
+            rsi_7 = candle.get('rsi_7', 50)
+            macd = candle.get('macd', 0)
+            macd_signal = candle.get('macd_signal', 0)
+            macd_histogram = candle.get('macd_histogram', 0)
+            atr_14 = candle.get('atr_14', price * 0.01)
+            adx = candle.get('adx', 25)
+
+            # Bollinger bands
+            bb_upper = candle.get('bb_upper', price * 1.02)
+            bb_middle = candle.get('bb_middle', price)
+            bb_lower = candle.get('bb_lower', price * 0.98)
+            bb_pct_b = candle.get('bb_pct_b', 0.5)
+            bb_bandwidth = candle.get('bb_bandwidth', 0.04)
+
+            # OBV
+            obv_trend = candle.get('obv_trend', 0)
+
+            # Funding rate (if available)
+            funding_rate = candle.get('funding_rate', 0)
+
+            # Calculate basic score from indicators
+            # This mimics what signal_scorer.py does
+            score_bullish = 0
+            score_bearish = 0
+
+            # EMA stack contribution
+            if price > ema20 > ema50:
+                score_bullish += 8  # Bullish EMA stack
+            elif price < ema20 < ema50:
+                score_bearish += 8  # Bearish EMA stack
+
+            # MACD contribution
+            if macd > 0:
+                score_bullish += min(5, macd * 20)
+            else:
+                score_bearish += min(5, abs(macd) * 20)
+
+            # RSI contribution
+            if rsi_14 < 30:
+                score_bullish += 3  # Oversold
+            elif rsi_14 > 70:
+                score_bearish += 3  # Overbought
+
+            # ADX contribution (trend strength)
+            if adx > 25:
+                # Strong trend - boost the dominant direction
+                if score_bullish > score_bearish:
+                    score_bullish += 2
+                else:
+                    score_bearish += 2
+
+            # OBV trend
+            if obv_trend > 0:
+                score_bullish += 2
+            elif obv_trend < 0:
+                score_bearish += 2
+
+            net_score = score_bullish - score_bearish
+
+            # Determine direction
+            if net_score >= 5:
+                direction = 'LONG'
+                confidence = 'STRONG' if net_score >= 15 else 'NORMAL' if net_score >= 10 else 'WEAK'
+            elif net_score <= -5:
+                direction = 'SHORT'
+                confidence = 'STRONG' if net_score <= -15 else 'NORMAL' if net_score <= -10 else 'WEAK'
+            else:
+                direction = 'HOLD'
+                confidence = 'WEAK'
+
+            # Calculate forecast from price momentum
+            # Use EMA difference as a simple trend indicator
+            if ema20 > 0:
+                forecast_change = ((price / ema20) - 1) * 100
+            else:
+                forecast_change = 0
+
+            episode.append({
+                'indicators': {
+                    'price': price,
+                    'open': candle.get('open', price),
+                    'high': candle.get('high', price),
+                    'low': candle.get('low', price),
+                    'close': price,
+                    'volume': candle.get('volume', 0),
+                    'ema20': ema20,
+                    'ema50': ema50,
+                    'rsi_14': rsi_14,
+                    'rsi_7': rsi_7,
+                    'macd': macd,
+                    'macd_signal': macd_signal,
+                    'macd_histogram': macd_histogram,
+                    'atr_14': atr_14,
+                    'adx': adx,
+                    'bb_upper': bb_upper,
+                    'bb_middle': bb_middle,
+                    'bb_lower': bb_lower,
+                    'bb_pct_b': bb_pct_b,
+                    'bb_bandwidth': bb_bandwidth,
+                    'obv_trend': obv_trend,
+                    'funding_rate': funding_rate,
+                },
+                'sentiment': {
+                    # Use RSI as a proxy for sentiment (neutral default)
+                    'value': int(50 + (50 - rsi_14) * 0.5),  # Inverse correlation
+                },
+                'forecast': {
+                    'change_pct': forecast_change,
+                },
+                'score': {
+                    'score_bullish': score_bullish,
+                    'score_bearish': score_bearish,
+                    'net_score': net_score,
+                    'direction': direction,
+                    'confidence': confidence,
+                },
+                'account': {
+                    'balance_usd': 1000,
+                    'equity_usd': 1000,
+                },
+                'timestamp': candle.get('timestamp'),
+            })
+
+        if len(episode) > 0:
+            episodes.append(episode)
+
+    logger.info(f"Converted {len(episodes)} episodes to training format")
+
+    # Log sample statistics
+    if episodes:
+        sample_ep = episodes[0]
+        logger.info(f"Sample episode length: {len(sample_ep)} candles")
+        logger.info(f"Sample episode symbol: {raw_episodes[0].symbol if raw_episodes else 'unknown'}")
+        if sample_ep:
+            logger.info(f"Sample price range: ${sample_ep[0]['indicators']['price']:.2f} - ${sample_ep[-1]['indicators']['price']:.2f}")
+
+    return episodes
+
+
 def main():
     """Main training loop."""
     parser = argparse.ArgumentParser(description='AlphaTrader Trainer')
     parser.add_argument('--episodes', type=int, default=1000, help='Number of episodes')
     parser.add_argument('--checkpoint-dir', type=str, default='alpha/checkpoints')
     parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint')
+    parser.add_argument('--data-source', type=str, default='synthetic',
+                       choices=['synthetic', 'hyperliquid'],
+                       help='Data source for training')
+    parser.add_argument('--data-path', type=str, default='alpha/data/training_episodes.pkl',
+                       help='Path to HyperLiquid training data')
+    parser.add_argument('--symbol', type=str, default='BTC',
+                       help='Symbol to train on (for filtering)')
     args = parser.parse_args()
 
     if not TORCH_AVAILABLE:
@@ -522,31 +722,65 @@ def main():
     if args.resume:
         trainer.load_checkpoint(args.resume)
 
-    # Generate synthetic data (replace with real data in production)
-    logger.info("Generating synthetic training data...")
-    episodes = generate_synthetic_data(num_episodes=args.episodes, episode_length=100)
+    # Load data based on source
+    if args.data_source == 'hyperliquid':
+        logger.info("Loading HyperLiquid historical data...")
+        episodes = load_hyperliquid_data(
+            data_path=args.data_path,
+            max_episodes=args.episodes if args.episodes > 0 else None
+        )
+
+        if not episodes:
+            logger.error("No data loaded. Please download data first:")
+            logger.error("  python -m alpha.data_loader --symbols BTC ETH SOL --days 60")
+            sys.exit(1)
+
+    else:
+        logger.info("Generating synthetic training data...")
+        episodes = generate_synthetic_data(num_episodes=args.episodes, episode_length=100)
+
+    # Shuffle episodes for better training
+    np.random.shuffle(episodes)
 
     # Training loop
     logger.info(f"Starting training for {len(episodes)} episodes...")
+    logger.info(f"Data source: {args.data_source}")
+
+    best_avg_reward = float('-inf')
+    log_interval = min(100, max(10, len(episodes) // 10))  # Adaptive logging
 
     for i, episode_data in enumerate(episodes):
-        stats = trainer.train_episode(episode_data, symbol="BTC")
+        # Extract symbol from episode if available
+        symbol = args.symbol
+
+        stats = trainer.train_episode(episode_data, symbol=symbol)
         trainer.episode_stats.append(stats)
 
         # Log progress
-        if (i + 1) % 100 == 0:
-            recent_stats = trainer.episode_stats[-100:]
+        if (i + 1) % log_interval == 0 or i == len(episodes) - 1:
+            recent_stats = trainer.episode_stats[-log_interval:]
             avg_reward = np.mean([s.total_reward for s in recent_stats])
             avg_win_rate = np.mean([s.win_rate for s in recent_stats])
+            avg_trades = np.mean([s.num_trades for s in recent_stats])
+            avg_pnl = np.mean([s.avg_pnl for s in recent_stats])
 
             logger.info(
                 f"Episode {i + 1}/{len(episodes)} | "
-                f"Avg Reward: {avg_reward:.3f} | "
-                f"Avg Win Rate: {avg_win_rate:.1%} | "
+                f"Reward: {avg_reward:.3f} | "
+                f"Win Rate: {avg_win_rate:.1%} | "
+                f"Trades: {avg_trades:.1f} | "
+                f"Avg P&L: {avg_pnl:.2f}% | "
                 f"Policy Loss: {stats.policy_loss:.4f}"
             )
 
-        # Save checkpoint
+            # Track best model
+            if avg_reward > best_avg_reward:
+                best_avg_reward = avg_reward
+                best_path = os.path.join(args.checkpoint_dir, "best_model.pt")
+                trainer.save_checkpoint(best_path)
+                logger.info(f"New best model saved (reward: {avg_reward:.3f})")
+
+        # Regular checkpoint
         if (i + 1) % 500 == 0:
             checkpoint_path = os.path.join(args.checkpoint_dir, f"checkpoint_{i + 1}.pt")
             trainer.save_checkpoint(checkpoint_path)
@@ -554,7 +788,19 @@ def main():
     # Save final model
     final_path = os.path.join(args.checkpoint_dir, "final_model.pt")
     trainer.save_checkpoint(final_path)
-    logger.info(f"Training complete. Final model saved to {final_path}")
+
+    # Final summary
+    if trainer.episode_stats:
+        final_stats = trainer.episode_stats[-100:] if len(trainer.episode_stats) >= 100 else trainer.episode_stats
+        logger.info("=" * 60)
+        logger.info("TRAINING COMPLETE")
+        logger.info("=" * 60)
+        logger.info(f"Total episodes: {len(trainer.episode_stats)}")
+        logger.info(f"Final Avg Reward: {np.mean([s.total_reward for s in final_stats]):.3f}")
+        logger.info(f"Final Win Rate: {np.mean([s.win_rate for s in final_stats]):.1%}")
+        logger.info(f"Final Avg P&L: {np.mean([s.avg_pnl for s in final_stats]):.2f}%")
+        logger.info(f"Best model saved to: {os.path.join(args.checkpoint_dir, 'best_model.pt')}")
+        logger.info(f"Final model saved to: {final_path}")
 
 
 if __name__ == "__main__":

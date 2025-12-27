@@ -2076,6 +2076,12 @@ alpha/
 ├── mcts.py               # Monte Carlo Tree Search
 ├── trainer.py            # PPO training loop
 ├── trader.py             # Main trading bot
+├── data_loader.py        # HyperLiquid historical data fetcher
+├── data/                 # Training data storage
+│   ├── BTC_candles.parquet
+│   ├── ETH_candles.parquet
+│   ├── SOL_candles.parquet
+│   └── training_episodes.pkl
 └── checkpoints/          # Model weights
 ```
 
@@ -2131,14 +2137,45 @@ Before executing a trade:
 
 ## Usage
 
+### Data Pipeline (HyperLiquid Historical Data)
+
+Before training, download historical data from HyperLiquid:
+
+```bash
+# Download 60 days of 15-minute candles for BTC, ETH, SOL
+python -m alpha.data_loader --symbols BTC ETH SOL --days 60 --interval 15m
+
+# Check what data is available
+python -m alpha.data_loader --check
+
+# Download more data for comprehensive training
+python -m alpha.data_loader --symbols BTC ETH SOL --days 180 --interval 15m
+
+# Download 1-hour candles for longer-term patterns
+python -m alpha.data_loader --symbols BTC ETH --days 365 --interval 1h
+```
+
+The data loader:
+1. Fetches OHLCV candles from HyperLiquid API
+2. Downloads funding rate history
+3. Calculates technical indicators (EMA, RSI, MACD, ATR, ADX, Bollinger, OBV)
+4. Creates training episodes (100 candles each with 20-candle overlap)
+5. Saves to `alpha/data/` as parquet/pickle files
+
 ### Training
 
 ```bash
-# Train on synthetic data (for testing)
-python -m alpha.trainer --episodes 10000 --checkpoint-dir alpha/checkpoints
+# Train on HyperLiquid historical data (RECOMMENDED)
+python -m alpha.trainer --data-source hyperliquid --episodes 1000
+
+# Train on synthetic data (for testing the pipeline)
+python -m alpha.trainer --data-source synthetic --episodes 100
 
 # Resume from checkpoint
-python -m alpha.trainer --resume alpha/checkpoints/checkpoint_5000.pt
+python -m alpha.trainer --data-source hyperliquid --resume alpha/checkpoints/best_model.pt
+
+# Specify data path and symbol
+python -m alpha.trainer --data-source hyperliquid --data-path alpha/data/training_episodes.pkl --symbol BTC
 ```
 
 ### Trading
