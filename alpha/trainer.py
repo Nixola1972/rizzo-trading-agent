@@ -692,7 +692,9 @@ def load_hyperliquid_data(
     if episodes:
         sample_ep = episodes[0]
         logger.info(f"Sample episode length: {len(sample_ep)} candles")
-        logger.info(f"Sample episode symbol: {raw_episodes[0].symbol if raw_episodes else 'unknown'}")
+        # raw_episodes are now dicts, use dict access
+        sample_symbol = raw_episodes[0]['symbol'] if raw_episodes else 'unknown'
+        logger.info(f"Sample episode symbol: {sample_symbol}")
         if sample_ep:
             logger.info(f"Sample price range: ${sample_ep[0]['indicators']['price']:.2f} - ${sample_ep[-1]['indicators']['price']:.2f}")
 
