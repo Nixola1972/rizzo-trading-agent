@@ -17,19 +17,27 @@ HL_MAINNET_API = "https://api.hyperliquid.xyz"
 def fetch_candles(symbol: str, interval: str = "15m", limit: int = 100) -> list:
     """Fetch recent candles from HyperLiquid."""
     try:
+        end_time = int(datetime.utcnow().timestamp() * 1000)
+        start_time = int((datetime.utcnow().timestamp() - 86400 * 7) * 1000)
+
         response = requests.post(
             f"{HL_MAINNET_API}/info",
             json={
                 "type": "candleSnapshot",
-                "coin": symbol.upper(),
-                "interval": interval,
-                "startTime": int((datetime.utcnow().timestamp() - 86400 * 7) * 1000),
+                "req": {
+                    "coin": symbol.upper(),
+                    "interval": interval,
+                    "startTime": start_time,
+                    "endTime": end_time,
+                }
             },
             timeout=10
         )
         if response.status_code == 200:
             data = response.json()
             return data[-limit:] if len(data) > limit else data
+        else:
+            logger.error(f"API error for {symbol}: {response.status_code} - {response.text[:200]}")
     except Exception as e:
         logger.error(f"Error fetching candles for {symbol}: {e}")
     return []
