@@ -4,19 +4,26 @@ AlphaTrader Data Loader
 
 Downloads historical data from HyperLiquid for RL training.
 
-Data sources:
-1. OHLCV Candles (1m, 5m, 15m, 1h, 4h, 1d)
-2. Funding Rate History
-3. Open Interest
-4. Order Book Snapshots
+Data sources (in order of richness):
 
-The data is processed and formatted for the AlphaTrader training loop.
+1. **S3 BULK DATA** (RECOMMENDED - Most complete)
+   - hyperliquid-archive: L2 order book, asset contexts
+   - hl-mainnet-node-data: All trades tick-by-tick
+   - Format: LZ4 compressed
+
+2. **REST API** (Simpler but limited)
+   - OHLCV Candles (1m, 5m, 15m, 1h, 4h, 1d)
+   - Funding Rate History
+   - Open Interest
 
 Usage:
-    # Download and prepare training data
-    python -m alpha.data_loader --symbols BTC ETH SOL --days 60 --interval 15m
+    # Method 1: S3 Bulk Download (BEST - tick level data)
+    python -m alpha.data_loader --source s3 --symbols BTC ETH --days 30
 
-    # Just check what data is available
+    # Method 2: REST API (simpler, candlestick data)
+    python -m alpha.data_loader --source api --symbols BTC ETH SOL --days 60 --interval 15m
+
+    # Check available data
     python -m alpha.data_loader --check
 """
 
@@ -27,6 +34,7 @@ import time
 import pickle
 import logging
 import argparse
+import subprocess
 import requests
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple, Any
@@ -45,6 +53,11 @@ logger = logging.getLogger(__name__)
 # HyperLiquid API endpoints
 HL_MAINNET_API = "https://api.hyperliquid.xyz/info"
 HL_TESTNET_API = "https://api.hyperliquid-testnet.xyz/info"
+
+# S3 Buckets (public, no auth needed)
+S3_ARCHIVE_BUCKET = "hyperliquid-archive"
+S3_NODE_DATA_BUCKET = "hl-mainnet-node-data"
+S3_ARTEMIS_BUCKET = "artemis-hyperliquid-data"
 
 # Interval to milliseconds
 INTERVAL_MS = {
@@ -606,15 +619,398 @@ def download_training_data(
     return all_data
 
 
+# =============================================================================
+# S3 BULK DATA LOADER (Tick-by-tick, Order Book, All Fills)
+# =============================================================================
+
+class S3DataLoader:
+    """
+    Downloads bulk historical data from HyperLiquid S3 buckets.
+
+    Available buckets:
+    - hyperliquid-archive: L2 order book snapshots, asset contexts
+    - hl-mainnet-node-data: All trade fills tick-by-tick
+
+    Format: LZ4 compressed files
+
+    Requirements:
+    - AWS CLI installed: pip install awscli
+    - LZ4: pip install lz4
+    """
+
+    def __init__(self, output_dir: str = "alpha/data/s3"):
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Check if AWS CLI is available
+        self.aws_available = self._check_aws_cli()
+
+    def _check_aws_cli(self) -> bool:
+        """Check if AWS CLI is installed."""
+        try:
+            result = subprocess.run(
+                ["aws", "--version"],
+                capture_output=True,
+                text=True
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            logger.warning("AWS CLI not found. Install with: pip install awscli")
+            return False
+
+    def _decompress_lz4(self, lz4_path: str, output_path: str) -> bool:
+        """Decompress LZ4 file."""
+        try:
+            import lz4.frame
+            with open(lz4_path, 'rb') as f_in:
+                with open(output_path, 'wb') as f_out:
+                    f_out.write(lz4.frame.decompress(f_in.read()))
+            return True
+        except ImportError:
+            logger.error("LZ4 not installed. Run: pip install lz4")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to decompress {lz4_path}: {e}")
+            return False
+
+    def list_available_dates(self, bucket: str = S3_ARCHIVE_BUCKET) -> List[str]:
+        """List available dates in S3 bucket."""
+        if not self.aws_available:
+            return []
+
+        try:
+            result = subprocess.run(
+                ["aws", "s3", "ls", f"s3://{bucket}/market_data/", "--no-sign-request"],
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Failed to list S3: {result.stderr}")
+                return []
+
+            # Parse output: "PRE 2024-01-15/"
+            dates = []
+            for line in result.stdout.strip().split('\n'):
+                if 'PRE' in line:
+                    date = line.split('PRE')[-1].strip().rstrip('/')
+                    dates.append(date)
+
+            return sorted(dates)
+        except Exception as e:
+            logger.error(f"Error listing S3: {e}")
+            return []
+
+    def download_market_data(
+        self,
+        symbol: str,
+        date: str,
+        data_type: str = "l2Book",  # l2Book, trades, etc.
+    ) -> Optional[pd.DataFrame]:
+        """
+        Download market data for a specific date and symbol.
+
+        Path format: s3://hyperliquid-archive/market_data/{date}/{hour}/{datatype}/{coin}.lz4
+        """
+        if not self.aws_available:
+            logger.error("AWS CLI required for S3 download")
+            return None
+
+        local_dir = os.path.join(self.output_dir, date, symbol)
+        os.makedirs(local_dir, exist_ok=True)
+
+        all_data = []
+
+        # Download all hours for the date
+        for hour in range(24):
+            hour_str = f"{hour:02d}"
+            s3_path = f"s3://{S3_ARCHIVE_BUCKET}/market_data/{date}/{hour_str}/{data_type}/{symbol}.lz4"
+            local_lz4 = os.path.join(local_dir, f"{hour_str}_{data_type}.lz4")
+            local_csv = os.path.join(local_dir, f"{hour_str}_{data_type}.csv")
+
+            # Download
+            result = subprocess.run(
+                ["aws", "s3", "cp", s3_path, local_lz4, "--no-sign-request"],
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+                continue  # File might not exist for this hour
+
+            # Decompress
+            if self._decompress_lz4(local_lz4, local_csv):
+                try:
+                    df = pd.read_csv(local_csv)
+                    all_data.append(df)
+                except Exception as e:
+                    logger.warning(f"Failed to parse {local_csv}: {e}")
+
+        if all_data:
+            return pd.concat(all_data, ignore_index=True)
+        return None
+
+    def download_node_fills(
+        self,
+        start_date: str,
+        end_date: str,
+        symbol: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Download all trade fills from node data.
+
+        Path: s3://hl-mainnet-node-data/node_fills_by_block/
+
+        This contains EVERY trade that happened on HyperLiquid.
+        """
+        if not self.aws_available:
+            logger.error("AWS CLI required for S3 download")
+            return pd.DataFrame()
+
+        local_dir = os.path.join(self.output_dir, "node_fills")
+        os.makedirs(local_dir, exist_ok=True)
+
+        # Sync the date range
+        logger.info(f"Downloading node fills from {start_date} to {end_date}...")
+
+        # List and download files
+        result = subprocess.run(
+            [
+                "aws", "s3", "sync",
+                f"s3://{S3_NODE_DATA_BUCKET}/node_fills_by_block/",
+                local_dir,
+                "--no-sign-request",
+                "--exclude", "*",
+                "--include", f"*{start_date}*",
+            ],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            logger.warning(f"S3 sync warning: {result.stderr}")
+
+        # Read all downloaded files
+        all_fills = []
+        for f in Path(local_dir).glob("*.lz4"):
+            csv_path = str(f).replace('.lz4', '.csv')
+            if self._decompress_lz4(str(f), csv_path):
+                try:
+                    df = pd.read_csv(csv_path)
+                    if symbol and 'coin' in df.columns:
+                        df = df[df['coin'] == symbol]
+                    all_fills.append(df)
+                except Exception as e:
+                    logger.warning(f"Failed to parse {csv_path}: {e}")
+
+        if all_fills:
+            result_df = pd.concat(all_fills, ignore_index=True)
+            logger.info(f"Downloaded {len(result_df)} fills")
+            return result_df
+
+        return pd.DataFrame()
+
+    def download_asset_contexts(self, date: str) -> pd.DataFrame:
+        """
+        Download asset contexts (mark price, funding, OI) for a date.
+
+        Path: s3://hyperliquid-archive/asset_ctxs/{date}.csv.lz4
+        """
+        if not self.aws_available:
+            return pd.DataFrame()
+
+        local_lz4 = os.path.join(self.output_dir, f"asset_ctxs_{date}.lz4")
+        local_csv = os.path.join(self.output_dir, f"asset_ctxs_{date}.csv")
+
+        s3_path = f"s3://{S3_ARCHIVE_BUCKET}/asset_ctxs/{date}.csv.lz4"
+
+        result = subprocess.run(
+            ["aws", "s3", "cp", s3_path, local_lz4, "--no-sign-request"],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Failed to download asset contexts: {result.stderr}")
+            return pd.DataFrame()
+
+        if self._decompress_lz4(local_lz4, local_csv):
+            return pd.read_csv(local_csv)
+
+        return pd.DataFrame()
+
+    def fills_to_candles(
+        self,
+        fills_df: pd.DataFrame,
+        interval: str = "15m",
+    ) -> pd.DataFrame:
+        """
+        Convert tick-by-tick fills to OHLCV candles.
+
+        This gives you MUCH more accurate candles than the REST API
+        because it's built from actual trade data.
+        """
+        if fills_df.empty:
+            return pd.DataFrame()
+
+        # Ensure timestamp column
+        if 'time' in fills_df.columns:
+            fills_df['timestamp'] = pd.to_datetime(fills_df['time'], unit='ms')
+        elif 'timestamp' not in fills_df.columns:
+            logger.error("No timestamp column in fills data")
+            return pd.DataFrame()
+
+        # Set timestamp as index
+        df = fills_df.set_index('timestamp')
+
+        # Get price column
+        price_col = 'px' if 'px' in df.columns else 'price'
+        size_col = 'sz' if 'sz' in df.columns else 'size'
+
+        # Resample to candles
+        candles = df.resample(interval).agg({
+            price_col: ['first', 'max', 'min', 'last'],
+            size_col: 'sum'
+        })
+
+        candles.columns = ['open', 'high', 'low', 'close', 'volume']
+        candles = candles.dropna()
+        candles = candles.reset_index()
+
+        logger.info(f"Created {len(candles)} candles from {len(fills_df)} fills")
+        return candles
+
+
+def download_s3_data(
+    symbols: List[str] = ["BTC", "ETH"],
+    days: int = 30,
+    output_dir: str = "alpha/data",
+) -> Dict[str, pd.DataFrame]:
+    """
+    Download historical data from S3 and process for training.
+
+    This provides MUCH richer data than the REST API:
+    - Tick-by-tick trade data
+    - Order book snapshots
+    - All fills
+    """
+    loader = S3DataLoader(output_dir=os.path.join(output_dir, "s3_raw"))
+    api_loader = HyperLiquidDataLoader()
+
+    # Get date range
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=days)
+
+    # Check what dates are available
+    available_dates = loader.list_available_dates()
+
+    if not available_dates:
+        logger.warning("Could not list S3 dates. Falling back to REST API.")
+        return download_training_data(symbols, days, "15m", output_dir)
+
+    logger.info(f"S3 data available from {available_dates[0]} to {available_dates[-1]}")
+
+    # Filter to requested range
+    dates_to_download = [
+        d for d in available_dates
+        if start_date <= datetime.strptime(d, "%Y-%m-%d").date() <= end_date
+    ]
+
+    logger.info(f"Will download {len(dates_to_download)} days of data")
+
+    all_data = {}
+    all_episodes = []
+
+    for symbol in symbols:
+        logger.info(f"\n{'='*50}")
+        logger.info(f"Processing {symbol} from S3...")
+        logger.info(f"{'='*50}")
+
+        symbol_fills = []
+
+        for date in dates_to_download:
+            # Try to get fills for this date
+            try:
+                fills = loader.download_node_fills(date, date, symbol)
+                if not fills.empty:
+                    symbol_fills.append(fills)
+            except Exception as e:
+                logger.warning(f"Failed to get fills for {date}: {e}")
+
+        if symbol_fills:
+            # Combine all fills
+            all_fills = pd.concat(symbol_fills, ignore_index=True)
+            logger.info(f"Total fills for {symbol}: {len(all_fills)}")
+
+            # Convert to candles
+            df = loader.fills_to_candles(all_fills, "15m")
+
+            if not df.empty:
+                # Process with indicators
+                df = api_loader.process_candles(df)
+                all_data[symbol] = df
+
+                # Create episodes
+                episodes = api_loader.create_training_episodes(df, symbol)
+                all_episodes.extend(episodes)
+        else:
+            logger.warning(f"No S3 data for {symbol}, trying REST API...")
+            df = api_loader.get_all_candles(symbol, "15m", days)
+            if not df.empty:
+                df = api_loader.process_candles(df)
+                all_data[symbol] = df
+                episodes = api_loader.create_training_episodes(df, symbol)
+                all_episodes.extend(episodes)
+
+    # Save data
+    api_loader.save_data(all_data, output_dir)
+    api_loader.save_episodes(all_episodes, os.path.join(output_dir, "training_episodes.pkl"))
+
+    # Summary
+    logger.info(f"\n{'='*50}")
+    logger.info("S3 DOWNLOAD COMPLETE")
+    logger.info(f"{'='*50}")
+
+    for symbol, df in all_data.items():
+        logger.info(f"{symbol}: {len(df)} candles")
+
+    logger.info(f"Total training episodes: {len(all_episodes)}")
+
+    return all_data
+
+
 def main():
-    parser = argparse.ArgumentParser(description="AlphaTrader Data Loader")
+    parser = argparse.ArgumentParser(
+        description="AlphaTrader Data Loader",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # S3 Bulk Download (RECOMMENDED - tick level data)
+  python -m alpha.data_loader --source s3 --symbols BTC ETH --days 30
+
+  # REST API (simpler, candlestick data)
+  python -m alpha.data_loader --source api --symbols BTC ETH SOL --days 60 --interval 15m
+
+  # Check available data
+  python -m alpha.data_loader --check
+
+Data Sources:
+  s3   - HyperLiquid S3 buckets (tick-by-tick, order book, all fills)
+         Requires: pip install awscli lz4
+  api  - REST API (OHLCV candles, funding rates)
+         No additional dependencies
+        """
+    )
+    parser.add_argument("--source", type=str, default="api",
+                       choices=["api", "s3"],
+                       help="Data source: 'api' (REST) or 's3' (bulk download)")
     parser.add_argument("--symbols", nargs="+", default=["BTC", "ETH", "SOL"],
                        help="Symbols to download")
     parser.add_argument("--days", type=int, default=60,
                        help="Days of historical data")
     parser.add_argument("--interval", type=str, default="15m",
                        choices=["1m", "5m", "15m", "1h", "4h", "1d"],
-                       help="Candle interval")
+                       help="Candle interval (only for API source)")
     parser.add_argument("--output", type=str, default="alpha/data",
                        help="Output directory")
     parser.add_argument("--testnet", action="store_true",
@@ -625,36 +1021,59 @@ def main():
     args = parser.parse_args()
 
     if args.check:
-        loader = HyperLiquidDataLoader(testnet=args.testnet)
+        logger.info("=" * 60)
+        logger.info("CHECKING AVAILABLE DATA SOURCES")
+        logger.info("=" * 60)
 
-        logger.info("Checking HyperLiquid API...")
+        # Check REST API
+        logger.info("\n📡 REST API:")
+        api_loader = HyperLiquidDataLoader(testnet=args.testnet)
+        ctx = api_loader.get_perpetuals_context()
+        if ctx:
+            logger.info(f"   ✅ Available - {len(ctx)} assets")
+            logger.info(f"   Assets: {list(ctx.keys())[:5]}...")
+        else:
+            logger.info("   ❌ Not reachable")
 
-        # Check perpetuals context
-        ctx = loader.get_perpetuals_context()
-        logger.info(f"Available assets: {list(ctx.keys())[:10]}... ({len(ctx)} total)")
+        # Check S3
+        logger.info("\n📦 S3 Buckets:")
+        s3_loader = S3DataLoader(output_dir=args.output)
+        if s3_loader.aws_available:
+            dates = s3_loader.list_available_dates()
+            if dates:
+                logger.info(f"   ✅ Available - {len(dates)} days")
+                logger.info(f"   Range: {dates[0]} to {dates[-1]}")
+            else:
+                logger.info("   ⚠️ AWS CLI ok but no dates listed (may be network issue)")
+        else:
+            logger.info("   ❌ AWS CLI not installed")
+            logger.info("   Install with: pip install awscli lz4")
 
-        # Show sample for BTC
-        if "BTC" in ctx:
-            logger.info(f"BTC context: {ctx['BTC']}")
-
-        # Try to get some candles
-        df = loader.get_candles(
-            "BTC", "15m",
-            datetime.now(timezone.utc) - timedelta(hours=1),
-            datetime.now(timezone.utc),
-        )
-        logger.info(f"Sample BTC candles: {len(df)}")
-        if not df.empty:
-            logger.info(f"Latest candle: {df.iloc[-1].to_dict()}")
+        logger.info("\n" + "=" * 60)
+        logger.info("RECOMMENDATION:")
+        if s3_loader.aws_available:
+            logger.info("Use --source s3 for tick-by-tick data (best for training)")
+        else:
+            logger.info("Use --source api for candlestick data")
+        logger.info("=" * 60)
 
     else:
-        download_training_data(
-            symbols=args.symbols,
-            days=args.days,
-            interval=args.interval,
-            output_dir=args.output,
-            testnet=args.testnet,
-        )
+        if args.source == "s3":
+            logger.info("📦 Using S3 Bulk Download (tick-by-tick data)")
+            download_s3_data(
+                symbols=args.symbols,
+                days=args.days,
+                output_dir=args.output,
+            )
+        else:
+            logger.info("📡 Using REST API (candlestick data)")
+            download_training_data(
+                symbols=args.symbols,
+                days=args.days,
+                interval=args.interval,
+                output_dir=args.output,
+                testnet=args.testnet,
+            )
 
 
 if __name__ == "__main__":

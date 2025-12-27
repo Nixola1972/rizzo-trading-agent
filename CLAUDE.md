@@ -2260,37 +2260,66 @@ AlphaTrader **reuses** existing modules without modification:
 
 ### Che dati scarica?
 
+Ci sono **DUE METODI** per scaricare dati:
+
+#### Metodo 1: S3 Bulk Download (CONSIGLIATO - più dati)
+
 | Dato | Descrizione |
 |------|-------------|
-| **Candele** | Prezzo ogni 15 minuti (apertura, max, min, chiusura) |
-| **Volume** | Quanti soldi sono stati scambiati |
-| **Funding Rate** | Costo per tenere posizioni aperte |
-| **Indicatori** | RSI, MACD, EMA - calcolati automaticamente |
+| **Tick-by-tick trades** | OGNI singolo trade eseguito |
+| **Order Book L2** | Profondità del mercato |
+| **Asset Contexts** | Mark price, funding, open interest |
+
+Scarica **milioni di punti dati** invece di migliaia!
+
+#### Metodo 2: REST API (più semplice)
+
+| Dato | Descrizione |
+|------|-------------|
+| **Candele** | Prezzo ogni 15 minuti |
+| **Volume** | Quanto è stato scambiato |
+| **Funding Rate** | Costo posizioni |
+
+### Confronto metodi
+
+| Aspetto | REST API | S3 Bulk |
+|---------|----------|---------|
+| Dati/giorno | ~96 candele | ~100.000+ trade |
+| Setup | Facile | Richiede AWS CLI |
+| Qualità | Buona | **Ottima** |
 
 ### Quanti dati servono?
 
-| Periodo | Candele | Qualità Training |
-|---------|---------|------------------|
-| 30 giorni | ~2.800 | ❌ Insufficiente |
-| 60 giorni | ~5.700 | ⚠️ Minimo |
-| **180 giorni** | ~17.000 | ✅ **Consigliato** |
-| 365 giorni | ~35.000 | ✅✅ Ottimo |
+| Periodo | REST API | S3 Bulk | Qualità |
+|---------|----------|---------|---------|
+| 30 giorni | ~2.800 | ~3 milioni | ⚠️ Minimo |
+| **60 giorni** | ~5.700 | ~6 milioni | ✅ **Consigliato** |
+| 180 giorni | ~17.000 | ~18 milioni | ✅✅ Ottimo |
 
 ### Rischio blocco API?
 
-**NO.** HyperLiquid permette 1200 richieste/minuto. Il data loader ne fa ~20/minuto.
-Inoltre il download è **una tantum** - i dati vengono salvati su disco.
+**NO.**
+- REST API: limite 1200/min, noi usiamo ~20/min
+- S3: nessun limite (file pubblici Amazon)
 
 ### Come si usa? (3 passi)
 
 ```bash
-# PASSO 1: Installa dipendenze (solo la prima volta)
+# PASSO 1: Installa dipendenze
 pip install torch pandas numpy requests python-dotenv ta
 
-# PASSO 2: Scarica dati storici (una tantum, ~5 minuti)
-python -m alpha.data_loader --symbols BTC ETH SOL --days 180 --interval 15m
+# Per S3 (consigliato):
+pip install awscli lz4
 
-# PASSO 3: Addestra il modello (ore/giorni)
+# PASSO 2: Scarica dati storici
+
+# Opzione A - S3 Bulk (MIGLIORE)
+python -m alpha.data_loader --source s3 --symbols BTC ETH --days 60
+
+# Opzione B - REST API (più semplice)
+python -m alpha.data_loader --source api --symbols BTC ETH SOL --days 60
+
+# PASSO 3: Addestra il modello
 python -m alpha.trainer --data-source hyperliquid --episodes 1000
 ```
 
