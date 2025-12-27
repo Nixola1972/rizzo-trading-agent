@@ -709,10 +709,12 @@ def main():
     parser.add_argument('--checkpoint-dir', type=str, default='alpha/checkpoints')
     parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint')
     parser.add_argument('--data-source', type=str, default='synthetic',
-                       choices=['synthetic', 'hyperliquid'],
+                       choices=['synthetic', 'hyperliquid', 'binance'],
                        help='Data source for training')
     parser.add_argument('--data-path', type=str, default='alpha/data/training_episodes.pkl',
-                       help='Path to HyperLiquid training data')
+                       help='Path to training data pickle file')
+    parser.add_argument('--entropy-coef', type=float, default=None,
+                       help='Entropy coefficient (higher = more exploration, default: 0.01)')
     parser.add_argument('--symbol', type=str, default='BTC',
                        help='Symbol to train on (for filtering)')
     args = parser.parse_args()
@@ -724,12 +726,39 @@ def main():
     # Create trainer
     trainer = PPOTrainer()
 
+    # Apply entropy coefficient override if specified
+    if args.entropy_coef is not None:
+        old_entropy = trainer.config.entropy_coef
+        trainer.config.entropy_coef = args.entropy_coef
+        logger.info(f"Entropy coefficient override: {old_entropy} -> {args.entropy_coef}")
+
     # Resume if specified
     if args.resume:
         trainer.load_checkpoint(args.resume)
 
     # Load data based on source
-    if args.data_source == 'hyperliquid':
+    if args.data_source == 'binance':
+        logger.info("Loading Binance historical data...")
+        # Try Binance-specific path first
+        binance_path = args.data_path.replace('.pkl', '_binance.pkl')
+        if os.path.exists(binance_path):
+            data_path = binance_path
+        elif os.path.exists(args.data_path):
+            data_path = args.data_path
+        else:
+            data_path = "alpha/data/training_episodes_binance.pkl"
+
+        episodes = load_hyperliquid_data(
+            data_path=data_path,
+            max_episodes=args.episodes if args.episodes > 0 else None
+        )
+
+        if not episodes:
+            logger.error("No Binance data loaded. Please download data first:")
+            logger.error("  python -m alpha.binance_data_loader --symbols BTC ETH SOL --start-year 2020")
+            sys.exit(1)
+
+    elif args.data_source == 'hyperliquid':
         logger.info("Loading HyperLiquid historical data...")
         episodes = load_hyperliquid_data(
             data_path=args.data_path,
