@@ -149,19 +149,40 @@ class BinanceDataLoader:
                     with zf.open(csv_name) as f:
                         df = pd.read_csv(f, header=None, names=KLINE_COLUMNS)
 
-                # Convert timestamps
-                df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+                # Convert timestamps - handle different formats
+                try:
+                    # Try milliseconds first (older format)
+                    df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+                except (ValueError, TypeError):
+                    try:
+                        # Try as numeric (might be in different unit)
+                        df["open_time"] = pd.to_numeric(df["open_time"], errors='coerce')
+                        df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+                    except:
+                        try:
+                            # Try parsing as string datetime
+                            df["timestamp"] = pd.to_datetime(df["open_time"], utc=True)
+                        except:
+                            logger.warning(f"  ! {symbol} {date_str}: Could not parse timestamps")
+                            return None
 
                 # Select and rename columns
                 df = df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
-                df["open"] = df["open"].astype(float)
-                df["high"] = df["high"].astype(float)
-                df["low"] = df["low"].astype(float)
-                df["close"] = df["close"].astype(float)
-                df["volume"] = df["volume"].astype(float)
+                df["open"] = pd.to_numeric(df["open"], errors='coerce')
+                df["high"] = pd.to_numeric(df["high"], errors='coerce')
+                df["low"] = pd.to_numeric(df["low"], errors='coerce')
+                df["close"] = pd.to_numeric(df["close"], errors='coerce')
+                df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
 
-                logger.info(f"  ✓ {symbol} {date_str}: {len(df)} candles")
-                return df
+                # Drop any rows with NaN values
+                df = df.dropna()
+
+                if len(df) > 0:
+                    logger.info(f"  ✓ {symbol} {date_str}: {len(df)} candles")
+                    return df
+                else:
+                    logger.warning(f"  ! {symbol} {date_str}: No valid data after parsing")
+                    return None
 
             elif response.status_code == 404:
                 logger.debug(f"  - {symbol} {date_str}: not available")
