@@ -43,7 +43,8 @@ class NetworkConfig:
     """Neural network architecture configuration."""
 
     # Input dimensions (calculated from MarketState)
-    state_dim: int = 64  # Will be computed from actual state size
+    # 7 (position) + 10 (target) + 10 (BTC) + 4 (sentiment) + 5 (score) + 2 (account) + 5 (history) = 43
+    state_dim: int = 43
 
     # Policy Network
     policy_hidden_layers: List[int] = field(default_factory=lambda: [256, 128, 64])
