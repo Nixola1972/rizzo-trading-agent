@@ -4,42 +4,82 @@ Does not depend on parent module indicators.py
 """
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import numpy as np
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+
+def create_session_with_retry():
+    """Create a requests session with retry logic."""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 HL_MAINNET_API = "https://api.hyperliquid.xyz"
 
 
-def fetch_candles(symbol: str, interval: str = "15m", limit: int = 100) -> list:
-    """Fetch recent candles from HyperLiquid."""
-    try:
-        end_time = int(datetime.utcnow().timestamp() * 1000)
-        start_time = int((datetime.utcnow().timestamp() - 86400 * 7) * 1000)
+def fetch_candles(symbol: str, interval: str = "15m", limit: int = 100, max_retries: int = 3) -> list:
+    """Fetch recent candles from HyperLiquid with retry logic."""
+    session = create_session_with_retry()
 
-        response = requests.post(
-            f"{HL_MAINNET_API}/info",
-            json={
-                "type": "candleSnapshot",
-                "req": {
-                    "coin": symbol.upper(),
-                    "interval": interval,
-                    "startTime": start_time,
-                    "endTime": end_time,
-                }
-            },
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            return data[-limit:] if len(data) > limit else data
-        else:
-            logger.error(f"API error for {symbol}: {response.status_code} - {response.text[:200]}")
-    except Exception as e:
-        logger.error(f"Error fetching candles for {symbol}: {e}")
+    for attempt in range(max_retries):
+        try:
+            end_time = int(datetime.utcnow().timestamp() * 1000)
+            start_time = int((datetime.utcnow().timestamp() - 86400 * 7) * 1000)
+
+            logger.info(f"Fetching {symbol} candles (attempt {attempt + 1}/{max_retries})...")
+
+            response = session.post(
+                f"{HL_MAINNET_API}/info",
+                json={
+                    "type": "candleSnapshot",
+                    "req": {
+                        "coin": symbol.upper(),
+                        "interval": interval,
+                        "startTime": start_time,
+                        "endTime": end_time,
+                    }
+                },
+                timeout=30  # Increased timeout
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                result = data[-limit:] if len(data) > limit else data
+                logger.info(f"Got {len(result)} candles for {symbol}")
+                return result
+            else:
+                logger.error(f"API error for {symbol}: {response.status_code} - {response.text[:200]}")
+
+        except requests.exceptions.SSLError as e:
+            logger.warning(f"SSL error for {symbol} (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1, 2, 4 seconds
+                logger.info(f"Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout for {symbol} (attempt {attempt + 1})")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+        except Exception as e:
+            logger.error(f"Error fetching candles for {symbol}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+
+    logger.error(f"Failed to fetch candles for {symbol} after {max_retries} attempts")
     return []
 
 
@@ -234,21 +274,26 @@ ATR: ${indicators.get('atr_14', 0):.2f}
 
 
 def get_fear_greed_index() -> Dict:
-    """Fetch Fear & Greed index from alternative.me API."""
-    try:
-        response = requests.get(
-            "https://api.alternative.me/fng/?limit=1",
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('data'):
-                fg = data['data'][0]
-                return {
-                    'value': int(fg.get('value', 50)),
-                    'classification': fg.get('value_classification', 'Neutral'),
-                }
-    except Exception as e:
-        logger.error(f"Error fetching Fear & Greed: {e}")
+    """Fetch Fear & Greed index from alternative.me API with retry."""
+    session = create_session_with_retry()
+
+    for attempt in range(3):
+        try:
+            response = session.get(
+                "https://api.alternative.me/fng/?limit=1",
+                timeout=15
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('data'):
+                    fg = data['data'][0]
+                    return {
+                        'value': int(fg.get('value', 50)),
+                        'classification': fg.get('value_classification', 'Neutral'),
+                    }
+        except Exception as e:
+            logger.warning(f"Error fetching Fear & Greed (attempt {attempt + 1}): {e}")
+            if attempt < 2:
+                time.sleep(2)
 
     return {'value': 50, 'classification': 'Neutral'}
