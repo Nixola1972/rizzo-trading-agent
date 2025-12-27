@@ -147,27 +147,68 @@ class BinanceDataLoader:
                     # Get the CSV filename inside
                     csv_name = zf.namelist()[0]
                     with zf.open(csv_name) as f:
-                        df = pd.read_csv(f, header=None, names=KLINE_COLUMNS)
+                        # Read first line to check if it has a header
+                        first_line = f.readline().decode('utf-8').strip()
+                        f.seek(0)  # Reset to beginning
 
-                # Convert timestamps - handle different formats
-                try:
-                    # Try milliseconds first (older format)
-                    df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-                except (ValueError, TypeError):
-                    try:
-                        # Try as numeric (might be in different unit)
-                        df["open_time"] = pd.to_numeric(df["open_time"], errors='coerce')
-                        df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-                    except:
-                        try:
-                            # Try parsing as string datetime
-                            df["timestamp"] = pd.to_datetime(df["open_time"], utc=True)
-                        except:
-                            logger.warning(f"  ! {symbol} {date_str}: Could not parse timestamps")
-                            return None
+                        # Check if first line is a header (contains text like 'open_time')
+                        has_header = 'open' in first_line.lower() or not first_line[0].isdigit()
 
-                # Select and rename columns
-                df = df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+                        if has_header:
+                            # File has header row (2022-08+ format)
+                            df = pd.read_csv(f)
+                            # Rename columns to our standard names
+                            df.columns = df.columns.str.lower().str.replace(' ', '_')
+                        else:
+                            # No header (pre-2022-08 format)
+                            df = pd.read_csv(f, header=None, names=KLINE_COLUMNS)
+
+                # Ensure open_time column exists (handle different column names)
+                if 'open_time' not in df.columns:
+                    # Try common alternatives
+                    for col in ['opentime', 'open time', 'timestamp', 'time']:
+                        if col in df.columns:
+                            df['open_time'] = df[col]
+                            break
+                    else:
+                        # Use first column as timestamp
+                        df['open_time'] = df.iloc[:, 0]
+
+                # Convert open_time to numeric first (handles string numbers)
+                df['open_time'] = pd.to_numeric(df['open_time'], errors='coerce')
+
+                # Convert timestamps - Binance uses milliseconds
+                # Note: From 2025, SPOT uses microseconds, but futures still uses ms
+                df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True, errors='coerce')
+
+                # If that failed, try microseconds (for 2025+ spot data)
+                if df["timestamp"].isna().all():
+                    df["timestamp"] = pd.to_datetime(df["open_time"], unit="us", utc=True, errors='coerce')
+
+                # Ensure we have the right columns (handle different naming)
+                col_mapping = {
+                    'open': ['open', 'Open'],
+                    'high': ['high', 'High'],
+                    'low': ['low', 'Low'],
+                    'close': ['close', 'Close'],
+                    'volume': ['volume', 'Volume', 'vol']
+                }
+
+                for target, sources in col_mapping.items():
+                    if target not in df.columns:
+                        for src in sources:
+                            if src in df.columns:
+                                df[target] = df[src]
+                                break
+
+                # Select and convert columns
+                required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+                for col in required_cols:
+                    if col not in df.columns:
+                        logger.warning(f"  ! {symbol} {date_str}: Missing column {col}")
+                        return None
+
+                df = df[required_cols].copy()
                 df["open"] = pd.to_numeric(df["open"], errors='coerce')
                 df["high"] = pd.to_numeric(df["high"], errors='coerce')
                 df["low"] = pd.to_numeric(df["low"], errors='coerce')
