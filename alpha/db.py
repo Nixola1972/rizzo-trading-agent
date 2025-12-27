@@ -17,6 +17,31 @@ from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
+
+def sanitize_for_json(obj: Any) -> Any:
+    """Convert numpy types and other non-JSON-serializable types to native Python."""
+    import numpy as np
+
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    elif hasattr(obj, '__dict__'):
+        # For dataclasses and other objects
+        return sanitize_for_json(obj.__dict__)
+    else:
+        return obj
+
 # Try to import psycopg2
 try:
     import psycopg2
@@ -230,6 +255,10 @@ def save_decision(
 
         try:
             cur = conn.cursor()
+            # Sanitize data to remove numpy types before JSON conversion
+            safe_market_data = sanitize_for_json(market_data)
+            safe_decision_info = sanitize_for_json(decision_info)
+
             cur.execute("""
                 INSERT INTO alpha_decisions (
                     symbol, policy_action, final_action,
@@ -243,10 +272,18 @@ def save_decision(
                 RETURNING id
             """, (
                 symbol, policy_action, final_action,
-                policy_confidence, value_estimate, win_probability,
-                mcts_approved, mcts_win_prob, mcts_reason,
-                price, rsi, macd, adx, fear_greed,
-                Json(market_data), Json(decision_info)
+                float(policy_confidence) if policy_confidence else 0,
+                float(value_estimate) if value_estimate else 0,
+                float(win_probability) if win_probability else 0,
+                mcts_approved,
+                float(mcts_win_prob) if mcts_win_prob else None,
+                mcts_reason,
+                float(price) if price else 0,
+                float(rsi) if rsi else 50,
+                float(macd) if macd else 0,
+                float(adx) if adx else 25,
+                int(fear_greed) if fear_greed else 50,
+                Json(safe_market_data), Json(safe_decision_info)
             ))
 
             result = cur.fetchone()
