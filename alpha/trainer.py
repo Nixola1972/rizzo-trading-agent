@@ -529,6 +529,8 @@ def load_hyperliquid_data(
         List of episodes, each episode is a list of market state dicts
     """
     import pickle
+    # Import TrainingEpisode so pickle can find it when deserializing
+    from alpha.data_loader import TrainingEpisode
 
     if not os.path.exists(data_path):
         logger.error(f"Data file not found: {data_path}")
