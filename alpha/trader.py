@@ -488,12 +488,14 @@ class AlphaTrader:
 
     def run_loop(self):
         """Main trading loop."""
-        logger.info("=" * 60)
-        logger.info("AlphaTrader Starting")
-        logger.info(f"Mode: {'PAPER' if self.config.trading.paper_trading else 'LIVE'}")
-        logger.info(f"Symbols: {self.config.trading.symbols}")
-        logger.info(f"MCTS min win prob: {self.config.mcts.min_win_probability:.0%}")
-        logger.info("=" * 60)
+        # Use print for immediate output (logger may buffer)
+        print("=" * 60, flush=True)
+        print("AlphaTrader Starting", flush=True)
+        print(f"Mode: {'PAPER' if self.config.trading.paper_trading else 'LIVE'}", flush=True)
+        print(f"Symbols: {self.config.trading.symbols}", flush=True)
+        print(f"MCTS min win prob: {self.config.mcts.min_win_probability:.0%}", flush=True)
+        print(f"Slow loop interval: {self.config.trading.slow_loop_interval}s", flush=True)
+        print("=" * 60, flush=True)
 
         slow_interval = self.config.trading.slow_loop_interval
         fast_interval = self.config.trading.fast_loop_interval
@@ -511,28 +513,30 @@ class AlphaTrader:
                     last_slow = now
 
                     for symbol in self.config.trading.symbols:
-                        logger.info(f"\n{'='*40}")
-                        logger.info(f"Evaluating {symbol}...")
+                        print(f"\n{'='*40}", flush=True)
+                        print(f"[{now.strftime('%H:%M:%S')}] Evaluating {symbol}...", flush=True)
 
                         action, info = self.make_decision(symbol)
 
-                        logger.info(f"Decision: {action.action_type.name}")
+                        print(f"Decision: {action.action_type.name} (conf: {action.confidence:.1%})", flush=True)
                         for step in info.get('steps', []):
-                            logger.info(f"  -> {step}")
+                            print(f"  -> {step}", flush=True)
 
                         if action.action_type != ActionType.HOLD:
                             success = self.execute_action(action)
-                            logger.info(f"Execution: {'SUCCESS' if success else 'FAILED'}")
+                            print(f"Execution: {'SUCCESS' if success else 'FAILED'}", flush=True)
 
                         time.sleep(1)  # Small delay between symbols
 
                 time.sleep(fast_interval)
 
             except KeyboardInterrupt:
-                logger.info("Shutting down...")
+                print("\nShutting down...", flush=True)
                 break
             except Exception as e:
-                logger.error(f"Error in main loop: {e}")
+                print(f"Error in main loop: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
                 time.sleep(30)
 
     def run_once(self):
