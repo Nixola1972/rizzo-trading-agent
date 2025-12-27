@@ -2555,4 +2555,102 @@ docker exec alpha_training cat alpha/checkpoints/training_status.json
 
 ---
 
+## 📊 AlphaTrader Status & Debug Info
+
+### Current Training Status (December 2025)
+
+| Aspetto | Valore |
+|---------|--------|
+| **Training completato** | ✅ Sì |
+| **Episodi** | 49,786 (682 dati × 73 epochs) |
+| **Simboli trainati** | BTC, ETH, SOL, DOGE, XRP, BNB, SUI, ARB, AVAX, LINK, ADA |
+| **Win Rate** | 50.7% |
+| **Avg P&L** | +0.02% |
+| **Best Reward** | 2.349 |
+| **Checkpoint** | `alpha/checkpoints/final_model.pt` (~1.3MB) |
+
+### Problemi Noti e Fix Applicati
+
+#### 1. PyTorch 2.6+ weights_only Error
+```
+WeightsUnpickler error: Unsupported global: GLOBAL __main__.EpisodeStats
+```
+**Fix**: Aggiunto `weights_only=False` in torch.load() e rimosso EpisodeStats dal checkpoint.
+
+#### 2. HyperLiquid API Format Change
+L'API richiede ora formato con wrapper "req":
+```python
+# SBAGLIATO:
+{"type": "candleSnapshot", "coin": "BTC", ...}
+
+# CORRETTO:
+{"type": "candleSnapshot", "req": {"coin": "BTC", ...}}
+```
+**Fix**: Creato `alpha/indicators_standalone.py` con formato corretto.
+
+#### 3. State Dimension Mismatch
+Il modello usa `state_dim=43` calcolato da:
+- 7 (position) + 10 (target) + 10 (BTC) + 4 (sentiment) + 5 (score) + 2 (account) + 5 (history) = 43
+
+**Fix**: Aggiornato `alpha/config.py` con `state_dim=43`.
+
+#### 4. Epochs Support per Training
+Training finiva troppo veloce perché passava i dati solo una volta.
+**Fix**: Aggiunto supporto `--epochs` in trainer.py.
+
+### Issue Corrente: 0% Confidence
+
+Il modello carica correttamente ma produce 0% confidence per tutte le decisioni.
+
+**Da debuggare**:
+```bash
+# Sul VPS con Docker:
+cd ~/alphatrader
+docker build -t alphatrader -f Dockerfile.alpha .
+docker run -it --rm \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  alphatrader python -m alpha.debug_model
+```
+
+**Possibili cause**:
+1. Mismatch tra indicatori durante training vs inference
+2. Checkpoint caricato ma pesi non applicati correttamente
+3. State vector con valori anomali
+
+### Comandi Utili VPS
+
+```bash
+# Check checkpoint files
+ls -la ~/alphatrader/alpha/checkpoints/
+
+# Run debug script
+cd ~/alphatrader && python -m alpha.debug_model
+
+# Paper trading (con checkpoint)
+docker run -d --name alpha_trader \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env \
+  alphatrader trade-paper
+
+# Visualizza logs paper trading
+docker logs -f alpha_trader
+```
+
+### Files Chiave AlphaTrader
+
+| File | Descrizione |
+|------|-------------|
+| `alpha/trainer.py` | Loop di training PPO |
+| `alpha/trader.py` | Bot di paper/live trading |
+| `alpha/policy_network.py` | Rete neurale per decisioni |
+| `alpha/value_network.py` | Rete per stima win probability |
+| `alpha/market_state.py` | Vettore stato (43 features) |
+| `alpha/indicators_standalone.py` | Fetch indicatori HyperLiquid |
+| `alpha/debug_model.py` | Script di debug |
+| `alpha/config.py` | Configurazione (state_dim=43) |
+
+---
+
 *AlphaTrader v0.1.0 - December 2025*
