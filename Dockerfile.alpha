@@ -43,15 +43,11 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install AlphaTrader specific dependencies
-RUN pip install --no-cache-dir \
-    torch --index-url https://download.pytorch.org/whl/cpu \
-    pandas \
-    numpy \
-    requests \
-    python-dotenv \
-    ta \
-    lz4
+# Install PyTorch CPU version (separate command to use correct index)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install lz4 and other AlphaTrader dependencies (from PyPI)
+RUN pip install --no-cache-dir lz4
 
 # Copy application code
 COPY . .
