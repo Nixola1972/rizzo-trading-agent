@@ -529,10 +529,10 @@ class HyperLiquidDataLoader:
         for ep in episodes:
             ep_dict = {
                 'symbol': ep.symbol,
+                'interval': ep.interval,
                 'start_time': ep.start_time,
                 'end_time': ep.end_time,
                 'candles': ep.candles,
-                'funding_rates': ep.funding_rates,
             }
             episodes_as_dicts.append(ep_dict)
 
