@@ -521,11 +521,23 @@ class HyperLiquidDataLoader:
         episodes: List[TrainingEpisode],
         output_path: str = "alpha/data/training_episodes.pkl",
     ):
-        """Save training episodes to disk."""
+        """Save training episodes to disk as dicts (avoids pickle class issues)."""
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
+        # Convert TrainingEpisode objects to dicts for pickle compatibility
+        episodes_as_dicts = []
+        for ep in episodes:
+            ep_dict = {
+                'symbol': ep.symbol,
+                'start_time': ep.start_time,
+                'end_time': ep.end_time,
+                'candles': ep.candles,
+                'funding_rates': ep.funding_rates,
+            }
+            episodes_as_dicts.append(ep_dict)
+
         with open(output_path, "wb") as f:
-            pickle.dump(episodes, f)
+            pickle.dump(episodes_as_dicts, f)
 
         logger.info(f"Saved {len(episodes)} episodes to {output_path}")
 

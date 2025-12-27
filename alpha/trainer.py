@@ -529,8 +529,7 @@ def load_hyperliquid_data(
         List of episodes, each episode is a list of market state dicts
     """
     import pickle
-    # Import TrainingEpisode so pickle can find it when deserializing
-    from alpha.data_loader import TrainingEpisode
+    # Episodes are saved as dicts, no class import needed
 
     if not os.path.exists(data_path):
         logger.error(f"Data file not found: {data_path}")
@@ -538,7 +537,7 @@ def load_hyperliquid_data(
         logger.error("  python -m alpha.data_loader --symbols BTC ETH SOL --days 60")
         return []
 
-    # Load episodes from pickle
+    # Load episodes from pickle (saved as list of dicts)
     with open(data_path, "rb") as f:
         raw_episodes = pickle.load(f)
 
@@ -547,13 +546,15 @@ def load_hyperliquid_data(
     if max_episodes:
         raw_episodes = raw_episodes[:max_episodes]
 
-    # Convert TrainingEpisode format to train_episode format
+    # Convert episode dicts to train_episode format
     episodes = []
 
     for ep in raw_episodes:
         episode = []
 
-        for candle in ep.candles:
+        # Access candles from dict (not object attribute)
+        candles = ep['candles'] if isinstance(ep, dict) else ep.candles
+        for candle in candles:
             # Extract price and indicators from candle
             price = candle.get('close', candle.get('price', 0))
             ema20 = candle.get('ema20', price)
