@@ -773,6 +773,26 @@ def main():
                 f"Policy Loss: {stats.policy_loss:.4f}"
             )
 
+            # Save progress status to JSON (for monitoring)
+            progress_pct = ((i + 1) / len(episodes)) * 100
+            status = {
+                "status": "training",
+                "episode": i + 1,
+                "total_episodes": len(episodes),
+                "progress_pct": round(progress_pct, 1),
+                "avg_reward": round(avg_reward, 4),
+                "win_rate": round(avg_win_rate * 100, 1),
+                "avg_trades": round(avg_trades, 1),
+                "avg_pnl": round(avg_pnl, 2),
+                "policy_loss": round(stats.policy_loss, 6),
+                "best_reward": round(best_avg_reward, 4),
+                "last_update": datetime.utcnow().isoformat(),
+            }
+            status_path = os.path.join(args.checkpoint_dir, "training_status.json")
+            os.makedirs(args.checkpoint_dir, exist_ok=True)
+            with open(status_path, "w") as f:
+                json.dump(status, f, indent=2)
+
             # Track best model
             if avg_reward > best_avg_reward:
                 best_avg_reward = avg_reward
@@ -792,15 +812,37 @@ def main():
     # Final summary
     if trainer.episode_stats:
         final_stats = trainer.episode_stats[-100:] if len(trainer.episode_stats) >= 100 else trainer.episode_stats
+        final_reward = np.mean([s.total_reward for s in final_stats])
+        final_win_rate = np.mean([s.win_rate for s in final_stats])
+        final_pnl = np.mean([s.avg_pnl for s in final_stats])
+
         logger.info("=" * 60)
         logger.info("TRAINING COMPLETE")
         logger.info("=" * 60)
         logger.info(f"Total episodes: {len(trainer.episode_stats)}")
-        logger.info(f"Final Avg Reward: {np.mean([s.total_reward for s in final_stats]):.3f}")
-        logger.info(f"Final Win Rate: {np.mean([s.win_rate for s in final_stats]):.1%}")
-        logger.info(f"Final Avg P&L: {np.mean([s.avg_pnl for s in final_stats]):.2f}%")
+        logger.info(f"Final Avg Reward: {final_reward:.3f}")
+        logger.info(f"Final Win Rate: {final_win_rate:.1%}")
+        logger.info(f"Final Avg P&L: {final_pnl:.2f}%")
         logger.info(f"Best model saved to: {os.path.join(args.checkpoint_dir, 'best_model.pt')}")
         logger.info(f"Final model saved to: {final_path}")
+
+        # Save final status
+        final_status = {
+            "status": "completed",
+            "episode": len(trainer.episode_stats),
+            "total_episodes": len(episodes),
+            "progress_pct": 100.0,
+            "avg_reward": round(final_reward, 4),
+            "win_rate": round(final_win_rate * 100, 1),
+            "avg_pnl": round(final_pnl, 2),
+            "best_reward": round(best_avg_reward, 4),
+            "best_model": os.path.join(args.checkpoint_dir, "best_model.pt"),
+            "final_model": final_path,
+            "completed_at": datetime.utcnow().isoformat(),
+        }
+        status_path = os.path.join(args.checkpoint_dir, "training_status.json")
+        with open(status_path, "w") as f:
+            json.dump(final_status, f, indent=2)
 
 
 if __name__ == "__main__":

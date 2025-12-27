@@ -2252,6 +2252,95 @@ AlphaTrader **reuses** existing modules without modification:
 
 ---
 
+## Docker Deployment
+
+AlphaTrader includes a Docker container with all dependencies pre-installed.
+
+### Build Container
+
+```bash
+docker build -t alphatrader -f Dockerfile.alpha .
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `download-api` | Download data via REST API |
+| `download-s3` | Download data via S3 (recommended, more data) |
+| `train` | Start training |
+| `trade-paper` | Paper trading (no real money) |
+| `trade-live` | Live trading (CAUTION!) |
+| `check` | Check data sources |
+| `status` | Check training progress |
+
+### Training with Docker
+
+```bash
+# Step 1: Download historical data
+docker run -d --name alpha_download \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  alphatrader download-s3
+
+# Step 2: Start training (runs in background)
+docker run -d --name alpha_training \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  -e EPISODES=1000 \
+  alphatrader train
+
+# Step 3: Check progress
+docker exec alpha_training cat alpha/checkpoints/training_status.json
+
+# Or view logs
+docker logs -f alpha_training
+```
+
+### Training Status JSON
+
+During training, a `training_status.json` file is updated with:
+
+```json
+{
+  "status": "training",
+  "episode": 450,
+  "total_episodes": 1000,
+  "progress_pct": 45.0,
+  "avg_reward": 0.0234,
+  "win_rate": 52.3,
+  "best_reward": 0.0456,
+  "elapsed_seconds": 3600,
+  "eta_seconds": 4400,
+  "eta_human": "1h 13m",
+  "last_update": "2025-12-27T10:30:00Z"
+}
+```
+
+### Paper Trading with Docker
+
+```bash
+docker run -d --name alpha_trader \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env \
+  alphatrader trade-paper
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAYS` | 60 | Days of data to download |
+| `EPISODES` | 1000 | Training episodes |
+
+### Volume Mounts
+
+| Container Path | Purpose |
+|---------------|---------|
+| `/app/alpha/data` | Training data (candles, episodes) |
+| `/app/alpha/checkpoints` | Model weights, training status |
+
+---
+
 ## 🇮🇹 Guida Semplificata (per chi non è tecnico)
 
 ### Cos'è AlphaTrader?
@@ -2302,22 +2391,35 @@ Scarica **milioni di punti dati** invece di migliaia!
 - REST API: limite 1200/min, noi usiamo ~20/min
 - S3: nessun limite (file pubblici Amazon)
 
-### Come si usa? (3 passi)
+### Come si usa? (CON DOCKER - CONSIGLIATO)
+
+```bash
+# PASSO 1: Costruisci il container (una volta sola)
+docker build -t alphatrader -f Dockerfile.alpha .
+
+# PASSO 2: Scarica dati storici
+docker run -v $(pwd)/alpha/data:/app/alpha/data alphatrader download-s3
+
+# PASSO 3: Addestra il modello (in background)
+docker run -d --name alpha_training \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  -e EPISODES=1000 \
+  alphatrader train
+
+# PASSO 4: Controlla il progresso
+docker exec alpha_training cat alpha/checkpoints/training_status.json
+# oppure: docker logs -f alpha_training
+```
+
+### Come si usa? (SENZA DOCKER)
 
 ```bash
 # PASSO 1: Installa dipendenze
-pip install torch pandas numpy requests python-dotenv ta
-
-# Per S3 (consigliato):
-pip install awscli lz4
+pip install torch pandas numpy requests python-dotenv ta lz4
 
 # PASSO 2: Scarica dati storici
-
-# Opzione A - S3 Bulk (MIGLIORE)
 python -m alpha.data_loader --source s3 --symbols BTC ETH --days 60
-
-# Opzione B - REST API (più semplice)
-python -m alpha.data_loader --source api --symbols BTC ETH SOL --days 60
 
 # PASSO 3: Addestra il modello
 python -m alpha.trainer --data-source hyperliquid --episodes 1000
@@ -2326,11 +2428,34 @@ python -m alpha.trainer --data-source hyperliquid --episodes 1000
 ### Dopo il training?
 
 ```bash
-# Prima testa con soldi FINTI (paper trading)
+# Con Docker:
+docker run -d --name alpha_trader \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env \
+  alphatrader trade-paper
+
+# Senza Docker:
 python -m alpha.trader --mode paper --loop
 
-# Se funziona bene, passa a soldi VERI
-python -m alpha.trader --mode live --loop
+# Quando sei sicuro, passa a soldi VERI
+# docker run ... alphatrader trade-live
+# oppure: python -m alpha.trader --mode live --loop
+```
+
+### Come controllo il progresso del training?
+
+Durante il training, viene creato un file `training_status.json`:
+
+```bash
+# Vedere lo stato
+docker exec alpha_training cat alpha/checkpoints/training_status.json
+
+# Esempio output:
+# {
+#   "progress_pct": 45.0,      <- 45% completato
+#   "win_rate": 52.3,          <- 52% trade vincenti
+#   "eta_human": "1h 13m"      <- tempo rimanente stimato
+# }
 ```
 
 ### ⚠️ Avvertenze importanti
