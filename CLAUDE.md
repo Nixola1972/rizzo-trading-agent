@@ -2557,85 +2557,142 @@ docker exec alpha_training cat alpha/checkpoints/training_status.json
 
 ## 📊 AlphaTrader Status & Debug Info
 
-### Current Training Status (December 2025)
+### Current Training Status (December 2025) - AGGIORNATO
 
 | Aspetto | Valore |
 |---------|--------|
 | **Training completato** | ✅ Sì |
-| **Episodi** | 49,786 (682 dati × 73 epochs) |
+| **Data Source** | **Binance** (data.binance.vision) - 2017-2025 |
+| **Episodi** | ~25,000 (da 11 simboli × anni di dati) |
 | **Simboli trainati** | BTC, ETH, SOL, DOGE, XRP, BNB, SUI, ARB, AVAX, LINK, ADA |
-| **Win Rate** | 50.7% |
-| **Avg P&L** | +0.02% |
+| **Win Rate** | **54.7%** ✅ (era 50.7%) |
+| **Avg P&L** | **+1.08%** ✅ (era +0.02%) |
 | **Best Reward** | 2.349 |
 | **Checkpoint** | `alpha/checkpoints/final_model.pt` (~1.3MB) |
+| **Paper Trading** | ✅ Funzionante |
+| **MCTS Validation** | ✅ Attivo (60% threshold) |
 
-### Problemi Noti e Fix Applicati
+### Miglioramenti Dicembre 2025
 
-#### 1. PyTorch 2.6+ weights_only Error
-```
-WeightsUnpickler error: Unsupported global: GLOBAL __main__.EpisodeStats
-```
-**Fix**: Aggiunto `weights_only=False` in torch.load() e rimosso EpisodeStats dal checkpoint.
-
-#### 2. HyperLiquid API Format Change
-L'API richiede ora formato con wrapper "req":
-```python
-# SBAGLIATO:
-{"type": "candleSnapshot", "coin": "BTC", ...}
-
-# CORRETTO:
-{"type": "candleSnapshot", "req": {"coin": "BTC", ...}}
-```
-**Fix**: Creato `alpha/indicators_standalone.py` con formato corretto.
-
-#### 3. State Dimension Mismatch
-Il modello usa `state_dim=43` calcolato da:
-- 7 (position) + 10 (target) + 10 (BTC) + 4 (sentiment) + 5 (score) + 2 (account) + 5 (history) = 43
-
-**Fix**: Aggiornato `alpha/config.py` con `state_dim=43`.
-
-#### 4. Epochs Support per Training
-Training finiva troppo veloce perché passava i dati solo una volta.
-**Fix**: Aggiunto supporto `--epochs` in trainer.py.
-
-### Issue Corrente: 0% Confidence
-
-Il modello carica correttamente ma produce 0% confidence per tutte le decisioni.
-
-**Da debuggare**:
+#### 1. Binance Data Source (NUOVO)
+HyperLiquid API ha limite di 5000 candele (~52 giorni). Implementato download da Binance:
 ```bash
-# Sul VPS con Docker:
-cd ~/alphatrader
-docker build -t alphatrader -f Dockerfile.alpha .
-docker run -it --rm \
-  -v $(pwd)/alpha/data:/app/alpha/data \
-  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
-  alphatrader python -m alpha.debug_model
+# Scarica anni di dati storici
+python -m alpha.binance_data_loader --symbols BTC ETH SOL --days 365
+```
+**File**: `alpha/binance_data_loader.py`
+
+#### 2. Mode Collapse Fix
+Il modello dava sempre 99.99% OPEN_SHORT (mode collapse).
+**Causa**: `entropy_coef` troppo basso (0.01)
+**Fix**: Aumentato a 0.05 per più esplorazione
+```bash
+python -m alpha.trainer --data-source binance --entropy-coef 0.05
 ```
 
-**Possibili cause**:
-1. Mismatch tra indicatori durante training vs inference
-2. Checkpoint caricato ma pesi non applicati correttamente
-3. State vector con valori anomali
+#### 3. Binance CSV Format Change (Agosto 2022)
+Binance ha aggiunto header row ai CSV dal 2022-08.
+**Fix**: Rilevamento automatico header in `binance_data_loader.py`
+
+#### 4. Output Buffering Fix
+Il trader loop non stampava output.
+**Fix**: Sostituito `logger.info()` con `print(flush=True)`
+
+### Paper Trading - Come Funziona
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  FAST LOOP (ogni 5s)                                            │
+│  └─ Monitora posizioni aperte (P&L, SL, TP)                    │
+│                                                                 │
+│  SLOW LOOP (ogni 5min = 300s)                                   │
+│  └─ 1. Policy Network → suggerisce azione                      │
+│  └─ 2. Value Network → stima win probability                   │
+│  └─ 3. MCTS → simula 100 scenari futuri                        │
+│  └─ 4. Se win rate >= 60% → ESEGUE trade                       │
+│  └─ 5. Altrimenti → VETO, resta in HOLD                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Esempio Output Paper Trading
+
+```
+============================================================
+AlphaTrader Starting
+Mode: PAPER
+Symbols: ['BTC', 'ETH', 'SOL']
+MCTS min win prob: 60%
+Slow loop interval: 300s
+============================================================
+
+========================================
+[22:57:13] Evaluating BTC...
+Decision: HOLD (conf: 48.6%)
+  -> Policy suggests: HOLD
+  -> Value estimate: 0.996 (win prob: 99.8%)
+
+========================================
+[22:57:13] Evaluating ETH...
+Decision: HOLD (conf: 0.0%)
+  -> Policy suggests: OPEN_LONG
+  -> Value estimate: 0.549 (win prob: 77.5%)
+  -> MCTS: 100 sims | OPEN_LONG: 48.0% win rate | VETOED (< 60%)
+
+========================================
+[22:57:13] Evaluating SOL...
+Decision: HOLD (conf: 0.0%)
+  -> Policy suggests: OPEN_LONG
+  -> Value estimate: 0.464 (win prob: 73.2%)
+  -> MCTS: 100 sims | OPEN_LONG: 50.0% win rate | VETOED (< 60%)
+```
 
 ### Comandi Utili VPS
 
 ```bash
-# Check checkpoint files
-ls -la ~/alphatrader/alpha/checkpoints/
+# === PAPER TRADING ===
 
-# Run debug script
-cd ~/alphatrader && python -m alpha.debug_model
-
-# Paper trading (con checkpoint)
+# Avvia paper trading (background)
+cd ~/alphatrader
 docker run -d --name alpha_trader \
   -v $(pwd)/alpha/data:/app/alpha/data \
   -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
   --env-file .env \
-  alphatrader trade-paper
+  --restart unless-stopped \
+  --entrypoint python \
+  alphatrader -m alpha.trader --mode paper --loop
 
-# Visualizza logs paper trading
+# Visualizza logs
 docker logs -f alpha_trader
+
+# Stop
+docker stop alpha_trader && docker rm alpha_trader
+
+# === DEBUG ===
+
+# Test singola decisione
+docker run -it --rm \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env \
+  --entrypoint python \
+  alphatrader -m alpha.trader --mode paper --once
+
+# Debug model
+docker run -it --rm \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  alphatrader python -m alpha.debug_model
+
+# === RETRAINING ===
+
+# Scarica nuovi dati Binance
+docker run -v $(pwd)/alpha/data:/app/alpha/data \
+  alphatrader python -m alpha.binance_data_loader --days 180
+
+# Retrain con nuovi dati
+docker run -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  alphatrader python -m alpha.trainer --data-source binance --episodes 10000
 ```
 
 ### Files Chiave AlphaTrader
@@ -2646,11 +2703,25 @@ docker logs -f alpha_trader
 | `alpha/trader.py` | Bot di paper/live trading |
 | `alpha/policy_network.py` | Rete neurale per decisioni |
 | `alpha/value_network.py` | Rete per stima win probability |
+| `alpha/mcts.py` | Monte Carlo Tree Search validation |
 | `alpha/market_state.py` | Vettore stato (43 features) |
-| `alpha/indicators_standalone.py` | Fetch indicatori HyperLiquid |
+| `alpha/indicators_standalone.py` | Fetch indicatori HyperLiquid (con retry) |
+| `alpha/binance_data_loader.py` | Download dati storici Binance |
 | `alpha/debug_model.py` | Script di debug |
 | `alpha/config.py` | Configurazione (state_dim=43) |
 
+### Prossimi Passi Consigliati
+
+1. **Fase 1** (Ora): Lasciare paper trading attivo per 1-2 settimane
+2. **Fase 2**: Analizzare risultati e retrainare se necessario
+3. **Fase 3**: Integrare come segnale aggiuntivo per Botone V6
+
+### Note Tecniche
+
+- **Non auto-apprende**: Usa pesi fissi dal training. Per aggiornare, serve retraining.
+- **MCTS conservativo**: Blocca trade con win rate < 60%
+- **Dati Binance**: Illimitati (dal 2017), molto più completi di HyperLiquid
+
 ---
 
-*AlphaTrader v0.1.0 - December 2025*
+*AlphaTrader v0.2.0 - December 2025*
