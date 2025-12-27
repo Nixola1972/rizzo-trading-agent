@@ -507,10 +507,10 @@ class HyperLiquidDataLoader:
         os.makedirs(output_dir, exist_ok=True)
 
         for symbol, df in data.items():
-            # Save as parquet (efficient)
-            parquet_path = os.path.join(output_dir, f"{symbol}_candles.parquet")
-            df.to_parquet(parquet_path)
-            logger.info(f"Saved {symbol} data to {parquet_path}")
+            # Save as pickle (no extra dependencies needed)
+            pickle_path = os.path.join(output_dir, f"{symbol}_candles.pkl")
+            df.to_pickle(pickle_path)
+            logger.info(f"Saved {symbol} data to {pickle_path}")
 
             # Also save as CSV for inspection
             csv_path = os.path.join(output_dir, f"{symbol}_candles.csv")
