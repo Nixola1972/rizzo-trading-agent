@@ -2252,4 +2252,65 @@ AlphaTrader **reuses** existing modules without modification:
 
 ---
 
+## 🇮🇹 Guida Semplificata (per chi non è tecnico)
+
+### Cos'è AlphaTrader?
+
+È un "cervello artificiale" che **impara a fare trading** studiando i dati storici. Come un trader che guarda migliaia di grafici per capire quando comprare e vendere.
+
+### Che dati scarica?
+
+| Dato | Descrizione |
+|------|-------------|
+| **Candele** | Prezzo ogni 15 minuti (apertura, max, min, chiusura) |
+| **Volume** | Quanti soldi sono stati scambiati |
+| **Funding Rate** | Costo per tenere posizioni aperte |
+| **Indicatori** | RSI, MACD, EMA - calcolati automaticamente |
+
+### Quanti dati servono?
+
+| Periodo | Candele | Qualità Training |
+|---------|---------|------------------|
+| 30 giorni | ~2.800 | ❌ Insufficiente |
+| 60 giorni | ~5.700 | ⚠️ Minimo |
+| **180 giorni** | ~17.000 | ✅ **Consigliato** |
+| 365 giorni | ~35.000 | ✅✅ Ottimo |
+
+### Rischio blocco API?
+
+**NO.** HyperLiquid permette 1200 richieste/minuto. Il data loader ne fa ~20/minuto.
+Inoltre il download è **una tantum** - i dati vengono salvati su disco.
+
+### Come si usa? (3 passi)
+
+```bash
+# PASSO 1: Installa dipendenze (solo la prima volta)
+pip install torch pandas numpy requests python-dotenv ta
+
+# PASSO 2: Scarica dati storici (una tantum, ~5 minuti)
+python -m alpha.data_loader --symbols BTC ETH SOL --days 180 --interval 15m
+
+# PASSO 3: Addestra il modello (ore/giorni)
+python -m alpha.trainer --data-source hyperliquid --episodes 1000
+```
+
+### Dopo il training?
+
+```bash
+# Prima testa con soldi FINTI (paper trading)
+python -m alpha.trader --mode paper --loop
+
+# Se funziona bene, passa a soldi VERI
+python -m alpha.trader --mode live --loop
+```
+
+### ⚠️ Avvertenze importanti
+
+1. **Il training richiede tempo** - ore o giorni, non minuti
+2. **Inizia SEMPRE in paper mode** - mai soldi veri subito
+3. **Più dati = risultati migliori** - consigliati 180+ giorni
+4. **È un sistema parallelo** - non interferisce con botone_v6
+
+---
+
 *AlphaTrader v0.1.0 - December 2025*
