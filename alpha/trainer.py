@@ -434,12 +434,12 @@ class PPOTrainer:
 
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
+        # Only save model weights (not episode_stats to avoid class serialization issues)
         torch.save({
             'policy_state_dict': self.policy.state_dict(),
             'value_state_dict': self.value.state_dict(),
             'policy_optimizer': self.policy_optimizer.state_dict(),
             'value_optimizer': self.value_optimizer.state_dict(),
-            'episode_stats': self.episode_stats,
             'best_reward': self.best_reward,
         }, path)
 

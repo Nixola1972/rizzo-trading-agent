@@ -43,7 +43,7 @@ from .value_network import create_value_network
 from .mcts import MCTS
 from .reward import RewardCalculator
 
-# Import shared modules from parent
+# Import shared modules from parent OR use standalone
 try:
     from indicators import get_hyperliquid_indicators
     from forecaster import get_crypto_forecasts
@@ -52,8 +52,20 @@ try:
     from hyperliquid_trader import HyperLiquidTrader
     MODULES_AVAILABLE = True
 except ImportError as e:
-    logging.warning(f"Could not import shared modules: {e}")
-    MODULES_AVAILABLE = False
+    logging.info(f"Shared modules not found, using standalone indicators")
+    # Use standalone indicators from alpha module
+    try:
+        from .indicators_standalone import get_hyperliquid_indicators, get_fear_greed_index
+        # Create dummy functions for missing modules
+        def get_crypto_forecasts(*args, **kwargs): return []
+        def calculate_signal_score(*args, **kwargs): return {'bull': 0, 'bear': 0, 'net': 0}
+        def calculate_smart_score_v2(*args, **kwargs): return {'bull': 0, 'bear': 0, 'net': 0}
+        HyperLiquidTrader = None  # Will use paper trading only
+        MODULES_AVAILABLE = True
+        logging.info("Standalone indicators loaded successfully")
+    except ImportError as e2:
+        logging.warning(f"Could not import standalone modules: {e2}")
+        MODULES_AVAILABLE = False
 
 logging.basicConfig(
     level=logging.INFO,
