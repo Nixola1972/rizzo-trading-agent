@@ -136,7 +136,8 @@ class AlphaTrader:
         """Load model weights from checkpoint."""
         try:
             import torch
-            checkpoint = torch.load(path, map_location='cpu')
+            # weights_only=False needed for custom classes in checkpoint
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
 
             if hasattr(self.policy, 'load_state_dict'):
                 self.policy.load_state_dict(checkpoint['policy_state_dict'])
