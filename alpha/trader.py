@@ -43,6 +43,14 @@ from .value_network import create_value_network
 from .mcts import MCTS
 from .reward import RewardCalculator
 
+# Import database module for logging
+try:
+    from . import db as alpha_db
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    alpha_db = None
+
 # Import shared modules from parent OR use standalone
 try:
     from indicators import get_hyperliquid_indicators
@@ -88,6 +96,8 @@ class AlphaPosition:
     unrealized_pnl_pct: float = 0.0
     max_profit_pct: float = 0.0
     max_loss_pct: float = 0.0
+    trade_id: Optional[int] = None  # Database trade ID
+    decision_id: Optional[int] = None  # Database decision ID
 
 
 class AlphaTrader:
@@ -265,6 +275,38 @@ class AlphaTrader:
             account_data=data.get('account', {}),
         )
 
+    def _save_decision_to_db(self, symbol: str, data: Dict, decision_info: Dict) -> Optional[int]:
+        """Save decision to PostgreSQL database."""
+        if not DB_AVAILABLE or not alpha_db:
+            return None
+
+        try:
+            indicators = data.get('indicators', {}).get(symbol, {})
+            sentiment = data.get('sentiment', {})
+
+            decision_id = alpha_db.save_decision(
+                symbol=symbol,
+                policy_action=decision_info.get('policy_action', 'UNKNOWN'),
+                final_action=decision_info.get('final_action', 'UNKNOWN'),
+                policy_confidence=decision_info.get('policy_confidence', 0),
+                value_estimate=decision_info.get('value_estimate', 0),
+                win_probability=decision_info.get('win_probability', 0),
+                mcts_approved=decision_info.get('mcts_approved'),
+                mcts_win_prob=decision_info.get('mcts_win_prob'),
+                mcts_reason=decision_info.get('mcts_reason'),
+                price=indicators.get('price', 0),
+                rsi=indicators.get('rsi_14', 50),
+                macd=indicators.get('macd', 0),
+                adx=indicators.get('adx', 25),
+                fear_greed=sentiment.get('value', 50),
+                market_data=data,
+                decision_info=decision_info
+            )
+            return decision_id
+        except Exception as e:
+            logger.error(f"Error saving decision to DB: {e}")
+            return None
+
     def make_decision(self, symbol: str = "BTC") -> Tuple[Action, Dict]:
         """
         Make a trading decision for a symbol.
@@ -277,14 +319,18 @@ class AlphaTrader:
             'symbol': symbol,
             'steps': [],
         }
+        self._last_market_data = {}  # Store for DB save
 
         # 1. Fetch market data
         logger.info(f"Fetching market data for {symbol}...")
         data = self.fetch_market_data([symbol])
+        self._last_market_data = data  # Store for DB save
         decision_info['market_data'] = bool(data.get('indicators'))
 
         if symbol not in data.get('indicators', {}):
             logger.warning(f"No indicator data for {symbol}")
+            decision_info['final_action'] = 'HOLD (no data)'
+            self._save_decision_to_db(symbol, data, decision_info)
             return Action(ActionType.HOLD, symbol), decision_info
 
         # 2. Create market state
@@ -332,6 +378,7 @@ class AlphaTrader:
                 logger.info(f"MCTS VETOED {action.action_type.name}: {mcts_reason}")
                 action = Action(ActionType.HOLD, symbol, confidence=0.0)
                 decision_info['final_action'] = 'HOLD (MCTS veto)'
+                self._save_decision_to_db(symbol, data, decision_info)
                 return action, decision_info
 
         # 6. Value Network veto (if win probability too low)
@@ -344,12 +391,18 @@ class AlphaTrader:
                 )
                 action = Action(ActionType.HOLD, symbol, confidence=0.0)
                 decision_info['final_action'] = 'HOLD (Value veto)'
+                self._save_decision_to_db(symbol, data, decision_info)
                 return action, decision_info
 
         decision_info['final_action'] = action.action_type.name
+
+        # Save decision to database and store ID for trade linking
+        decision_id = self._save_decision_to_db(symbol, data, decision_info)
+        decision_info['decision_id'] = decision_id
+
         return action, decision_info
 
-    def execute_action(self, action: Action) -> bool:
+    def execute_action(self, action: Action, decision_info: Optional[Dict] = None) -> bool:
         """
         Execute a trading action.
 
@@ -361,11 +414,11 @@ class AlphaTrader:
             return True
 
         if self.config.trading.paper_trading:
-            return self._execute_paper(action)
+            return self._execute_paper(action, decision_info)
         else:
             return self._execute_live(action)
 
-    def _execute_paper(self, action: Action) -> bool:
+    def _execute_paper(self, action: Action, decision_info: Optional[Dict] = None) -> bool:
         """Execute paper trade (simulated)."""
         symbol = action.symbol
 
@@ -376,6 +429,15 @@ class AlphaTrader:
                     f"[PAPER] CLOSE {symbol} {pos.direction} | "
                     f"P&L: {pos.unrealized_pnl_pct:.2f}%"
                 )
+
+                # Save trade close to database
+                if DB_AVAILABLE and alpha_db and pos.trade_id:
+                    alpha_db.close_trade(
+                        trade_id=pos.trade_id,
+                        exit_price=pos.current_price,
+                        exit_reason="AI_CLOSE"
+                    )
+
                 if pos.unrealized_pnl_pct > 0:
                     self.winning_trades += 1
                 self.total_trades += 1
@@ -399,6 +461,25 @@ class AlphaTrader:
                 logger.error("Could not get current price")
                 return False
 
+            # Get decision ID for linking
+            decision_id = decision_info.get('decision_id') if decision_info else None
+            mcts_win_prob = decision_info.get('mcts_win_prob') if decision_info else None
+
+            # Save trade to database
+            trade_id = None
+            if DB_AVAILABLE and alpha_db:
+                trade_id = alpha_db.save_trade_open(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=price,
+                    size_usd=position_size,
+                    leverage=action.leverage,
+                    decision_id=decision_id,
+                    policy_confidence=action.confidence,
+                    mcts_win_prob=mcts_win_prob,
+                    is_paper=True
+                )
+
             self.positions[symbol] = AlphaPosition(
                 symbol=symbol,
                 direction=direction,
@@ -407,12 +488,14 @@ class AlphaTrader:
                 leverage=action.leverage,
                 opened_at=datetime.utcnow(),
                 current_price=price,
+                trade_id=trade_id,
+                decision_id=decision_id,
             )
 
             logger.info(
                 f"[PAPER] OPEN {direction} {symbol} | "
                 f"Size: ${position_size:.0f} | Leverage: {action.leverage}x | "
-                f"Entry: ${price:,.2f}"
+                f"Entry: ${price:,.2f} | DB: #{trade_id}"
             )
             return True
 
@@ -481,6 +564,10 @@ class AlphaTrader:
                 pos.max_profit_pct = max(pos.max_profit_pct, pnl_pct)
                 pos.max_loss_pct = min(pos.max_loss_pct, pnl_pct)
 
+                # Update MFE/MAE in database
+                if DB_AVAILABLE and alpha_db and pos.trade_id:
+                    alpha_db.update_trade_prices(pos.trade_id, price, pos.direction)
+
                 logger.debug(
                     f"{symbol} {pos.direction}: P&L {pnl_pct:+.2f}% | "
                     f"MFE: {pos.max_profit_pct:.2f}% | MAE: {pos.max_loss_pct:.2f}%"
@@ -495,6 +582,10 @@ class AlphaTrader:
         print(f"Symbols: {self.config.trading.symbols}", flush=True)
         print(f"MCTS min win prob: {self.config.mcts.min_win_probability:.0%}", flush=True)
         print(f"Slow loop interval: {self.config.trading.slow_loop_interval}s", flush=True)
+        if DB_AVAILABLE and alpha_db:
+            print(f"Database: ✅ Connected (PostgreSQL)", flush=True)
+        else:
+            print(f"Database: ❌ Not connected (decisions not saved)", flush=True)
         print("=" * 60, flush=True)
 
         slow_interval = self.config.trading.slow_loop_interval
@@ -532,7 +623,7 @@ class AlphaTrader:
                             print(f"  -> {step}", flush=True)
 
                         if action.action_type != ActionType.HOLD:
-                            success = self.execute_action(action)
+                            success = self.execute_action(action, info)
                             print(f"Execution: {'SUCCESS' if success else 'FAILED'}", flush=True)
 
                         time.sleep(1)  # Small delay between symbols
