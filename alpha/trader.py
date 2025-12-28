@@ -425,9 +425,9 @@ class AlphaTrader:
         if action.action_type == ActionType.CLOSE:
             if symbol in self.positions:
                 pos = self.positions[symbol]
-                logger.info(
+                print(
                     f"[PAPER] CLOSE {symbol} {pos.direction} | "
-                    f"P&L: {pos.unrealized_pnl_pct:.2f}%"
+                    f"P&L: {pos.unrealized_pnl_pct:.2f}%", flush=True
                 )
 
                 # Save trade close to database
@@ -443,11 +443,13 @@ class AlphaTrader:
                 self.total_trades += 1
                 del self.positions[symbol]
                 return True
+            else:
+                print(f"[EXECUTE] ❌ CLOSE failed: No position in {symbol}", flush=True)
             return False
 
         elif action.action_type in (ActionType.OPEN_LONG, ActionType.OPEN_SHORT):
             if symbol in self.positions:
-                logger.warning(f"Already have position in {symbol}")
+                print(f"[EXECUTE] ❌ Already have position in {symbol}", flush=True)
                 return False
 
             direction = "LONG" if action.action_type == ActionType.OPEN_LONG else "SHORT"
@@ -455,10 +457,13 @@ class AlphaTrader:
 
             # Get current price (need to fetch)
             data = self.fetch_market_data([symbol])
-            price = data.get('indicators', {}).get(symbol, {}).get('price', 0)
+            indicators = data.get('indicators', {}).get(symbol, {})
+            price = indicators.get('price', 0)
+
+            print(f"[EXECUTE] Fetched price for {symbol}: ${price}", flush=True)
 
             if price == 0:
-                logger.error("Could not get current price")
+                print(f"[EXECUTE] ❌ Could not get price! Data keys: {data.get('indicators', {}).keys()}", flush=True)
                 return False
 
             # Get decision ID for linking
