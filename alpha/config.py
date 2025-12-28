@@ -175,8 +175,10 @@ class TradingConfig:
     slow_loop_interval: int = 300  # 5 minutes (AI decision)
     fast_loop_interval: int = 5  # 5 seconds (monitoring)
 
-    # Symbols
-    symbols: List[str] = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
+    # Symbols - all 11 trading pairs
+    symbols: List[str] = field(default_factory=lambda: [
+        "BTC", "ETH", "SOL", "DOGE", "XRP", "BNB", "SUI", "ARB", "AVAX", "LINK", "ADA"
+    ])
 
 
 @dataclass
