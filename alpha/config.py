@@ -241,10 +241,14 @@ class AlphaConfig:
         config.trading.base_position_usd = _env_float("ALPHA_POSITION_USD", 25.0)
         config.trading.max_leverage = _env_int("ALPHA_MAX_LEVERAGE", 5)
 
-        # Symbols from TRADING_SYMBOLS or SYMBOLS env var (comma-separated)
-        symbols_env = os.getenv("TRADING_SYMBOLS") or os.getenv("SYMBOLS", "")
-        if symbols_env:
-            config.trading.symbols = [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
+        # Symbols - hardcode all 11, only override if TRADING_SYMBOLS explicitly set
+        # NOTE: Ignore SYMBOLS env var (may be set by old .env files in container)
+        trading_symbols = os.getenv("TRADING_SYMBOLS", "")
+        if trading_symbols:
+            config.trading.symbols = [s.strip().upper() for s in trading_symbols.split(",") if s.strip()]
+        else:
+            # Default: all 11 symbols
+            config.trading.symbols = ["BTC", "ETH", "SOL", "DOGE", "XRP", "BNB", "SUI", "ARB", "AVAX", "LINK", "ADA"]
 
         # Loop intervals
         config.trading.slow_loop_interval = _env_int("ALPHA_SLOW_INTERVAL", 60)
