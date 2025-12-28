@@ -362,6 +362,20 @@ class AlphaTrader:
             self._save_decision_to_db(symbol, data, decision_info)
             return action, decision_info
 
+        # 3.6. Filter CLOSE if position not held long enough (min_hold_minutes)
+        if action.action_type == ActionType.CLOSE and symbol in self.positions:
+            pos = self.positions[symbol]
+            min_hold = timedelta(minutes=self.config.trading.min_hold_minutes)
+            time_held = datetime.now() - pos.opened_at
+            if time_held < min_hold:
+                minutes_left = (min_hold - time_held).total_seconds() / 60
+                print(f"[FILTER] CLOSE ignored: {symbol} held {time_held.total_seconds()/60:.1f}min < {self.config.trading.min_hold_minutes}min (wait {minutes_left:.1f}min)", flush=True)
+                action = Action(ActionType.HOLD, symbol, confidence=0.0)
+                decision_info['final_action'] = f'HOLD (min hold: {minutes_left:.1f}min left)'
+                decision_info['steps'].append(f"Filtered: CLOSE before min_hold ({self.config.trading.min_hold_minutes}min) → HOLD")
+                self._save_decision_to_db(symbol, data, decision_info)
+                return action, decision_info
+
         # 4. Get value estimate
         logger.info("Consulting Value Network...")
         value_output = self.value.estimate(state, symbol)
@@ -595,6 +609,7 @@ class AlphaTrader:
         print(f"Mode: {'PAPER' if self.config.trading.paper_trading else 'LIVE'}", flush=True)
         print(f"Symbols: {self.config.trading.symbols}", flush=True)
         print(f"MCTS min win prob: {self.config.mcts.min_win_probability:.0%}", flush=True)
+        print(f"Min hold time: {self.config.trading.min_hold_minutes} min", flush=True)
         print(f"Slow loop interval: {self.config.trading.slow_loop_interval}s", flush=True)
         if DB_AVAILABLE and alpha_db:
             print(f"Database: ✅ Connected (PostgreSQL)", flush=True)

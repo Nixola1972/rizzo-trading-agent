@@ -170,6 +170,7 @@ class TradingConfig:
     # Execution
     slippage_pct: float = 0.05  # Assume 0.05% slippage
     min_profit_to_close: float = 0.5  # Min profit % to consider closing
+    min_hold_minutes: int = 5  # Minimum time to hold before closing (from analysis: 5-15 min best)
 
     # Loops
     slow_loop_interval: int = 60  # 1 minute (AI decision) - no API cost!
@@ -240,6 +241,7 @@ class AlphaConfig:
         config.trading.paper_trading = _env_bool("ALPHA_PAPER", True)
         config.trading.base_position_usd = _env_float("ALPHA_POSITION_USD", 25.0)
         config.trading.max_leverage = _env_int("ALPHA_MAX_LEVERAGE", 5)
+        config.trading.min_hold_minutes = _env_int("ALPHA_MIN_HOLD_MINUTES", 5)
 
         # Symbols - hardcode all 11, only override if TRADING_SYMBOLS explicitly set
         # NOTE: Ignore SYMBOLS env var (may be set by old .env files in container)
