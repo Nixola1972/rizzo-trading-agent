@@ -244,11 +244,14 @@ class AlphaConfig:
         # Symbols - hardcode all 11, only override if TRADING_SYMBOLS explicitly set
         # NOTE: Ignore SYMBOLS env var (may be set by old .env files in container)
         trading_symbols = os.getenv("TRADING_SYMBOLS", "")
+        print(f"[CONFIG DEBUG] TRADING_SYMBOLS env = '{trading_symbols}'", flush=True)
         if trading_symbols:
             config.trading.symbols = [s.strip().upper() for s in trading_symbols.split(",") if s.strip()]
+            print(f"[CONFIG DEBUG] Parsed symbols = {config.trading.symbols}", flush=True)
         else:
             # Default: all 11 symbols
             config.trading.symbols = ["BTC", "ETH", "SOL", "DOGE", "XRP", "BNB", "SUI", "ARB", "AVAX", "LINK", "ADA"]
+            print(f"[CONFIG DEBUG] Using default 11 symbols", flush=True)
 
         # Loop intervals
         config.trading.slow_loop_interval = _env_int("ALPHA_SLOW_INTERVAL", 60)
