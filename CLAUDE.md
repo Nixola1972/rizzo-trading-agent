@@ -2719,9 +2719,165 @@ docker run -v $(pwd)/alpha/data:/app/alpha/data \
 ### Note Tecniche
 
 - **Non auto-apprende**: Usa pesi fissi dal training. Per aggiornare, serve retraining.
-- **MCTS conservativo**: Blocca trade con win rate < 60%
+- **MCTS threshold**: Attualmente 45% (abbassato per raccogliere più dati in paper trading)
 - **Dati Binance**: Illimitati (dal 2017), molto più completi di HyperLiquid
 
 ---
 
-*AlphaTrader v0.2.0 - December 2025*
+## 🔧 Bug Fix History (Dicembre 2025)
+
+### Fix Applicati
+
+| Bug | Causa | Fix | File |
+|-----|-------|-----|------|
+| `schema "np" does not exist` | NumPy types passati a PostgreSQL | `sanitize_for_json()` + conversioni esplicite `float()/int()` | `alpha/db.py` |
+| `can't subtract offset-naive and offset-aware datetimes` | `datetime.utcnow()` è naive, DB è aware | Usato `datetime.now(timezone.utc)` | `alpha/db.py` |
+| `unsupported operand type(s) for -: 'float' and 'decimal.Decimal'` | PostgreSQL ritorna Decimal | Conversione `float(entry_price_raw)` prima di calcoli | `alpha/db.py` |
+| Solo 3 simboli invece di 11 | argparse `default=['BTC','ETH','SOL']` sovrascriveva config | Cambiato default a `None`, override solo se esplicito | `alpha/trader.py` |
+| CLOSE senza posizione | Model suggeriva CLOSE quando no position | Filtro: CLOSE→HOLD se no position | `alpha/trader.py` |
+
+### Configurazione Attuale
+
+```
+MCTS Threshold: 45% (per data collection)
+Slow Loop Interval: 60 secondi
+Simboli: BTC, ETH, SOL, DOGE, XRP, BNB, SUI, ARB, AVAX, LINK, ADA (11)
+Database: PostgreSQL (botone_baseline)
+Network: unified-memory-stack_memory-net
+```
+
+---
+
+## 📊 Query SQL per Analisi Paper Trading
+
+### Stats Generali
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT COUNT(*) as total,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(AVG(pnl_pct)::numeric, 2) as avg_pnl,
+  ROUND(SUM(pnl_pct)::numeric, 2) as total_pnl
+FROM alpha_trades WHERE status = 'CLOSED';"
+```
+
+### Per Simbolo
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, COUNT(*) as trades,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(SUM(pnl_pct)::numeric, 2) as pnl
+FROM alpha_trades WHERE status = 'CLOSED'
+GROUP BY symbol ORDER BY pnl DESC;"
+```
+
+### LONG vs SHORT
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT direction, COUNT(*) as trades,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(SUM(pnl_pct)::numeric, 2) as pnl
+FROM alpha_trades WHERE status = 'CLOSED'
+GROUP BY direction;"
+```
+
+### Confidence vs Win Rate
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT
+  CASE
+    WHEN policy_confidence >= 0.7 THEN 'HIGH (>=70%)'
+    WHEN policy_confidence >= 0.5 THEN 'MEDIUM (50-70%)'
+    ELSE 'LOW (<50%)'
+  END as confidence_level,
+  COUNT(*) as trades,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(AVG(pnl_pct)::numeric, 2) as avg_pnl
+FROM alpha_trades WHERE status = 'CLOSED'
+GROUP BY 1 ORDER BY avg_pnl DESC;"
+```
+
+### MCTS Accuracy
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT
+  CASE
+    WHEN mcts_win_prob >= 0.6 THEN 'MCTS >= 60%'
+    WHEN mcts_win_prob >= 0.5 THEN 'MCTS 50-60%'
+    WHEN mcts_win_prob >= 0.45 THEN 'MCTS 45-50%'
+    ELSE 'NO MCTS'
+  END as mcts_level,
+  COUNT(*) as trades,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(AVG(pnl_pct)::numeric, 2) as avg_pnl
+FROM alpha_trades WHERE status = 'CLOSED'
+GROUP BY 1 ORDER BY avg_pnl DESC;"
+```
+
+### Durata vs Successo
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT
+  CASE
+    WHEN duration_seconds < 300 THEN '< 5 min'
+    WHEN duration_seconds < 900 THEN '5-15 min'
+    WHEN duration_seconds < 1800 THEN '15-30 min'
+    ELSE '> 30 min'
+  END as duration_bucket,
+  COUNT(*) as trades,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(AVG(pnl_pct)::numeric, 2) as avg_pnl
+FROM alpha_trades WHERE status = 'CLOSED'
+GROUP BY 1 ORDER BY 1;"
+```
+
+### Trade Aperti
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, direction, ROUND(entry_price::numeric, 4) as entry, opened_at
+FROM alpha_trades WHERE status = 'OPEN' ORDER BY opened_at DESC;"
+```
+
+### Ultime Decisioni AI
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, final_action,
+  ROUND(policy_confidence::numeric, 2) as conf,
+  ROUND(mcts_win_prob::numeric, 2) as mcts,
+  created_at
+FROM alpha_decisions ORDER BY created_at DESC LIMIT 20;"
+```
+
+---
+
+## 🚀 Comandi Rapidi VPS
+
+### Rebuild & Restart AlphaTrader
+```bash
+cd ~/alphatrader
+git pull origin claude/continue-latest-branch-Wvo2L
+docker build --no-cache -t alphatrader -f Dockerfile.alpha .
+docker stop alpha_trader && docker rm alpha_trader
+docker run -d --name alpha_trader \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  alphatrader -m alpha.trader --mode paper --loop
+```
+
+### Logs
+```bash
+docker logs -f alpha_trader
+docker logs alpha_trader --tail 100
+```
+
+### Database Status
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "\dt alpha_*"
+```
+
+---
+
+*AlphaTrader v0.3.0 - December 2025 (Paper Trading Active)*
