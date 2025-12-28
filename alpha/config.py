@@ -172,7 +172,7 @@ class TradingConfig:
     min_profit_to_close: float = 0.5  # Min profit % to consider closing
 
     # Loops
-    slow_loop_interval: int = 300  # 5 minutes (AI decision)
+    slow_loop_interval: int = 60  # 1 minute (AI decision) - no API cost!
     fast_loop_interval: int = 5  # 5 seconds (monitoring)
 
     # Symbols - all 11 trading pairs
