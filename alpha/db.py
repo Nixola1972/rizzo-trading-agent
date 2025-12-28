@@ -11,7 +11,7 @@ Saves decisions and trades to PostgreSQL for:
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any
 from contextlib import contextmanager
 
@@ -427,8 +427,8 @@ def close_trade(
                 mfe_pct = ((entry_price_f - min_price_f) / entry_price_f) * 100 * leverage_f
                 mae_pct = ((entry_price_f - max_price_f) / entry_price_f) * 100 * leverage_f
 
-            # Calculate duration
-            duration = int((datetime.utcnow() - opened_at).total_seconds())
+            # Calculate duration - use timezone-aware datetime
+            duration = int((datetime.now(timezone.utc) - opened_at).total_seconds())
 
             # Update trade
             cur.execute("""
