@@ -694,15 +694,17 @@ def main():
     parser.add_argument(
         '--symbols',
         nargs='+',
-        default=['BTC', 'ETH', 'SOL'],
-        help='Symbols to trade'
+        default=None,  # Use config default if not specified
+        help='Symbols to trade (default: from config)'
     )
     args = parser.parse_args()
 
     # Configure
     config = get_config()
     config.trading.paper_trading = (args.mode == 'paper')
-    config.trading.symbols = args.symbols
+    # Only override symbols if explicitly passed on command line
+    if args.symbols:
+        config.trading.symbols = args.symbols
 
     # Create trader
     trader = AlphaTrader(config)
