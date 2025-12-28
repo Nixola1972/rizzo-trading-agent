@@ -1,0 +1,27 @@
+# Ignore env files (they may have old configurations)
+.env
+.env.*
+*.env
+
+# Ignore git
+.git
+.gitignore
+
+# Ignore Python cache
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# Ignore data and checkpoints (mounted as volumes)
+alpha/data/*
+alpha/checkpoints/*
+
+# Keep empty dirs
+!alpha/data/.gitkeep
+!alpha/checkpoints/.gitkeep
+
+# Ignore IDE
+.vscode
+.idea
+*.swp
