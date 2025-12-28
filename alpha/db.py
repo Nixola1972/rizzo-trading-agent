@@ -442,7 +442,7 @@ def close_trade(
                     exit_reason = %s,
                     status = 'CLOSED'
                 WHERE id = %s
-            """, (exit_price, pnl_pct, mfe_pct, mae_pct, duration, exit_reason, trade_id))
+            """, (exit_price_f, pnl_pct, mfe_pct, mae_pct, duration, exit_reason, trade_id))
 
             conn.commit()
             logger.info(f"Closed trade #{trade_id}: {pnl_pct:+.2f}%")
