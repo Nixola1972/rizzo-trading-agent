@@ -74,7 +74,7 @@ class MCTSConfig:
     c_puct: float = 1.414  # sqrt(2) - classic UCB
 
     # Threshold for execution
-    min_win_probability: float = 0.60  # Execute only if >60% win
+    min_win_probability: float = 0.55  # Execute only if >55% win
 
     # Simulation settings
     simulation_timesteps: int = 12  # Simulate 12 candles ahead (3h @ 15m)

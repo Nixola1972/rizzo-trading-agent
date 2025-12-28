@@ -353,6 +353,15 @@ class AlphaTrader:
         decision_info['policy_confidence'] = action.confidence
         decision_info['steps'].append(f"Policy suggests: {action.action_type.name}")
 
+        # 3.5. Filter CLOSE when no position exists
+        if action.action_type == ActionType.CLOSE and symbol not in self.positions:
+            print(f"[FILTER] CLOSE ignored: no position in {symbol}", flush=True)
+            action = Action(ActionType.HOLD, symbol, confidence=0.0)
+            decision_info['final_action'] = 'HOLD (no position)'
+            decision_info['steps'].append("Filtered: CLOSE without position → HOLD")
+            self._save_decision_to_db(symbol, data, decision_info)
+            return action, decision_info
+
         # 4. Get value estimate
         logger.info("Consulting Value Network...")
         value_output = self.value.estimate(state, symbol)
