@@ -226,7 +226,7 @@ class AlphaConfig:
 
         # MCTS config
         config.mcts.num_simulations = _env_int("ALPHA_MCTS_SIMS", 100)
-        config.mcts.min_win_probability = _env_float("ALPHA_MIN_WIN_PROB", 0.60)
+        config.mcts.min_win_probability = _env_float("ALPHA_MIN_WIN_PROB", 0.55)
 
         # Reward config
         config.reward.pnl_multiplier = _env_float("ALPHA_PNL_MULT", 1.0)
@@ -247,7 +247,7 @@ class AlphaConfig:
             config.trading.symbols = [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
 
         # Loop intervals
-        config.trading.slow_loop_interval = _env_int("ALPHA_SLOW_INTERVAL", 300)
+        config.trading.slow_loop_interval = _env_int("ALPHA_SLOW_INTERVAL", 60)
         config.trading.fast_loop_interval = _env_int("ALPHA_FAST_INTERVAL", 5)
 
         return config
