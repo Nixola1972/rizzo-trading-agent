@@ -406,17 +406,26 @@ def close_trade(
             if not row:
                 return
 
-            entry_price, direction, leverage, opened_at, max_price, min_price = row
+            entry_price_raw, direction, leverage, opened_at, max_price_raw, min_price_raw = row
+
+            # Convert Decimal to float for arithmetic
+            entry_price_f = float(entry_price_raw) if entry_price_raw else 0
+            max_price_f = float(max_price_raw) if max_price_raw else entry_price_f
+            min_price_f = float(min_price_raw) if min_price_raw else entry_price_f
+            exit_price_f = float(exit_price) if exit_price else 0
+            leverage_f = float(leverage) if leverage else 1
 
             # Calculate P&L
-            if direction == "LONG":
-                pnl_pct = ((exit_price - entry_price) / entry_price) * 100 * leverage
-                mfe_pct = ((max_price - entry_price) / entry_price) * 100 * leverage
-                mae_pct = ((min_price - entry_price) / entry_price) * 100 * leverage
+            if entry_price_f == 0:
+                pnl_pct = mfe_pct = mae_pct = 0
+            elif direction == "LONG":
+                pnl_pct = ((exit_price_f - entry_price_f) / entry_price_f) * 100 * leverage_f
+                mfe_pct = ((max_price_f - entry_price_f) / entry_price_f) * 100 * leverage_f
+                mae_pct = ((min_price_f - entry_price_f) / entry_price_f) * 100 * leverage_f
             else:
-                pnl_pct = ((entry_price - exit_price) / entry_price) * 100 * leverage
-                mfe_pct = ((entry_price - min_price) / entry_price) * 100 * leverage
-                mae_pct = ((entry_price - max_price) / entry_price) * 100 * leverage
+                pnl_pct = ((entry_price_f - exit_price_f) / entry_price_f) * 100 * leverage_f
+                mfe_pct = ((entry_price_f - min_price_f) / entry_price_f) * 100 * leverage_f
+                mae_pct = ((entry_price_f - max_price_f) / entry_price_f) * 100 * leverage_f
 
             # Calculate duration
             duration = int((datetime.utcnow() - opened_at).total_seconds())
