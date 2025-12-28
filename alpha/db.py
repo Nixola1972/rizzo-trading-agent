@@ -320,6 +320,13 @@ def save_trade_open(
 
         try:
             cur = conn.cursor()
+            # Convert numpy types to native Python
+            safe_entry_price = float(entry_price) if entry_price else 0
+            safe_size_usd = float(size_usd) if size_usd else 0
+            safe_leverage = int(leverage) if leverage else 1
+            safe_confidence = float(policy_confidence) if policy_confidence else 0
+            safe_mcts_prob = float(mcts_win_prob) if mcts_win_prob else None
+
             cur.execute("""
                 INSERT INTO alpha_trades (
                     symbol, direction, opened_at,
@@ -331,9 +338,9 @@ def save_trade_open(
                 )
                 RETURNING id
             """, (
-                symbol, direction, entry_price, size_usd, leverage,
-                decision_id, policy_confidence, mcts_win_prob,
-                entry_price, entry_price, is_paper
+                symbol, direction, safe_entry_price, safe_size_usd, safe_leverage,
+                decision_id, safe_confidence, safe_mcts_prob,
+                safe_entry_price, safe_entry_price, is_paper
             ))
 
             result = cur.fetchone()
@@ -360,12 +367,13 @@ def update_trade_prices(trade_id: int, current_price: float, direction: str):
 
         try:
             cur = conn.cursor()
+            safe_price = float(current_price) if current_price else 0
             cur.execute("""
                 UPDATE alpha_trades
                 SET max_price = GREATEST(max_price, %s),
                     min_price = LEAST(min_price, %s)
                 WHERE id = %s
-            """, (current_price, current_price, trade_id))
+            """, (safe_price, safe_price, trade_id))
             conn.commit()
         except Exception as e:
             logger.error(f"Error updating trade prices: {e}")
