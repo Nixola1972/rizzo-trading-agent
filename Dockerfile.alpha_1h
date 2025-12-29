@@ -1,0 +1,66 @@
+# Dockerfile for AlphaTrader 1H Model
+# ====================================
+#
+# Completely independent from 15m model.
+# Uses separate:
+#   - Checkpoints (alpha/checkpoints/*_1h.pt)
+#   - Data (alpha/data/hourly/)
+#   - DB tables (alpha_trades_1h, alpha_decisions_1h)
+#
+# Build:
+#   docker build -t alphatrader_1h -f Dockerfile.alpha_1h .
+#
+# Run:
+#   docker run alphatrader_1h download     # Download 1h data
+#   docker run alphatrader_1h train        # Train 1h model
+#   docker run -d alphatrader_1h trade-paper  # Paper trading
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional dependencies for AlphaTrader
+RUN pip install --no-cache-dir \
+    torch \
+    numpy \
+    pandas \
+    scikit-learn \
+    ta \
+    pyarrow \
+    psycopg2-binary \
+    python-dotenv \
+    requests \
+    eth-account \
+    hyperliquid-python-sdk
+
+# Copy application code
+COPY . .
+
+# Create data directories
+RUN mkdir -p alpha/data/hourly alpha/checkpoints
+
+# Make entrypoint executable
+RUN chmod +x alpha/entrypoint_1h.sh
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV ALPHA_INTERVAL=1h
+
+# Entrypoint
+ENTRYPOINT ["/app/alpha/entrypoint_1h.sh"]
+
+# Default command
+CMD ["help"]

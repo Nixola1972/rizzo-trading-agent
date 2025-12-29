@@ -63,6 +63,54 @@ class NetworkConfig:
 
 
 @dataclass
+class IntervalConfig:
+    """Candle interval configuration - for 15m vs 1h models."""
+
+    # Interval string
+    interval: str = "15m"  # "15m" or "1h"
+
+    # Time multipliers
+    candle_minutes: int = 15  # Minutes per candle
+    hours_per_candle: float = 0.25  # For duration calculations
+
+    # Data paths (separate for each interval)
+    data_suffix: str = ""  # "_1h" for hourly model
+    checkpoint_suffix: str = ""  # "_1h" for hourly model
+
+    # DB table suffix
+    db_table_suffix: str = ""  # "_1h" for hourly model
+
+    # Loop interval (how often to check for new candles)
+    loop_interval_seconds: int = 60  # 60 sec for 15m, 300 sec for 1h
+
+    @classmethod
+    def for_15m(cls) -> "IntervalConfig":
+        """Configuration for 15-minute candles (default)."""
+        return cls(
+            interval="15m",
+            candle_minutes=15,
+            hours_per_candle=0.25,
+            data_suffix="",
+            checkpoint_suffix="",
+            db_table_suffix="",
+            loop_interval_seconds=60
+        )
+
+    @classmethod
+    def for_1h(cls) -> "IntervalConfig":
+        """Configuration for 1-hour candles."""
+        return cls(
+            interval="1h",
+            candle_minutes=60,
+            hours_per_candle=1.0,
+            data_suffix="_1h",
+            checkpoint_suffix="_1h",
+            db_table_suffix="_1h",
+            loop_interval_seconds=300  # Check every 5 min for hourly model
+        )
+
+
+@dataclass
 class MCTSConfig:
     """Monte Carlo Tree Search configuration."""
 
@@ -77,7 +125,7 @@ class MCTSConfig:
     min_win_probability: float = 0.0  # 0% = MCTS calculates but never blocks trades
 
     # Simulation settings
-    simulation_timesteps: int = 12  # Simulate 12 candles ahead (3h @ 15m)
+    simulation_timesteps: int = 12  # Simulate 12 candles ahead (3h @ 15m, 12h @ 1h)
     use_prophet_for_sim: bool = True  # Use Prophet for price simulation
 
     # Performance
@@ -192,6 +240,7 @@ class AlphaConfig:
     reward: RewardConfig = field(default_factory=RewardConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
+    interval: IntervalConfig = field(default_factory=IntervalConfig)
 
     # API Keys (shared with botone)
     openrouter_api_key: Optional[str] = None
@@ -256,6 +305,13 @@ class AlphaConfig:
         config.trading.slow_loop_interval = _env_int("ALPHA_SLOW_INTERVAL", 60)
         config.trading.fast_loop_interval = _env_int("ALPHA_FAST_INTERVAL", 5)
 
+        # Interval config (15m or 1h)
+        interval_str = os.getenv("ALPHA_INTERVAL", "15m").lower().strip()
+        if interval_str == "1h":
+            config.interval = IntervalConfig.for_1h()
+        else:
+            config.interval = IntervalConfig.for_15m()
+
         return config
 
     def validate(self) -> List[str]:
@@ -277,13 +333,34 @@ class AlphaConfig:
         return errors
 
 
-# Global config instance
+# Global config instances (separate for 15m and 1h)
 _config: Optional[AlphaConfig] = None
+_config_1h: Optional[AlphaConfig] = None
 
 
 def get_config() -> AlphaConfig:
-    """Get or create global config."""
+    """Get or create global config (uses ALPHA_INTERVAL env var)."""
     global _config
     if _config is None:
         _config = AlphaConfig.from_env()
     return _config
+
+
+def get_config_1h() -> AlphaConfig:
+    """Get or create config specifically for 1h model."""
+    global _config_1h
+    if _config_1h is None:
+        _config_1h = AlphaConfig.from_env()
+        _config_1h.interval = IntervalConfig.for_1h()
+        # Adjust slow loop for hourly model (check every 5 min)
+        _config_1h.trading.slow_loop_interval = 300
+        # Adjust min hold time for hourly model (at least 30 min)
+        _config_1h.trading.min_hold_minutes = 30
+    return _config_1h
+
+
+def get_config_for_interval(interval: str) -> AlphaConfig:
+    """Get config for a specific interval."""
+    if interval == "1h":
+        return get_config_1h()
+    return get_config()

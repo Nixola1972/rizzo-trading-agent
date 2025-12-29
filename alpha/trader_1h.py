@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""
+AlphaTrader 1H Trading Bot
+==========================
+
+Paper/Live trading with the 1-hour model, completely independent from 15m model.
+
+Features:
+- Uses 1h candles from HyperLiquid
+- Separate database tables (alpha_trades_1h, alpha_decisions_1h)
+- Separate checkpoints (model_1h_*.pt)
+- Slower loop (every 5 minutes instead of 1 minute)
+- Longer minimum hold time (30 minutes instead of 5)
+
+Usage:
+    # Paper trading
+    python -m alpha.trader_1h --mode paper --loop
+
+    # Single decision (no loop)
+    python -m alpha.trader_1h --mode paper --once
+"""
+
+import os
+import sys
+import time
+import logging
+import argparse
+from datetime import datetime, timedelta
+from typing import Dict, Optional, List
+from dataclasses import dataclass
+
+# Set environment variable BEFORE importing config
+os.environ["ALPHA_INTERVAL"] = "1h"
+
+from dotenv import load_dotenv
+load_dotenv(".env.alpha")
+load_dotenv(".env.baseline", override=False)
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from alpha.config import get_config_1h, AlphaConfig
+from alpha.market_state import MarketState, Action, ActionType, create_state_from_data
+from alpha.policy_network import create_policy_network
+from alpha.value_network import create_value_network
+from alpha.mcts import MCTS
+from alpha.reward import RewardCalculator
+
+# Import 1H database module
+try:
+    from alpha import db_1h as alpha_db
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    alpha_db = None
+
+# Import standalone indicators
+try:
+    from alpha.indicators_standalone import get_hyperliquid_indicators, get_fear_greed_index
+    INDICATORS_AVAILABLE = True
+except ImportError:
+    INDICATORS_AVAILABLE = False
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [ALPHA-1H] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AlphaPosition1H:
+    """Current position tracking for 1H model."""
+    symbol: str
+    direction: str  # "LONG" or "SHORT"
+    entry_price: float
+    size_usd: float
+    leverage: int
+    opened_at: datetime
+    current_price: float = 0.0
+    unrealized_pnl_pct: float = 0.0
+    max_profit_pct: float = 0.0
+    max_loss_pct: float = 0.0
+    trade_id: Optional[int] = None
+    decision_id: Optional[int] = None
+
+
+class AlphaTrader1H:
+    """
+    1-Hour Trading Bot using Policy Network + Value Network + MCTS.
+    Completely independent from 15m model.
+    """
+
+    def __init__(self, config: AlphaConfig):
+        self.config = config
+        self.positions: Dict[str, AlphaPosition1H] = {}
+
+        # Paper trading balance
+        self.paper_balance = 1000.0
+
+        # Load models
+        self.policy_net = None
+        self.value_net = None
+        self.mcts = None
+
+        self._load_models()
+
+        logger.info(f"AlphaTrader 1H initialized")
+        logger.info(f"  Interval: {config.interval.interval}")
+        logger.info(f"  Symbols: {config.trading.symbols}")
+        logger.info(f"  Loop interval: {config.interval.loop_interval_seconds}s")
+        logger.info(f"  Min hold: {config.trading.min_hold_minutes} min")
+
+    def _load_models(self):
+        """Load policy and value networks for 1H model."""
+        import torch
+
+        # Look for 1h checkpoint
+        checkpoint_path = "alpha/checkpoints/final_model_1h.pt"
+        if not os.path.exists(checkpoint_path):
+            checkpoint_path = "alpha/checkpoints/model_1h_best.pt"
+        if not os.path.exists(checkpoint_path):
+            # Fall back to 15m model if 1h not available yet
+            checkpoint_path = "alpha/checkpoints/final_model.pt"
+            logger.warning("1H model not found, using 15m model as fallback")
+
+        if os.path.exists(checkpoint_path):
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+                # Create networks
+                state_dim = self.config.network.state_dim
+                self.policy_net = create_policy_network(state_dim)
+                self.value_net = create_value_network(state_dim)
+
+                # Load weights
+                if 'policy_state_dict' in checkpoint:
+                    self.policy_net.load_state_dict(checkpoint['policy_state_dict'])
+                if 'value_state_dict' in checkpoint:
+                    self.value_net.load_state_dict(checkpoint['value_state_dict'])
+
+                self.policy_net.eval()
+                self.value_net.eval()
+
+                # Create MCTS
+                self.mcts = MCTS(self.policy_net, self.value_net, self.config.mcts)
+
+                logger.info(f"Loaded model from {checkpoint_path}")
+
+            except Exception as e:
+                logger.error(f"Error loading model: {e}")
+                self.policy_net = None
+        else:
+            logger.warning(f"No model checkpoint found at {checkpoint_path}")
+
+    def get_market_data_1h(self, symbol: str) -> Optional[Dict]:
+        """Get market data using 1h candles."""
+        if not INDICATORS_AVAILABLE:
+            logger.error("Indicators not available")
+            return None
+
+        try:
+            # Get indicators (uses 1h candles internally based on ALPHA_INTERVAL)
+            indicators = get_hyperliquid_indicators(symbol, interval="1h")
+            if not indicators:
+                return None
+
+            # Get fear & greed
+            fear_greed = get_fear_greed_index() or 50
+
+            return {
+                'symbol': symbol,
+                'price': indicators.get('price', 0),
+                'rsi_14': indicators.get('rsi_14', 50),
+                'macd': indicators.get('macd', 0),
+                'adx': indicators.get('adx', 25),
+                'ema20': indicators.get('ema20', 0),
+                'ema50': indicators.get('ema50', 0),
+                'atr_14': indicators.get('atr_14', 0),
+                'volume': indicators.get('volume', 0),
+                'fear_greed': fear_greed,
+                'interval': '1h'
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting market data for {symbol}: {e}")
+            return None
+
+    def make_decision(self, symbol: str, market_data: Dict) -> Optional[Action]:
+        """Make trading decision using policy network + MCTS."""
+        if self.policy_net is None:
+            logger.warning("No model loaded, cannot make decision")
+            return None
+
+        try:
+            import torch
+
+            # Create market state
+            state = create_state_from_data(
+                symbol=symbol,
+                market_data=market_data,
+                position=self.positions.get(symbol),
+                config=self.config
+            )
+
+            # Get policy prediction
+            state_tensor = torch.FloatTensor(state.to_vector()).unsqueeze(0)
+
+            with torch.no_grad():
+                action_probs = self.policy_net(state_tensor)
+                value = self.value_net(state_tensor)
+
+            # Get action from policy
+            action_idx = torch.argmax(action_probs).item()
+            confidence = action_probs[0][action_idx].item()
+
+            # Map to action type
+            action_types = [ActionType.HOLD, ActionType.OPEN_LONG, ActionType.OPEN_SHORT,
+                          ActionType.CLOSE]
+            action_type = action_types[min(action_idx, len(action_types) - 1)]
+
+            # MCTS validation if enabled
+            mcts_approved = True
+            mcts_win_prob = None
+
+            if self.mcts and self.config.mcts.min_win_probability > 0:
+                mcts_result = self.mcts.search(state)
+                mcts_win_prob = mcts_result.get('win_probability', 0)
+                mcts_approved = mcts_win_prob >= self.config.mcts.min_win_probability
+
+            action = Action(
+                action_type=action_type,
+                symbol=symbol,
+                confidence=confidence,
+                value_estimate=value.item(),
+                mcts_approved=mcts_approved,
+                mcts_win_prob=mcts_win_prob
+            )
+
+            return action
+
+        except Exception as e:
+            logger.error(f"Error making decision for {symbol}: {e}")
+            return None
+
+    def execute_action(self, action: Action, market_data: Dict) -> bool:
+        """Execute trading action (paper or live)."""
+        symbol = action.symbol
+        price = market_data.get('price', 0)
+
+        if action.action_type == ActionType.HOLD:
+            return True
+
+        if action.action_type == ActionType.CLOSE:
+            return self._close_position(symbol, price, "SIGNAL")
+
+        if action.action_type in [ActionType.OPEN_LONG, ActionType.OPEN_SHORT]:
+            # Check if already have position
+            if symbol in self.positions:
+                logger.info(f"[1H] Already have position in {symbol}, skipping")
+                return False
+
+            direction = "LONG" if action.action_type == ActionType.OPEN_LONG else "SHORT"
+            return self._open_position(symbol, direction, price, action)
+
+        return False
+
+    def _open_position(self, symbol: str, direction: str, price: float, action: Action) -> bool:
+        """Open a new position."""
+        size_usd = self.config.trading.base_position_usd
+        leverage = min(self.config.trading.max_leverage, 3)  # Lower leverage for 1h
+
+        # Save to DB
+        decision_id = None
+        trade_id = None
+
+        if DB_AVAILABLE and alpha_db:
+            decision_id = alpha_db.save_decision_1h(
+                symbol=symbol,
+                policy_action=direction,
+                final_action=f"OPEN_{direction}",
+                policy_confidence=action.confidence,
+                value_estimate=action.value_estimate,
+                win_probability=action.mcts_win_prob or action.confidence,
+                mcts_approved=action.mcts_approved,
+                mcts_win_prob=action.mcts_win_prob,
+                mcts_reason=None,
+                price=price,
+                rsi=50,
+                macd=0,
+                adx=25,
+                fear_greed=50,
+                market_data={},
+                decision_info={'action': direction, 'interval': '1h'}
+            )
+
+            trade_id = alpha_db.save_trade_open_1h(
+                symbol=symbol,
+                direction=direction,
+                entry_price=price,
+                size_usd=size_usd,
+                leverage=leverage,
+                decision_id=decision_id,
+                policy_confidence=action.confidence,
+                mcts_win_prob=action.mcts_win_prob,
+                is_paper=self.config.trading.paper_trading
+            )
+
+        # Create position
+        self.positions[symbol] = AlphaPosition1H(
+            symbol=symbol,
+            direction=direction,
+            entry_price=price,
+            size_usd=size_usd,
+            leverage=leverage,
+            opened_at=datetime.now(),
+            current_price=price,
+            trade_id=trade_id,
+            decision_id=decision_id
+        )
+
+        logger.info(f"[1H] ✅ OPENED {direction} {symbol} @ ${price:.2f}")
+        return True
+
+    def _close_position(self, symbol: str, price: float, reason: str) -> bool:
+        """Close existing position."""
+        if symbol not in self.positions:
+            return False
+
+        position = self.positions[symbol]
+
+        # Calculate P&L
+        if position.direction == "LONG":
+            pnl_pct = ((price - position.entry_price) / position.entry_price) * 100 * position.leverage
+        else:
+            pnl_pct = ((position.entry_price - price) / position.entry_price) * 100 * position.leverage
+
+        # Update paper balance
+        pnl_usd = position.size_usd * (pnl_pct / 100)
+        self.paper_balance += pnl_usd
+
+        # Save to DB
+        if DB_AVAILABLE and alpha_db and position.trade_id:
+            alpha_db.close_trade_1h(position.trade_id, price, reason)
+
+        logger.info(f"[1H] ✅ CLOSED {position.direction} {symbol} @ ${price:.2f} | P&L: {pnl_pct:+.2f}%")
+
+        del self.positions[symbol]
+        return True
+
+    def check_positions(self):
+        """Check and manage open positions."""
+        for symbol, position in list(self.positions.items()):
+            try:
+                market_data = self.get_market_data_1h(symbol)
+                if not market_data:
+                    continue
+
+                price = market_data.get('price', 0)
+                position.current_price = price
+
+                # Update P&L
+                if position.direction == "LONG":
+                    pnl_pct = ((price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                else:
+                    pnl_pct = ((position.entry_price - price) / position.entry_price) * 100 * position.leverage
+
+                position.unrealized_pnl_pct = pnl_pct
+                position.max_profit_pct = max(position.max_profit_pct, pnl_pct)
+                position.max_loss_pct = min(position.max_loss_pct, pnl_pct)
+
+                # Update DB
+                if DB_AVAILABLE and alpha_db and position.trade_id:
+                    alpha_db.update_trade_prices_1h(position.trade_id, price, position.direction)
+
+                # Check hold time
+                hold_minutes = (datetime.now() - position.opened_at).total_seconds() / 60
+
+                # Check for close conditions
+                if hold_minutes >= self.config.trading.min_hold_minutes:
+                    # Get fresh decision
+                    action = self.make_decision(symbol, market_data)
+                    if action and action.action_type == ActionType.CLOSE:
+                        self._close_position(symbol, price, "SIGNAL")
+                    # Also check if significant profit
+                    elif pnl_pct > 2.0:  # 2% profit threshold for 1h model
+                        self._close_position(symbol, price, "TAKE_PROFIT")
+
+                # Emergency stop loss
+                if pnl_pct < -5.0:  # 5% stop loss
+                    self._close_position(symbol, price, "STOP_LOSS")
+
+            except Exception as e:
+                logger.error(f"[1H] Error checking position {symbol}: {e}")
+
+    def run_once(self):
+        """Run one trading cycle."""
+        logger.info(f"[1H] {'='*50}")
+        logger.info(f"[1H] Trading cycle at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # Check existing positions first
+        self.check_positions()
+
+        # Make decisions for each symbol
+        for symbol in self.config.trading.symbols:
+            try:
+                # Skip if already have position
+                if symbol in self.positions:
+                    continue
+
+                # Check max positions
+                if len(self.positions) >= self.config.trading.max_open_positions:
+                    break
+
+                # Get market data
+                market_data = self.get_market_data_1h(symbol)
+                if not market_data:
+                    continue
+
+                # Make decision
+                action = self.make_decision(symbol, market_data)
+                if not action:
+                    continue
+
+                # Execute if approved
+                if action.action_type != ActionType.HOLD:
+                    if action.mcts_approved or self.config.mcts.min_win_probability == 0:
+                        self.execute_action(action, market_data)
+                    else:
+                        logger.info(f"[1H] MCTS vetoed {symbol} action")
+
+            except Exception as e:
+                logger.error(f"[1H] Error processing {symbol}: {e}")
+
+        # Log status
+        open_count = len(self.positions)
+        logger.info(f"[1H] Status: {open_count} open positions, Balance: ${self.paper_balance:.2f}")
+
+    def run_loop(self):
+        """Run continuous trading loop."""
+        logger.info(f"[1H] Starting trading loop (interval: {self.config.interval.loop_interval_seconds}s)")
+
+        while True:
+            try:
+                self.run_once()
+                time.sleep(self.config.interval.loop_interval_seconds)
+
+            except KeyboardInterrupt:
+                logger.info("[1H] Shutting down...")
+                break
+            except Exception as e:
+                logger.error(f"[1H] Loop error: {e}")
+                time.sleep(60)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="AlphaTrader 1H Bot")
+    parser.add_argument("--mode", choices=["paper", "live"], default="paper",
+                       help="Trading mode")
+    parser.add_argument("--loop", action="store_true",
+                       help="Run continuous loop")
+    parser.add_argument("--once", action="store_true",
+                       help="Run single cycle")
+
+    args = parser.parse_args()
+
+    # Get 1h config
+    config = get_config_1h()
+    config.trading.paper_trading = (args.mode == "paper")
+
+    # Create trader
+    trader = AlphaTrader1H(config)
+
+    if args.once:
+        trader.run_once()
+    else:
+        trader.run_loop()
+
+
+if __name__ == "__main__":
+    main()

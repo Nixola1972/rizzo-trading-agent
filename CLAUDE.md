@@ -2724,6 +2724,100 @@ docker run -v $(pwd)/alpha/data:/app/alpha/data \
 
 ---
 
+## 🕐 AlphaTrader 1H Model (NEW)
+
+### Architettura Parallela
+
+Il modello 1H è **completamente indipendente** dal modello 15m:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    ARCHITETTURA PARALLELA                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   MODELLO 15m                          MODELLO 1h                       │
+│   ─────────────────────                ──────────────────               │
+│                                                                         │
+│   Checkpoint: final_model.pt           Checkpoint: final_model_1h.pt   │
+│   Data: alpha/data/*.parquet           Data: alpha/data/hourly/        │
+│   DB: alpha_trades                     DB: alpha_trades_1h             │
+│   Loop: ogni 60 sec                    Loop: ogni 300 sec              │
+│   Min Hold: 5 min                      Min Hold: 30 min                │
+│   Stile: Scalping                      Stile: Swing Trading            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Files del Modello 1H
+
+| File | Descrizione |
+|------|-------------|
+| `alpha/config.py` | IntervalConfig per 15m/1h |
+| `alpha/trainer_1h.py` | Wrapper training per 1h |
+| `alpha/trader_1h.py` | Bot trading per 1h |
+| `alpha/db_1h.py` | Tabelle DB separate (_1h suffix) |
+| `alpha/entrypoint_1h.sh` | Entrypoint container 1h |
+| `Dockerfile.alpha_1h` | Docker image per 1h |
+
+### Comandi Docker
+
+```bash
+# Build container 1h
+docker build -t alphatrader_1h -f Dockerfile.alpha_1h .
+
+# Download candele 1h (tutti 11 simboli, dal 2017)
+docker run -v $(pwd)/alpha/data:/app/alpha/data alphatrader_1h download
+
+# Training modello 1h
+docker run -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  alphatrader_1h train
+
+# Paper trading 1h
+docker run -d --name alpha_trader_1h \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env.baseline \
+  alphatrader_1h trade-paper
+```
+
+### Tabelle Database 1H
+
+```sql
+-- Trades del modello 1h
+SELECT * FROM alpha_trades_1h;
+
+-- Decisioni del modello 1h
+SELECT * FROM alpha_decisions_1h;
+
+-- Equity curve 1h
+SELECT * FROM alpha_equity_1h;
+```
+
+### Query Stats 1H
+
+```bash
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT COUNT(*) as total,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(AVG(pnl_pct)::numeric, 2) as avg_pnl,
+  ROUND(SUM(pnl_pct)::numeric, 2) as total_pnl
+FROM alpha_trades_1h WHERE status = 'CLOSED';"
+```
+
+### Differenze Chiave vs 15m
+
+| Aspetto | Modello 15m | Modello 1h |
+|---------|-------------|------------|
+| Candele | 15 minuti | 1 ora |
+| Loop interval | 60 sec | 300 sec |
+| Min hold time | 5 min | 30 min |
+| Stile trading | Scalping | Swing |
+| Fees | Più alte (più trades) | Più basse |
+| Rumore | Più sensibile | Più filtrato |
+| Trend following | Meno efficace | Più efficace |
+
+---
+
 ## 🔧 Bug Fix History (Dicembre 2025)
 
 ### Fix Applicati
