@@ -21,10 +21,9 @@ import os
 import sys
 import argparse
 import logging
-import pickle
 import numpy as np
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 # Set environment variable BEFORE importing config
 os.environ["ALPHA_INTERVAL"] = "1h"
@@ -38,36 +37,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
-
-
-def load_training_data(data_path: str, max_episodes: Optional[int] = None) -> List[List[Dict]]:
-    """Load training episodes from pickle file."""
-    if not os.path.exists(data_path):
-        logger.error(f"Data file not found: {data_path}")
-        return []
-
-    with open(data_path, "rb") as f:
-        raw_episodes = pickle.load(f)
-
-    logger.info(f"Loaded {len(raw_episodes)} raw episodes from {data_path}")
-
-    if max_episodes and len(raw_episodes) > max_episodes:
-        raw_episodes = raw_episodes[:max_episodes]
-        logger.info(f"Limited to {max_episodes} episodes")
-
-    # Convert to expected format (list of candle lists)
-    episodes = []
-    for ep in raw_episodes:
-        if isinstance(ep, dict) and 'candles' in ep:
-            candles = ep['candles']
-            if len(candles) >= 50:  # Minimum episode length
-                episodes.append(candles)
-        elif isinstance(ep, list):
-            if len(ep) >= 50:
-                episodes.append(ep)
-
-    logger.info(f"Prepared {len(episodes)} valid episodes for training")
-    return episodes
 
 
 def main():
@@ -111,7 +80,7 @@ def main():
     logger.info(f"Found training data: {data_file}")
 
     # Import trainer components
-    from alpha.trainer import PPOTrainer
+    from alpha.trainer import PPOTrainer, load_hyperliquid_data
     from alpha.config import get_config_1h
 
     # Get 1h config
@@ -119,15 +88,15 @@ def main():
     logger.info(f"Interval: {config.interval.interval}")
     logger.info(f"Hours per candle: {config.interval.hours_per_candle}")
 
-    # Load data
+    # Load data using the proper loader that converts to trainer format
     logger.info("Loading training episodes...")
-    episodes = load_training_data(data_file, max_episodes=args.episodes * 2)
+    episodes = load_hyperliquid_data(data_file, max_episodes=args.episodes * 2)
 
     if not episodes:
         logger.error("No valid episodes loaded!")
         sys.exit(1)
 
-    logger.info(f"Loaded {len(episodes)} episodes")
+    logger.info(f"Loaded {len(episodes)} episodes for training")
 
     # Create trainer with TrainingConfig (not AlphaConfig)
     trainer = PPOTrainer(config=config.training)
