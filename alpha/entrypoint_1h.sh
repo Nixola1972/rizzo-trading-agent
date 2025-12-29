@@ -37,15 +37,18 @@ case $COMMAND in
         # Default symbols (all 11)
         SYMBOLS=${SYMBOLS:-"BTC ETH SOL DOGE XRP BNB ADA AVAX LINK ARB SUI"}
         START_YEAR=${START_YEAR:-2017}
+        DATA_TYPE=${DATA_TYPE:-"spot"}  # Use spot for 2017+ data (futures only from 2020)
 
         echo "   Symbols: $SYMBOLS"
         echo "   Start year: $START_YEAR"
+        echo "   Data type: $DATA_TYPE (spot=2017+, futures=2020+)"
         echo "   Output: alpha/data/hourly/"
 
         python -m alpha.binance_data_loader \
             --symbols $SYMBOLS \
             --interval 1h \
             --start-year $START_YEAR \
+            --data-type $DATA_TYPE \
             --output-dir alpha/data/hourly
 
         echo -e "${GREEN}✓ Download complete!${NC}"
