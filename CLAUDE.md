@@ -2816,6 +2816,76 @@ FROM alpha_trades_1h WHERE status = 'CLOSED';"
 | Rumore | Più sensibile | Più filtrato |
 | Trend following | Meno efficace | Più efficace |
 
+### Ottimizzazione Dati Training (Dicembre 2025)
+
+#### Spot vs Futures Data
+
+| Mercato | Dati disponibili | Note |
+|---------|------------------|------|
+| **Futures (perpetual)** | 2020+ | Default precedente |
+| **Spot** | **2017+** | Ora usato per training |
+
+I dati **SPOT** sono equivalenti per il training (stessi movimenti di prezzo) e permettono di avere **3 anni extra** di dati storici.
+
+#### Ottimizzazione Episodi
+
+Per massimizzare i dati di training, è stato aumentato l'overlap tra episodi:
+
+| Modello | Episode Length | Overlap | Step | Episodi/simbolo | Miglioramento |
+|---------|----------------|---------|------|-----------------|---------------|
+| **1h** (nuovo) | 72 candele (3 giorni) | 48 (67%) | 24 | ~2,900 | 3.3x |
+| **15m** (nuovo) | 100 candele | 50 (50%) | 50 | ~5,600 | 2.5x |
+
+#### Requisiti Memoria
+
+Il training richiede memoria significativa per convertire gli episodi:
+
+| Episodi | RAM Richiesta | Raccomandazione |
+|---------|---------------|-----------------|
+| 10,000 | ~4 GB | Aggiungere swap |
+| 25,000 | ~8 GB | Swap obbligatorio |
+
+**Configurazione Swap VPS:**
+```bash
+# Creare swap aggiuntivo (se necessario)
+sudo fallocate -l 8G /swapfile2
+sudo chmod 600 /swapfile2
+sudo mkswap /swapfile2
+sudo swapon /swapfile2
+
+# Rendere permanente
+echo '/swapfile2 none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+#### Comandi Docker con Memoria
+
+```bash
+# Training 1h con limiti memoria
+docker run -d --name train_1h \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  -e EPISODES=10000 \
+  --memory=6g \
+  --memory-swap=12g \
+  alphatrader_1h train
+
+# Download 15m con memoria
+docker run -d --name dl_15m \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  --memory=4g \
+  --memory-swap=8g \
+  alphatrader download
+```
+
+### Bug Fix Trainer 1H (29 Dicembre 2025)
+
+| Bug | Causa | Fix |
+|-----|-------|-----|
+| `ImportError: AlphaTrainer` | Classe rinominata in PPOTrainer | Usare `from alpha.trainer import PPOTrainer` |
+| `'AlphaConfig' has no attribute 'buffer_size'` | PPOTrainer vuole TrainingConfig | Passare `config.training` invece di `config` |
+| `KeyError: 'indicators'` | Formato dati Binance diverso | Usare `load_hyperliquid_data()` che converte formato |
+| `Reward: nan` | `episode_stats` vuoto | Aggiungere `trainer.episode_stats.append(stats)` dopo ogni episodio |
+
 ---
 
 ## 🔧 Bug Fix History (Dicembre 2025)
