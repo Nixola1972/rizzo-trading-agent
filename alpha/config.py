@@ -73,8 +73,8 @@ class MCTSConfig:
     # UCB exploration constant
     c_puct: float = 1.414  # sqrt(2) - classic UCB
 
-    # Threshold for execution
-    min_win_probability: float = 0.45  # Execute only if >45% win (paper trading - collect more data)
+    # Threshold for execution (0 = calculate MCTS but never veto, for data collection)
+    min_win_probability: float = 0.0  # 0% = MCTS calculates but never blocks trades
 
     # Simulation settings
     simulation_timesteps: int = 12  # Simulate 12 candles ahead (3h @ 15m)
@@ -227,7 +227,7 @@ class AlphaConfig:
 
         # MCTS config
         config.mcts.num_simulations = _env_int("ALPHA_MCTS_SIMS", 100)
-        config.mcts.min_win_probability = _env_float("ALPHA_MIN_WIN_PROB", 0.45)
+        config.mcts.min_win_probability = _env_float("ALPHA_MIN_WIN_PROB", 0.0)  # 0 = no veto, just collect data
 
         # Reward config
         config.reward.pnl_multiplier = _env_float("ALPHA_PNL_MULT", 1.0)
@@ -271,8 +271,8 @@ class AlphaConfig:
         if self.trading.max_leverage > 10:
             errors.append("max_leverage > 10 is dangerous")
 
-        if self.mcts.min_win_probability < 0.4:
-            errors.append("min_win_probability < 0.4 is too risky")
+        # Note: min_win_probability = 0 is valid for data collection phase
+        # (MCTS calculates but never vetoes)
 
         return errors
 
