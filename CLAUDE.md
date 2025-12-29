@@ -2880,4 +2880,108 @@ docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "\dt al
 
 ---
 
+## 🔄 Retraining del Modello
+
+### Quando fare Retraining?
+
+| Condizione | Raccomandazione |
+|------------|-----------------|
+| **Minimo trade** | 500-1000 trade chiusi |
+| **Tempo** | Ogni 1-2 settimane |
+| **Performance** | Se win rate scende sotto 45% |
+| **Mercato** | Dopo cambi significativi (bull→bear, alta volatilità) |
+
+### Statistiche Paper Trading (Dicembre 2025)
+
+Dopo 715 trade:
+
+| Metrica | Valore |
+|---------|--------|
+| **Win Rate** | 52% |
+| **P&L Totale** | +95.22 |
+| **Miglior Simbolo** | ADA (+19.44) |
+| **Peggior Simbolo** | XRP (-1.52) |
+| **LONG vs SHORT** | LONG +88.67 / SHORT +6.55 |
+| **Durata Ottimale** | 5-15 min (56% WR) |
+| **MCTS Ottimale** | 45-50% (54.7% WR) |
+
+### Procedura Retraining
+
+```bash
+# 1. Stop paper trading
+docker stop alpha_trader
+
+# 2. Esporta dati dal database
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+COPY (
+  SELECT symbol, direction, entry_price, exit_price, pnl_pct,
+         duration_seconds, policy_confidence, mcts_win_prob,
+         opened_at, closed_at
+  FROM alpha_trades
+  WHERE status='CLOSED'
+) TO STDOUT WITH CSV HEADER" > ~/alphatrader/alpha/data/paper_trades.csv
+
+# 3. Scarica dati recenti da Binance (ultimi 60 giorni)
+cd ~/alphatrader
+docker run -v $(pwd)/alpha/data:/app/alpha/data \
+  alphatrader python -m alpha.binance_data_loader --days 60
+
+# 4. Retrain con fine-tuning (continua dai pesi esistenti)
+docker run -it \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  alphatrader python -m alpha.trainer \
+    --data-source binance \
+    --episodes 5000 \
+    --resume alpha/checkpoints/final_model.pt
+
+# 5. Verifica nuovo modello
+docker run -it \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  alphatrader python -m alpha.debug_model
+
+# 6. Riavvia paper trading con nuovo modello
+docker run -d --name alpha_trader \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  alphatrader -m alpha.trader --mode paper --loop
+```
+
+### Opzioni Trainer
+
+| Opzione | Default | Descrizione |
+|---------|---------|-------------|
+| `--episodes` | 1000 | Numero episodi training |
+| `--resume` | None | Continua da checkpoint esistente |
+| `--data-source` | binance | `binance` o `hyperliquid` |
+| `--entropy-coef` | 0.05 | Esplorazione (↑ = più varietà) |
+| `--learning-rate` | 0.0003 | Velocità apprendimento |
+
+### Backup Prima del Retraining
+
+```bash
+# Backup modello attuale
+cp ~/alphatrader/alpha/checkpoints/final_model.pt \
+   ~/alphatrader/alpha/checkpoints/backup_$(date +%Y%m%d).pt
+```
+
+### Reset Statistiche DB (opzionale)
+
+```bash
+# Se vuoi azzerare e ripartire (NON cancella i dati, li archivia)
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+ALTER TABLE alpha_trades RENAME TO alpha_trades_archive_$(date +%Y%m%d);
+ALTER TABLE alpha_decisions RENAME TO alpha_decisions_archive_$(date +%Y%m%d);"
+
+# Poi riavvia il trader (ricrea le tabelle)
+docker restart alpha_trader
+```
+
+---
+
 *AlphaTrader v0.3.0 - December 2025 (Paper Trading Active)*
