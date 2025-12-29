@@ -129,8 +129,8 @@ def main():
 
     logger.info(f"Loaded {len(episodes)} episodes")
 
-    # Create trainer
-    trainer = PPOTrainer(config=config)
+    # Create trainer with TrainingConfig (not AlphaConfig)
+    trainer = PPOTrainer(config=config.training)
 
     # Resume if specified
     if args.resume and os.path.exists(args.resume):
