@@ -441,12 +441,34 @@ def download_all_data(
     start_year: int = 2020,
     interval: str = "15m",
     output_dir: str = "alpha/data",
-    data_type: str = "futures/um"
+    data_type: str = "futures/um",
+    episode_length: int = None,
+    episode_overlap: int = None
 ) -> Dict[str, pd.DataFrame]:
     """
     Download data for multiple symbols and create training episodes.
+
+    For 1h candles, use optimized settings:
+        episode_length=72 (3 days), overlap=48 (67%) -> 3.3x more episodes
+    For 15m candles, use default:
+        episode_length=100, overlap=20
     """
     loader = BinanceDataLoader(output_dir=os.path.join(output_dir, "binance_raw"))
+
+    # Optimized defaults based on interval
+    if episode_length is None:
+        if interval == "1h":
+            episode_length = 72  # 3 days of hourly candles
+        else:
+            episode_length = 100  # Default for 15m
+
+    if episode_overlap is None:
+        if interval == "1h":
+            episode_overlap = 48  # 67% overlap for more training data
+        else:
+            episode_overlap = 20  # Default 20% overlap
+
+    logger.info(f"📊 Episode config: length={episode_length}, overlap={episode_overlap}")
 
     all_data = {}
     all_episodes = []
@@ -470,8 +492,12 @@ def download_all_data(
             df.to_parquet(parquet_path)
             logger.info(f"Saved {symbol} to {parquet_path}")
 
-            # Create episodes
-            episodes = loader.create_training_episodes(df, symbol)
+            # Create episodes with optimized settings
+            episodes = loader.create_training_episodes(
+                df, symbol,
+                episode_length=episode_length,
+                overlap=episode_overlap
+            )
             all_episodes.extend(episodes)
             logger.info(f"Created {len(episodes)} training episodes for {symbol}")
 
@@ -557,6 +583,10 @@ def main():
     parser.add_argument("--data-type", default="futures/um",
                        choices=["futures/um", "spot"],
                        help="Data type: futures/um (perpetual) or spot")
+    parser.add_argument("--episode-length", type=int, default=None,
+                       help="Episode length in candles (default: 72 for 1h, 100 for 15m)")
+    parser.add_argument("--episode-overlap", type=int, default=None,
+                       help="Episode overlap in candles (default: 48 for 1h, 20 for 15m)")
 
     args = parser.parse_args()
 
@@ -568,7 +598,9 @@ def main():
             start_year=args.start_year,
             interval=args.interval,
             output_dir=args.output_dir,
-            data_type=args.data_type
+            data_type=args.data_type,
+            episode_length=args.episode_length,
+            episode_overlap=args.episode_overlap
         )
 
 
