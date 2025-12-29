@@ -132,6 +132,7 @@ def main():
 
             # Train on this episode
             stats = trainer.train_episode(episode_data)
+            trainer.episode_stats.append(stats)  # IMPORTANT: must append stats!
 
             # Log progress
             if global_step % log_interval == 0 or global_step == total_training_episodes:
