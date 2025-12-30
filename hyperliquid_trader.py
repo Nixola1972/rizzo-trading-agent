@@ -359,19 +359,11 @@ class HyperLiquidTrader:
             # For SL on SHORT position: we need to BUY (is_buy=True)
             is_buy = (direction.lower() == "short")
 
-            # Get current price for limit order (set slightly worse than trigger)
+            # Get current price for debugging
             mids = self.info.all_mids()
             current_price = float(mids.get(symbol, trigger_price))
 
-            # Set limit price slightly worse than trigger to ensure fill
-            # For SELL (closing long): limit below trigger
-            # For BUY (closing short): limit above trigger
-            if is_buy:
-                limit_price = trigger_price * 1.01  # 1% above trigger for buy
-            else:
-                limit_price = trigger_price * 0.99  # 1% below trigger for sell
-
-            # Round limit price to appropriate decimals
+            # Round trigger price to appropriate decimals
             symbol_info = None
             for perp in self.meta["universe"]:
                 if perp["name"] == symbol:
@@ -379,24 +371,28 @@ class HyperLiquidTrader:
                     break
 
             px_decimals = int(symbol_info.get("pxDecimals", 2)) if symbol_info else 2
-            limit_price = round(limit_price, px_decimals)
             trigger_price = round(trigger_price, px_decimals)
 
-            # Stop Loss order type
+            # For market SL order, use trigger as limit (will execute at market anyway)
+            limit_price = trigger_price
+
+            # Stop Loss order type - use simple trigger without tpsl designation
             stop_order_type = {
                 "trigger": {
                     "triggerPx": trigger_price,
-                    "isMarket": True,  # Market order when triggered
-                    "tpsl": "sl"  # This is a Stop Loss
+                    "isMarket": True  # Market order when triggered
+                    # NOTE: Removed "tpsl": "sl" - might cause issues on some assets
                 }
             }
 
             print(f"🛡️ Placing SL order on HyperLiquid:")
             print(f"   Symbol: {symbol}")
+            print(f"   Current price: ${current_price}")
             print(f"   Direction to close: {'BUY' if is_buy else 'SELL'}")
             print(f"   Size: {size}")
             print(f"   Trigger price: ${trigger_price}")
             print(f"   Limit price: ${limit_price}")
+            print(f"   Distance: {abs(current_price - trigger_price) / current_price * 100:.2f}%")
 
             result = self.exchange.order(
                 symbol,
@@ -408,7 +404,6 @@ class HyperLiquidTrader:
             )
 
             if result.get('status') == 'ok':
-                print(f"✅ Stop Loss order placed successfully")
                 # Debug: print full response structure
                 print(f"   Full response: {result}")
 
@@ -423,6 +418,12 @@ class HyperLiquidTrader:
                     if statuses:
                         order_info = statuses[0]
                         print(f"   Status[0]: {order_info}")
+
+                        # CHECK FOR ERROR IN RESPONSE!
+                        if isinstance(order_info, dict) and 'error' in order_info:
+                            error_msg = order_info.get('error', 'Unknown error')
+                            print(f"❌ Stop Loss order REJECTED: {error_msg}")
+                            return {"status": "error", "error": error_msg}
 
                         if isinstance(order_info, dict):
                             # Try 'resting' path (limit orders)
@@ -439,6 +440,7 @@ class HyperLiquidTrader:
                                 sl_order_id = order_info.get('orderId')
 
                 if sl_order_id:
+                    print(f"✅ Stop Loss order placed successfully")
                     print(f"   Order ID: {sl_order_id}")
                     result['sl_order_id'] = sl_order_id
                 else:
