@@ -260,7 +260,9 @@ class AlphaTrader1H:
                 policy_output = self.policy_net(state_tensor)
                 action_probs = policy_output[0]  # First element is action_probs
                 net_confidence = policy_output[3]  # Fourth element is confidence
-                value = self.value_net(state_tensor)
+                # value_net returns: (value, confidence)
+                value_output = self.value_net(state_tensor)
+                value_estimate = value_output[0].item()  # First element is value tensor
 
             # Get action from policy
             action_idx = torch.argmax(action_probs).item()
@@ -280,14 +282,16 @@ class AlphaTrader1H:
                 mcts_win_prob = mcts_result.get('win_probability', 0)
                 mcts_approved = mcts_win_prob >= self.config.mcts.min_win_probability
 
+            # Create action with valid fields only
             action = Action(
                 action_type=action_type,
                 symbol=symbol,
-                confidence=confidence,
-                value_estimate=value.item(),
-                mcts_approved=mcts_approved,
-                mcts_win_prob=mcts_win_prob
+                confidence=confidence
             )
+            # Store extra info as attributes for logging
+            action.value_estimate = value_estimate
+            action.mcts_approved = mcts_approved
+            action.mcts_win_prob = mcts_win_prob
 
             return action
 
