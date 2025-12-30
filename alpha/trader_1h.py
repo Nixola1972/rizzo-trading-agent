@@ -198,16 +198,61 @@ class AlphaTrader1H:
         try:
             import torch
 
-            # Create market state
+            # Format indicators for create_state_from_data
+            indicators_data = {
+                symbol: {
+                    'price': market_data.get('price', 0),
+                    'ema20': market_data.get('ema20', 0),
+                    'ema50': market_data.get('ema50', 0),
+                    'rsi_14': market_data.get('rsi_14', 50),
+                    'rsi_7': market_data.get('rsi_14', 50),  # Use 14 as fallback
+                    'macd': market_data.get('macd', 0),
+                    'macd_signal': 0,
+                    'macd_histogram': 0,
+                    'atr_14': market_data.get('atr_14', 0),
+                    'adx': market_data.get('adx', 25),
+                    'volume_ratio': 1.0,
+                    'bollinger_pct_b': 0.5,
+                    'obv_trend': 0,
+                }
+            }
+
+            # Format sentiment data
+            sentiment_data = {
+                'value': market_data.get('fear_greed', 50),
+                'classification': 'Neutral'
+            }
+
+            # Position data
+            position_data = None
+            if symbol in self.positions:
+                pos = self.positions[symbol]
+                position_data = {
+                    'has_position': True,
+                    'symbol': pos.symbol,
+                    'direction': pos.direction,
+                    'entry_price': pos.entry_price,
+                    'current_price': pos.current_price,
+                    'size_usd': pos.size_usd,
+                    'leverage': pos.leverage,
+                    'unrealized_pnl_pct': pos.unrealized_pnl_pct,
+                    'duration_hours': (datetime.now() - pos.opened_at).total_seconds() / 3600,
+                    'max_profit_pct': pos.max_profit_pct,
+                    'max_loss_pct': pos.max_loss_pct,
+                }
+
+            # Create market state with properly formatted data
             state = create_state_from_data(
-                symbol=symbol,
-                market_data=market_data,
-                position=self.positions.get(symbol),
-                config=self.config
+                indicators_data=indicators_data,
+                sentiment_data=sentiment_data,
+                forecast_data={},
+                score_data={},
+                position_data=position_data,
+                account_data={'balance_usd': self.paper_balance, 'equity_usd': self.paper_balance}
             )
 
-            # Get policy prediction
-            state_tensor = torch.FloatTensor(state.to_vector()).unsqueeze(0)
+            # Get policy prediction (pass target symbol for correct feature extraction)
+            state_tensor = torch.FloatTensor(state.to_vector(target_symbol=symbol)).unsqueeze(0)
 
             with torch.no_grad():
                 action_probs = self.policy_net(state_tensor)
