@@ -266,7 +266,13 @@ class AlphaConfig:
         config.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         config.hl_private_key = os.getenv("PRIVATE_KEY") or os.getenv("HL_PRIVATE_KEY")
         config.hl_account_address = os.getenv("WALLET_ADDRESS") or os.getenv("HL_ACCOUNT_ADDRESS")
-        config.hl_testnet = _env_bool("TESTNET", True) or _env_bool("HL_TESTNET", True)
+        # TESTNET: check both env vars, default to True for safety
+        # Use AND so that setting either to false gives false
+        testnet_env = os.getenv("TESTNET", "").lower().strip()
+        if testnet_env in ("false", "0", "no", "off"):
+            config.hl_testnet = False
+        else:
+            config.hl_testnet = _env_bool("HL_TESTNET", True)
 
         # Database
         config.database_url = os.getenv("DATABASE_URL")
