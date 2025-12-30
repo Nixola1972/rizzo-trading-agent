@@ -159,9 +159,6 @@ class HyperLiquidTrader:
 
         op = order_json["operation"]
         symbol = order_json["symbol"]
-        direction = order_json["direction"]
-        portion = Decimal(str(order_json["target_portion_of_balance"]))
-        leverage = int(order_json.get("leverage", 1))
 
         if op == "hold":
             print(f"[HyperLiquidTrader] HOLD — nessuna azione per {symbol}.")
@@ -172,6 +169,11 @@ class HyperLiquidTrader:
             return self.exchange.market_close(symbol)
 
         # OPEN --------------------------------------------------------
+        # These fields are only required for OPEN operations
+        direction = order_json["direction"]
+        portion = Decimal(str(order_json["target_portion_of_balance"]))
+        leverage = int(order_json.get("leverage", 1))
+
         # Prima di aprire la posizione, imposta la leva desiderata
         leverage_result = self.set_leverage_for_symbol(
             symbol=symbol,
