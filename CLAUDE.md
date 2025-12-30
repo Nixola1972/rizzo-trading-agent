@@ -3908,4 +3908,187 @@ WHERE is_paper = FALSE AND status = 'OPEN';"
 
 ---
 
-*AlphaTrader v0.5.0 - December 2025 (LIVE Safety Features Implemented)*
+## 🚀 AlphaTrader LIVE Trading (ATTIVO - 30 Dicembre 2025)
+
+### Configurazione Attuale
+
+| Aspetto | Valore |
+|---------|--------|
+| **Container** | `alpha_trader_live` |
+| **Branch** | `claude/analyze-container-issues-aBfhT` |
+| **Mode** | LIVE (soldi veri!) |
+| **Simboli** | SUI, ETH (2 simboli per concentrare capitale) |
+| **Position Size** | $50 USD |
+| **Leverage** | 5x |
+| **Stop Loss** | 2.5% |
+| **Profit Lock** | 3 stadi (vedi sotto) |
+
+### Database
+
+```bash
+# Connessione PostgreSQL
+DATABASE_URL=postgresql://tradingbot:BotoneDB2025@memory_postgres:5432/botone_baseline
+
+# Container DB
+Container: memory_postgres
+Network: unified-memory-stack_memory-net
+Port: 5433:5432 (host:container)
+
+# Connessione da host
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline
+```
+
+### 3-Stage Profit Lock System (IMPLEMENTATO)
+
+Sistema di protezione profitti basato su analisi 966 trade vincenti (5-7 min):
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    3-STAGE PROFIT LOCK                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   STADIO 1: Mediana raggiunta (0.50%)                                   │
+│   └─→ Sposta SL a +0.20% (protegge profitto base)                       │
+│                                                                         │
+│   STADIO 2: Ottimo raggiunto (0.90%)                                    │
+│   └─→ Sposta SL a +0.50% (protegge profitto mediano)                    │
+│                                                                         │
+│   STADIO 3: Sniper (top 10%) (1.60%)                                    │
+│   └─→ TP nativo su exchange chiude automaticamente                     │
+│                                                                         │
+│   Exit Types nel database:                                              │
+│   🎯 TP_HIT_EXCHANGE     - Take Profit raggiunto                        │
+│   🔒 PROFIT_LOCK_SL_S1   - SL hit dopo Stage 1 (profit +0.20%)          │
+│   🔒 PROFIT_LOCK_SL_S2   - SL hit dopo Stage 2 (profit +0.50%)          │
+│   🛑 SL_HIT_EXCHANGE     - Stop Loss iniziale hit                       │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Configurazione Env Files
+
+**File 1: `.env.baseline`** (credenziali, NON committare)
+```bash
+# HyperLiquid
+PRIVATE_KEY=0x...     # Chiave privata wallet
+WALLET_ADDRESS=0x...  # Indirizzo wallet
+
+# Database
+DATABASE_URL=postgresql://tradingbot:BotoneDB2025@memory_postgres:5432/botone_baseline
+```
+
+**File 2: `.env.alpha.live`** (parametri trading, nel repo)
+```bash
+ALPHA_PAPER=false
+TESTNET=false
+TRADING_SYMBOLS=SUI,ETH
+ALPHA_POSITION_USD=50
+ALPHA_MAX_LEVERAGE=5
+STOP_LOSS_PCT=2.5
+ALPHA_MIN_HOLD_MINUTES=5
+ALPHA_MAX_HOLD_MINUTES=7
+PROFIT_LOCK_1_TRIGGER=0.50
+PROFIT_LOCK_1_SL=0.20
+PROFIT_LOCK_2_TRIGGER=0.90
+PROFIT_LOCK_2_SL=0.50
+HARD_TAKE_PROFIT_PCT=1.60
+TRADE_COOLDOWN_MINUTES=5
+ALPHA_MIN_WIN_PROB=0.0  # MCTS disabilitato
+```
+
+### Deploy LIVE (Comando Completo)
+
+```bash
+cd ~/alphatrader
+git pull origin claude/analyze-container-issues-aBfhT
+
+# Rebuild immagine
+docker build --no-cache -t alphatrader -f Dockerfile.alpha .
+
+# Stop e rimuovi container esistente
+docker stop alpha_trader_live 2>/dev/null; docker rm alpha_trader_live 2>/dev/null
+
+# Avvia LIVE trading
+docker run -d \
+  --name alpha_trader_live \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env.baseline \
+  --env-file .env.alpha.live \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  alphatrader -m alpha.trader --mode live --loop
+
+# Visualizza logs
+docker logs -f alpha_trader_live
+```
+
+### Query Analisi LIVE
+
+```bash
+# Stats generali LIVE
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT COUNT(*) as trades,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / NULLIF(COUNT(*), 0), 1) as win_rate,
+  ROUND(SUM(pnl_pct)::numeric, 2) as total_pnl
+FROM alpha_trades WHERE is_paper = FALSE AND status = 'CLOSED';"
+
+# Per simbolo
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, COUNT(*) as trades,
+  ROUND(SUM(pnl_pct)::numeric, 2) as pnl
+FROM alpha_trades WHERE is_paper = FALSE AND status = 'CLOSED'
+GROUP BY symbol ORDER BY pnl DESC;"
+
+# Per exit_reason (profit lock analysis)
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT exit_reason, COUNT(*) as count,
+  ROUND(AVG(pnl_pct)::numeric, 2) as avg_pnl
+FROM alpha_trades WHERE is_paper = FALSE AND status = 'CLOSED'
+GROUP BY exit_reason ORDER BY count DESC;"
+
+# Trade aperti
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, direction,
+  ROUND(entry_price::numeric, 4) as entry,
+  ROUND(stop_loss_price::numeric, 4) as sl,
+  current_sl_lock_stage as stage,
+  opened_at
+FROM alpha_trades WHERE is_paper = FALSE AND status = 'OPEN';"
+```
+
+### Files Chiave Modificati (Profit Lock)
+
+| File | Modifiche |
+|------|-----------|
+| `alpha/config.py` | Aggiunti `profit_lock_*` params a TradingConfig |
+| `alpha/trader.py` | Aggiunti `_set_take_profit()`, `_update_profit_lock()` |
+| `hyperliquid_trader.py` | Aggiunto `place_take_profit()` method |
+| `.env.alpha.live` | Parametri profit lock (3 stadi) |
+
+### Troubleshooting
+
+**Errore: "Non-hexadecimal digit found"**
+→ Le credenziali non vengono lette. Assicurarsi che `.env.baseline` abbia PRIVATE_KEY valida.
+
+**Errore: "invalid dsn: missing '='"**
+→ `.env.alpha.live` aveva `${VAR}` placeholders. Rimossi - usare due --env-file.
+
+**Errore: "Invalid TP/SL price. asset=1"**
+→ HyperLiquid rifiuta ordini con prezzi invalidi. Verificare `pxDecimals` per ogni asset.
+
+### Container Attivi (Dicembre 2025)
+
+| Container | Mode | Database | Note |
+|-----------|------|----------|------|
+| `alpha_trader_live` | LIVE 15m | alpha_trades | SUI, ETH |
+| `alpha_trader` | PAPER 15m | alpha_trades | 11 simboli |
+| `alpha_trader_1h` | PAPER 1h | alpha_trades_1h | 11 simboli |
+| `botone_v6_slow` | LIVE | botone_trades | Rizzo bot |
+| `botone_v6_fast` | LIVE | botone_trades | Rizzo bot |
+
+---
+
+*AlphaTrader v0.6.0 - December 2025 (3-Stage Profit Lock LIVE)*
