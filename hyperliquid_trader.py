@@ -377,7 +377,14 @@ class HyperLiquidTrader:
 
             # Round trigger and limit price to correct decimals
             trigger_price = round(trigger_price, px_decimals)
-            limit_price = trigger_price  # Same price for market order
+
+            # For SL: limit price should be worse than trigger to ensure fill
+            # LONG position (selling): limit BELOW trigger
+            # SHORT position (buying): limit ABOVE trigger
+            if is_buy:  # SHORT closing = buying
+                limit_price = round(trigger_price * 1.02, px_decimals)  # 2% above
+            else:  # LONG closing = selling
+                limit_price = round(trigger_price * 0.98, px_decimals)  # 2% below
 
             # Round size to correct decimals - CRITICAL for ETH!
             size = round(size, sz_decimals)
@@ -385,7 +392,7 @@ class HyperLiquidTrader:
             # Stop Loss order type - tpsl is REQUIRED by SDK
             stop_order_type = {
                 "trigger": {
-                    "triggerPx": trigger_price,
+                    "triggerPx": str(trigger_price),  # Convert to string
                     "isMarket": True,
                     "tpsl": "sl"  # Required by HyperLiquid SDK
                 }
@@ -506,7 +513,14 @@ class HyperLiquidTrader:
             px_decimals = int(symbol_info.get("pxDecimals", 2)) if symbol_info else 2
             sz_decimals = int(symbol_info.get("szDecimals", 4)) if symbol_info else 4
             trigger_price = round(trigger_price, px_decimals)
-            limit_price = trigger_price  # Same price for market order
+
+            # For TP: limit price should be worse than trigger to ensure fill
+            # LONG position (selling at profit): limit BELOW trigger
+            # SHORT position (buying at profit): limit ABOVE trigger
+            if is_buy:  # SHORT closing = buying
+                limit_price = round(trigger_price * 1.02, px_decimals)  # 2% above
+            else:  # LONG closing = selling
+                limit_price = round(trigger_price * 0.98, px_decimals)  # 2% below
 
             # Round size to correct decimals - CRITICAL for ETH!
             size = round(size, sz_decimals)
@@ -514,7 +528,7 @@ class HyperLiquidTrader:
             # Take Profit order type - tpsl is REQUIRED by SDK
             tp_order_type = {
                 "trigger": {
-                    "triggerPx": trigger_price,
+                    "triggerPx": str(trigger_price),  # Convert to string
                     "isMarket": True,
                     "tpsl": "tp"  # This is a Take Profit
                 }

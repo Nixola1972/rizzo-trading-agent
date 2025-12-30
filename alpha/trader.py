@@ -1217,12 +1217,12 @@ class AlphaTrader:
         while True:
             try:
                 loop_count += 1
-                now = datetime.utcnow()
+                now = datetime.now()
+                timestamp = now.strftime('%H:%M:%S')
 
-                if loop_count <= 3 or loop_count % 10 == 0:
-                    print(f"[Loop {loop_count}] {now.strftime('%H:%M:%S')}", flush=True)
-
-                # Fast loop: update positions
+                # Fast loop: update positions (with clear logging)
+                if self.positions:
+                    print(f"\n─── FAST [{timestamp}] Loop {loop_count} ───", flush=True)
                 self.update_positions()
 
                 # Slow loop: make decisions
