@@ -31,19 +31,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install PyTorch CPU version (separate for correct index)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 # Install additional dependencies for AlphaTrader
 RUN pip install --no-cache-dir \
-    torch \
     numpy \
     pandas \
     scikit-learn \
     ta \
     pyarrow \
-    psycopg2-binary \
-    python-dotenv \
-    requests \
-    eth-account \
-    hyperliquid-python-sdk
+    psycopg2-binary
 
 # Copy application code
 COPY . .
