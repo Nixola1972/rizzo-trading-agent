@@ -2914,6 +2914,96 @@ Network: unified-memory-stack_memory-net
 
 ---
 
+## 🚨 PENDING TASKS (30 Dicembre 2025)
+
+### Branch Attivo
+```
+claude/hourly-candles-training-kkQhi
+```
+
+### Stato Attuale
+
+| Componente | Stato | Problema | Azione Richiesta |
+|------------|-------|----------|------------------|
+| **1h Training** | ✅ Completato | - | Win Rate 58.9%, Avg P&L 1.59% |
+| **1h Paper Trading** | ⚠️ Codice vecchio | Container non ricostruito dopo fix | Rebuild con nuovo codice |
+| **15m Dati** | ❌ Corrotto | `EOFError: Ran out of input` - OOM durante download | Riscaricare dati |
+| **15m Training** | ⏸️ Bloccato | Dati mancanti/corrotti | Aspetta dati validi |
+
+### Problema 1: Container 1h con codice vecchio
+
+Il fix per MCTS è stato pushato ma il container sul VPS usa ancora il codice vecchio.
+
+**Errore:**
+```
+Error loading model: 'int' object has no attribute 'state_dim'
+```
+
+**Soluzione:**
+```bash
+cd ~/alphatrader
+git pull origin claude/hourly-candles-training-kkQhi
+docker build --no-cache -t alphatrader_1h -f Dockerfile.alpha_1h .
+docker stop alpha_trader_1h && docker rm alpha_trader_1h
+docker run -d --name alpha_trader_1h \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env.baseline \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  alphatrader_1h trade-paper
+```
+
+### Problema 2: Dati 15m corrotti
+
+Il file `training_episodes_binance.pkl` è corrotto/vuoto a causa di OOM kill durante il download.
+
+**Errore:**
+```
+EOFError: Ran out of input
+```
+
+**Soluzione:**
+```bash
+# Elimina file corrotto
+rm -f ~/alphatrader/alpha/data/training_episodes_binance.pkl
+
+# Riscarica (opzione 1: tutti i simboli)
+docker run -it --rm \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  --memory=4g \
+  --memory-swap=8g \
+  alphatrader download
+
+# Oppure (opzione 2: solo simboli principali per risparmiare memoria)
+docker run -it --rm \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -e SYMBOLS="BTC ETH SOL" \
+  --memory=4g \
+  alphatrader download
+```
+
+### Problema 3: Memoria VPS insufficiente
+
+Il VPS ha 7.8 GB RAM + 12 GB swap = ~20 GB totali, ma il download di tutti gli 11 simboli dal 2017 richiede più memoria.
+
+**Opzioni:**
+1. Scaricare meno simboli (es. solo BTC ETH SOL)
+2. Scaricare meno anni (es. --start-year 2020)
+3. Aggiungere più swap
+4. Scaricare simbolo per simbolo e unire i file
+
+### Checklist per Prossima Sessione
+
+- [ ] Rebuild container 1h con nuovo codice
+- [ ] Verificare che 1h paper trading funzioni
+- [ ] Eliminare file 15m corrotto
+- [ ] Riscaricare dati 15m (decidere quanti simboli/anni)
+- [ ] Avviare training 15m
+- [ ] Monitorare paper trading di entrambi i modelli
+
+---
+
 ## 📊 Query SQL per Analisi Paper Trading
 
 ### Stats Generali
