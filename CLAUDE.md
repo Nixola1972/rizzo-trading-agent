@@ -2877,7 +2877,7 @@ docker run -d --name dl_15m \
   alphatrader download
 ```
 
-### Bug Fix Trainer 1H (29 Dicembre 2025)
+### Bug Fix Trainer 1H (29-30 Dicembre 2025)
 
 | Bug | Causa | Fix |
 |-----|-------|-----|
@@ -2885,6 +2885,8 @@ docker run -d --name dl_15m \
 | `'AlphaConfig' has no attribute 'buffer_size'` | PPOTrainer vuole TrainingConfig | Passare `config.training` invece di `config` |
 | `KeyError: 'indicators'` | Formato dati Binance diverso | Usare `load_hyperliquid_data()` che converte formato |
 | `Reward: nan` | `episode_stats` vuoto | Aggiungere `trainer.episode_stats.append(stats)` dopo ogni episodio |
+| `get_hyperliquid_indicators() got unexpected argument 'interval'` | Funzione non accetta parametro interval | Rimuovere `interval` dalla chiamata |
+| `'int' object has no attribute 'state_dim'` | MCTS inizializzato con parametri errati | Cambiare `MCTS(policy, value, config)` → `MCTS(config.mcts)` |
 
 ---
 

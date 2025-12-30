@@ -143,8 +143,8 @@ class AlphaTrader1H:
                 self.policy_net.eval()
                 self.value_net.eval()
 
-                # Create MCTS
-                self.mcts = MCTS(self.policy_net, self.value_net, self.config.mcts)
+                # Create MCTS (only takes config)
+                self.mcts = MCTS(self.config.mcts)
 
                 logger.info(f"Loaded model from {checkpoint_path}")
 
