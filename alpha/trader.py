@@ -51,16 +51,24 @@ except ImportError:
     DB_AVAILABLE = False
     alpha_db = None
 
+# Import HyperLiquidTrader SEPARATELY (required for live trading)
+HyperLiquidTrader = None
+try:
+    from hyperliquid_trader import HyperLiquidTrader
+    logging.info("HyperLiquidTrader imported successfully")
+except ImportError as e:
+    logging.warning(f"HyperLiquidTrader not available: {e}")
+    HyperLiquidTrader = None
+
 # Import shared modules from parent OR use standalone
 try:
     from indicators import get_hyperliquid_indicators
     from forecaster import get_crypto_forecasts
     from sentiment import get_fear_greed_index
     from signal_scorer import calculate_signal_score, calculate_smart_score_v2
-    from hyperliquid_trader import HyperLiquidTrader
     MODULES_AVAILABLE = True
 except ImportError as e:
-    logging.info(f"Shared modules not found, using standalone indicators")
+    logging.info(f"Shared modules not found, using standalone indicators: {e}")
     # Use standalone indicators from alpha module
     try:
         from .indicators_standalone import get_hyperliquid_indicators, get_fear_greed_index
@@ -68,7 +76,6 @@ except ImportError as e:
         def get_crypto_forecasts(*args, **kwargs): return []
         def calculate_signal_score(*args, **kwargs): return {'bull': 0, 'bear': 0, 'net': 0}
         def calculate_smart_score_v2(*args, **kwargs): return {'bull': 0, 'bear': 0, 'net': 0}
-        HyperLiquidTrader = None  # Will use paper trading only
         MODULES_AVAILABLE = True
         logging.info("Standalone indicators loaded successfully")
     except ImportError as e2:
@@ -139,14 +146,20 @@ class AlphaTrader:
             self._load_checkpoint(checkpoint_path)
 
         # Initialize exchange connection (for live trading)
-        self.exchange: Optional[HyperLiquidTrader] = None
-        if MODULES_AVAILABLE and not self.config.trading.paper_trading:
+        self.exchange = None
+        if not self.config.trading.paper_trading:
+            if HyperLiquidTrader is None:
+                raise RuntimeError(
+                    "LIVE mode requires HyperLiquidTrader but it failed to import! "
+                    "Check that hyperliquid-python-sdk and eth-account are installed."
+                )
             logger.info("Connecting to HyperLiquid...")
             self.exchange = HyperLiquidTrader(
                 secret_key=self.config.hl_private_key,
                 account_address=self.config.hl_account_address,
                 testnet=self.config.hl_testnet,
             )
+            logger.info("✅ Connected to HyperLiquid LIVE!")
 
         # State
         self.positions: Dict[str, AlphaPosition] = {}
