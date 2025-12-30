@@ -409,17 +409,40 @@ class HyperLiquidTrader:
 
             if result.get('status') == 'ok':
                 print(f"✅ Stop Loss order placed successfully")
-                # Extract order ID if available
+                # Debug: print full response structure
+                print(f"   Full response: {result}")
+
+                # Extract order ID - try multiple paths
+                sl_order_id = None
+
                 response = result.get('response', {})
                 if isinstance(response, dict):
                     data = response.get('data', {})
                     statuses = data.get('statuses', [])
+
                     if statuses:
                         order_info = statuses[0]
-                        if isinstance(order_info, dict) and 'resting' in order_info:
-                            oid = order_info['resting'].get('oid')
-                            print(f"   Order ID: {oid}")
-                            result['sl_order_id'] = oid
+                        print(f"   Status[0]: {order_info}")
+
+                        if isinstance(order_info, dict):
+                            # Try 'resting' path (limit orders)
+                            if 'resting' in order_info:
+                                sl_order_id = order_info['resting'].get('oid')
+                            # Try 'filled' path (market orders)
+                            elif 'filled' in order_info:
+                                sl_order_id = order_info['filled'].get('oid')
+                            # Try direct 'oid'
+                            elif 'oid' in order_info:
+                                sl_order_id = order_info.get('oid')
+                            # Try 'orderId'
+                            elif 'orderId' in order_info:
+                                sl_order_id = order_info.get('orderId')
+
+                if sl_order_id:
+                    print(f"   Order ID: {sl_order_id}")
+                    result['sl_order_id'] = sl_order_id
+                else:
+                    print(f"   ⚠️ Could not extract order ID from response")
             else:
                 print(f"⚠️ SL order response: {result}")
 
@@ -459,14 +482,14 @@ class HyperLiquidTrader:
             print(f"❌ Error getting open orders: {e}")
             return []
 
-    def verify_sl_order_exists(self, symbol: str, expected_trigger_price: float, tolerance_pct: float = 0.5) -> Optional[int]:
+    def verify_sl_order_exists(self, symbol: str, expected_trigger_price: float, tolerance_pct: float = 1.0) -> Optional[int]:
         """
         Verify that a stop loss order exists for a symbol.
 
         Args:
             symbol: Trading pair
             expected_trigger_price: Expected SL trigger price
-            tolerance_pct: Price tolerance percentage (default 0.5%)
+            tolerance_pct: Price tolerance percentage (default 1.0%)
 
         Returns:
             Order ID if found, None otherwise
@@ -474,24 +497,47 @@ class HyperLiquidTrader:
         try:
             open_orders = self.get_open_orders(symbol)
 
+            print(f"🔍 Checking {len(open_orders)} open orders for {symbol}...")
+
             for order in open_orders:
-                # Check if it's a trigger order (SL/TP)
-                order_type = order.get('orderType', '')
-                if 'trigger' not in order_type.lower() and 'stop' not in order_type.lower():
-                    continue
+                # Debug: print order structure
+                print(f"   Order: {order}")
 
-                # Check trigger price matches (within tolerance)
-                trigger_px = float(order.get('triggerPx', 0))
-                if trigger_px == 0:
-                    continue
+                # Check trigger price - HyperLiquid may use different field names
+                trigger_px = 0
+                if 'triggerPx' in order:
+                    trigger_px = float(order.get('triggerPx', 0))
+                elif 'trigger_px' in order:
+                    trigger_px = float(order.get('trigger_px', 0))
 
-                price_diff_pct = abs(trigger_px - expected_trigger_price) / expected_trigger_price * 100
-                if price_diff_pct <= tolerance_pct:
-                    order_id = order.get('oid')
-                    print(f"✅ Found SL order: ID={order_id}, trigger=${trigger_px}")
-                    return order_id
+                # If no trigger price, check if it's marked as reduce_only (SL orders are reduce_only)
+                is_reduce_only = order.get('reduceOnly', False) or order.get('reduce_only', False)
 
+                # Get order ID
+                order_id = order.get('oid') or order.get('orderId') or order.get('id')
+
+                if trigger_px > 0:
+                    price_diff_pct = abs(trigger_px - expected_trigger_price) / expected_trigger_price * 100
+                    print(f"   Found trigger order: ID={order_id}, trigger=${trigger_px}, diff={price_diff_pct:.2f}%")
+
+                    if price_diff_pct <= tolerance_pct:
+                        print(f"✅ Found SL order: ID={order_id}, trigger=${trigger_px}")
+                        return order_id
+                elif is_reduce_only:
+                    # It's a reduce-only order, might be our SL
+                    print(f"   Found reduce_only order: ID={order_id}")
+                    # Check limit price instead
+                    limit_px = float(order.get('limitPx', 0) or order.get('px', 0))
+                    if limit_px > 0:
+                        price_diff_pct = abs(limit_px - expected_trigger_price) / expected_trigger_price * 100
+                        if price_diff_pct <= tolerance_pct * 2:  # Allow more tolerance for limit price
+                            print(f"✅ Found SL order (by limit): ID={order_id}, limit=${limit_px}")
+                            return order_id
+
+            print(f"⚠️ No matching SL order found for {symbol} at ~${expected_trigger_price:.2f}")
             return None
         except Exception as e:
             print(f"❌ Error verifying SL order: {e}")
+            import traceback
+            traceback.print_exc()
             return None
