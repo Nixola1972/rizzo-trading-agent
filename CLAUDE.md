@@ -3242,3 +3242,314 @@ docker restart alpha_trader
 ---
 
 *AlphaTrader v0.3.0 - December 2025 (Paper Trading Active)*
+
+---
+
+## 📊 AlphaTrader 1H - Paper Trading (ATTIVO)
+
+### Stato Attuale (30 Dicembre 2025)
+
+| Aspetto | Valore |
+|---------|--------|
+| **Stato** | ✅ Paper Trading ATTIVO |
+| **Container** | `alpha_trader_1h` |
+| **Branch** | `claude/analyze-container-issues-aBfhT` |
+| **Modello** | `alpha/checkpoints/final_model_1h.pt` |
+| **Training completato** | ✅ Win Rate 58.9%, Avg P&L 1.59% |
+| **Simboli** | BTC, ETH, SOL, DOGE, XRP, BNB, SUI, ARB, AVAX, LINK, ADA (11) |
+| **Loop interval** | 300 secondi (5 minuti) |
+| **Min hold time** | 30 minuti |
+| **Database** | `botone_baseline` (tabelle `_1h`) |
+
+### Come Funziona
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    1H PAPER TRADING FLOW                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Ogni 5 minuti (300s):                                                 │
+│                                                                         │
+│   1. Fetch candele 1h da HyperLiquid API                               │
+│   2. Calcola indicatori (RSI, MACD, ADX, EMA, ATR)                      │
+│   3. Fetch Fear & Greed Index                                           │
+│   4. Crea MarketState (43 features)                                     │
+│   5. Policy Network → suggerisce azione (HOLD/LONG/SHORT/CLOSE)         │
+│   6. Value Network → stima win probability                              │
+│   7. (Opzionale) MCTS → valida decisione                                │
+│   8. Esegue trade in paper mode                                         │
+│   9. Salva decisione e trade nel database PostgreSQL                    │
+│                                                                         │
+│   Tabelle Database:                                                     │
+│   ├─ alpha_trades_1h: Tutti i trade (open/closed)                       │
+│   ├─ alpha_decisions_1h: Ogni decisione presa                           │
+│   └─ alpha_equity_1h: Equity curve nel tempo                            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Comandi VPS
+
+```bash
+# Avvia paper trading 1h
+cd ~/alphatrader
+docker run -d --name alpha_trader_1h \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env.baseline \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  alphatrader_1h trade-paper
+
+# Logs in tempo reale
+docker logs -f alpha_trader_1h
+
+# Stop
+docker stop alpha_trader_1h && docker rm alpha_trader_1h
+```
+
+---
+
+## 📈 Query SQL per Analisi Completa (Modello 1H)
+
+### 1. Overview Generale
+
+```sql
+-- Stats generali del paper trading
+SELECT
+  COUNT(*) as total_trades,
+  COUNT(CASE WHEN status = 'OPEN' THEN 1 END) as open_trades,
+  COUNT(CASE WHEN status = 'CLOSED' THEN 1 END) as closed_trades,
+  COUNT(CASE WHEN status = 'CLOSED' AND pnl_pct > 0 THEN 1 END) as wins,
+  COUNT(CASE WHEN status = 'CLOSED' AND pnl_pct <= 0 THEN 1 END) as losses,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) /
+        NULLIF(COUNT(CASE WHEN status = 'CLOSED' THEN 1 END), 0), 1) as win_rate_pct,
+  ROUND(SUM(CASE WHEN status = 'CLOSED' THEN pnl_pct ELSE 0 END)::numeric, 2) as total_pnl_pct,
+  ROUND(AVG(CASE WHEN status = 'CLOSED' THEN pnl_pct END)::numeric, 3) as avg_pnl_pct
+FROM alpha_trades_1h;
+```
+
+### 2. Performance per Simbolo
+
+```sql
+-- P&L per simbolo
+SELECT
+  symbol,
+  COUNT(*) as trades,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(SUM(pnl_pct)::numeric, 2) as total_pnl_pct,
+  ROUND(AVG(pnl_pct)::numeric, 3) as avg_pnl_pct,
+  ROUND(MAX(pnl_pct)::numeric, 2) as best_trade,
+  ROUND(MIN(pnl_pct)::numeric, 2) as worst_trade
+FROM alpha_trades_1h
+WHERE status = 'CLOSED'
+GROUP BY symbol
+ORDER BY total_pnl_pct DESC;
+```
+
+### 3. LONG vs SHORT Performance
+
+```sql
+-- Confronto direzioni
+SELECT
+  direction,
+  COUNT(*) as trades,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(SUM(pnl_pct)::numeric, 2) as total_pnl_pct,
+  ROUND(AVG(pnl_pct)::numeric, 3) as avg_pnl_pct
+FROM alpha_trades_1h
+WHERE status = 'CLOSED'
+GROUP BY direction;
+```
+
+### 4. Performance per Confidence Level
+
+```sql
+-- Accuracy per livello di confidence
+SELECT
+  CASE
+    WHEN policy_confidence >= 0.9 THEN '90-100%'
+    WHEN policy_confidence >= 0.7 THEN '70-90%'
+    WHEN policy_confidence >= 0.5 THEN '50-70%'
+    ELSE '<50%'
+  END as confidence_level,
+  COUNT(*) as trades,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(AVG(pnl_pct)::numeric, 3) as avg_pnl_pct,
+  ROUND(SUM(pnl_pct)::numeric, 2) as total_pnl
+FROM alpha_trades_1h
+WHERE status = 'CLOSED'
+GROUP BY 1
+ORDER BY 1 DESC;
+```
+
+### 5. Performance per Durata Trade
+
+```sql
+-- Analisi per durata (importante per modello 1h)
+SELECT
+  CASE
+    WHEN duration_seconds < 1800 THEN '< 30 min'
+    WHEN duration_seconds < 3600 THEN '30-60 min'
+    WHEN duration_seconds < 7200 THEN '1-2 ore'
+    WHEN duration_seconds < 14400 THEN '2-4 ore'
+    ELSE '> 4 ore'
+  END as duration_bucket,
+  COUNT(*) as trades,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(AVG(pnl_pct)::numeric, 3) as avg_pnl_pct,
+  ROUND(AVG(duration_seconds/60.0)::numeric, 1) as avg_duration_min
+FROM alpha_trades_1h
+WHERE status = 'CLOSED' AND duration_seconds IS NOT NULL
+GROUP BY 1
+ORDER BY 1;
+```
+
+### 6. Performance Giornaliera
+
+```sql
+-- P&L giornaliero
+SELECT
+  DATE(closed_at) as day,
+  COUNT(*) as trades,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(SUM(pnl_pct)::numeric, 2) as daily_pnl_pct
+FROM alpha_trades_1h
+WHERE status = 'CLOSED'
+GROUP BY DATE(closed_at)
+ORDER BY day DESC;
+```
+
+### 7. Performance per Ora del Giorno
+
+```sql
+-- Quale ora performa meglio
+SELECT
+  EXTRACT(HOUR FROM opened_at) as hour_utc,
+  COUNT(*) as trades,
+  ROUND(100.0 * COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) / COUNT(*)::numeric, 1) as win_rate,
+  ROUND(AVG(pnl_pct)::numeric, 3) as avg_pnl_pct
+FROM alpha_trades_1h
+WHERE status = 'CLOSED'
+GROUP BY 1
+ORDER BY avg_pnl_pct DESC;
+```
+
+### 8. Equity Curve
+
+```sql
+-- Equity curve cumulativa
+SELECT
+  closed_at,
+  symbol,
+  direction,
+  ROUND(pnl_pct::numeric, 2) as pnl_pct,
+  ROUND(SUM(pnl_pct) OVER (ORDER BY closed_at)::numeric, 2) as cumulative_pnl_pct
+FROM alpha_trades_1h
+WHERE status = 'CLOSED'
+ORDER BY closed_at;
+```
+
+### 9. Drawdown Analysis
+
+```sql
+-- Analisi drawdown
+WITH equity AS (
+  SELECT
+    closed_at,
+    SUM(pnl_pct) OVER (ORDER BY closed_at) as cumulative_pnl
+  FROM alpha_trades_1h
+  WHERE status = 'CLOSED'
+),
+peaks AS (
+  SELECT
+    closed_at,
+    cumulative_pnl,
+    MAX(cumulative_pnl) OVER (ORDER BY closed_at) as peak
+  FROM equity
+)
+SELECT
+  DATE(closed_at) as day,
+  ROUND(MIN(cumulative_pnl - peak)::numeric, 2) as max_drawdown_pct,
+  ROUND(MAX(cumulative_pnl)::numeric, 2) as peak_pnl
+FROM peaks
+GROUP BY DATE(closed_at)
+ORDER BY day DESC;
+```
+
+### 10. Trade Aperti
+
+```sql
+-- Posizioni attualmente aperte
+SELECT
+  symbol,
+  direction,
+  ROUND(entry_price::numeric, 4) as entry_price,
+  opened_at,
+  ROUND(EXTRACT(EPOCH FROM (NOW() - opened_at))/60) as minutes_open,
+  ROUND(policy_confidence::numeric, 2) as confidence
+FROM alpha_trades_1h
+WHERE status = 'OPEN'
+ORDER BY opened_at;
+```
+
+### 11. Ultime Decisioni
+
+```sql
+-- Ultime 20 decisioni prese dal modello
+SELECT
+  symbol,
+  final_action,
+  ROUND(policy_confidence::numeric, 2) as confidence,
+  ROUND(value_estimate::numeric, 3) as value,
+  created_at
+FROM alpha_decisions_1h
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+### 12. Report Completo (Esporta CSV)
+
+```bash
+# Esporta tutti i trade chiusi per analisi esterna
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+COPY (
+  SELECT
+    id, symbol, direction, status,
+    entry_price, exit_price, pnl_pct,
+    duration_seconds, policy_confidence,
+    opened_at, closed_at
+  FROM alpha_trades_1h
+  WHERE status = 'CLOSED'
+  ORDER BY closed_at
+) TO STDOUT WITH CSV HEADER" > ~/alphatrader/alpha/data/trades_1h_export.csv
+```
+
+### Comandi Rapidi per Analisi
+
+```bash
+# Stats generali
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT COUNT(*) as total,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(SUM(pnl_pct)::numeric, 2) as total_pnl
+FROM alpha_trades_1h WHERE status='CLOSED';"
+
+# Per simbolo
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, COUNT(*) as trades,
+  ROUND(SUM(pnl_pct)::numeric, 2) as pnl
+FROM alpha_trades_1h WHERE status='CLOSED'
+GROUP BY symbol ORDER BY pnl DESC;"
+
+# Trade aperti
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, direction,
+  ROUND(entry_price::numeric, 2) as entry, opened_at
+FROM alpha_trades_1h WHERE status='OPEN';"
+```
+
+---
