@@ -363,25 +363,27 @@ class HyperLiquidTrader:
             mids = self.info.all_mids()
             current_price = float(mids.get(symbol, trigger_price))
 
-            # Round trigger price to appropriate decimals
+            # Get symbol info for proper rounding
             symbol_info = None
             for perp in self.meta["universe"]:
                 if perp["name"] == symbol:
                     symbol_info = perp
                     break
 
+            # Get price decimals - this is CRITICAL for ETH (uses 1 decimal, not 2)
             px_decimals = int(symbol_info.get("pxDecimals", 2)) if symbol_info else 2
+            print(f"   pxDecimals for {symbol}: {px_decimals}")
+
+            # Round trigger and limit price to correct decimals
             trigger_price = round(trigger_price, px_decimals)
+            limit_price = trigger_price  # Same price for market order
 
-            # For market SL order, use trigger as limit (will execute at market anyway)
-            limit_price = trigger_price
-
-            # Stop Loss order type - use simple trigger without tpsl designation
+            # Stop Loss order type - tpsl is REQUIRED by SDK
             stop_order_type = {
                 "trigger": {
                     "triggerPx": trigger_price,
-                    "isMarket": True  # Market order when triggered
-                    # NOTE: Removed "tpsl": "sl" - might cause issues on some assets
+                    "isMarket": True,
+                    "tpsl": "sl"  # Required by HyperLiquid SDK
                 }
             }
 
