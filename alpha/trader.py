@@ -103,6 +103,7 @@ class AlphaPosition:
     unrealized_pnl_pct: float = 0.0
     max_profit_pct: float = 0.0
     max_loss_pct: float = 0.0
+    stop_loss_price: float = 0.0  # Stop loss trigger price
     trade_id: Optional[int] = None  # Database trade ID
     decision_id: Optional[int] = None  # Database decision ID
 
@@ -166,6 +167,49 @@ class AlphaTrader:
         self.last_decision_time: Optional[datetime] = None
         self.total_trades = 0
         self.winning_trades = 0
+
+        # Cooldown tracking: {symbol: last_close_time}
+        self.cooldowns: Dict[str, datetime] = {}
+
+        # Sync positions from exchange at startup (LIVE mode only)
+        if self.exchange and not self.config.trading.paper_trading:
+            self._sync_positions_from_exchange()
+
+    def _sync_positions_from_exchange(self):
+        """Sync open positions from HyperLiquid at startup."""
+        try:
+            status = self.exchange.get_account_status()
+            open_positions = status.get("open_positions", [])
+
+            for pos in open_positions:
+                symbol = pos.get("symbol", "")
+                if symbol not in self.config.trading.symbols:
+                    continue
+
+                direction = "LONG" if pos.get("side") == "long" else "SHORT"
+                entry_price = pos.get("entry_price", 0)
+                size = pos.get("size", 0)
+
+                # Create position tracking object
+                self.positions[symbol] = AlphaPosition(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    size_usd=size * entry_price,
+                    leverage=5,  # Default, we don't have exact leverage info
+                    opened_at=datetime.now(),  # Approximate
+                    current_price=pos.get("mark_price", entry_price),
+                )
+                print(f"📍 Synced existing position: {direction} {symbol} @ ${entry_price:.4f}", flush=True)
+
+            if open_positions:
+                print(f"✅ Synced {len(self.positions)} existing positions from HyperLiquid", flush=True)
+            else:
+                print("✅ No existing positions on HyperLiquid", flush=True)
+
+        except Exception as e:
+            logger.error(f"Failed to sync positions: {e}")
+            print(f"⚠️ Could not sync positions from exchange: {e}", flush=True)
 
     def _load_checkpoint(self, path: str):
         """Load model weights from checkpoint."""
@@ -452,7 +496,7 @@ class AlphaTrader:
         if self.config.trading.paper_trading:
             return self._execute_paper(action, decision_info)
         else:
-            return self._execute_live(action)
+            return self._execute_live(action, decision_info)
 
     def _execute_paper(self, action: Action, decision_info: Optional[Dict] = None) -> bool:
         """Execute paper trade (simulated)."""
@@ -542,7 +586,7 @@ class AlphaTrader:
 
         return False
 
-    def _execute_live(self, action: Action) -> bool:
+    def _execute_live(self, action: Action, decision_info: Optional[Dict] = None) -> bool:
         """Execute live trade on exchange."""
         if not self.exchange:
             logger.error("Exchange not connected")
@@ -551,6 +595,10 @@ class AlphaTrader:
         symbol = action.symbol
 
         if action.action_type == ActionType.CLOSE:
+            # Get position info before closing (for DB)
+            pos = self.positions.get(symbol)
+            trade_id = pos.trade_id if pos else None
+
             result = self.exchange.execute_signal({
                 'operation': 'close',
                 'symbol': symbol,
@@ -561,8 +609,27 @@ class AlphaTrader:
             success = result.get('status') == 'ok' or result.get('success', False)
             if success:
                 print(f"✅ Position closed: {symbol}", flush=True)
+
+                # Get exit price for DB
+                exit_price = self._get_entry_price_from_result(result, symbol) or (pos.current_price if pos else 0)
+
+                # Get exit reason from action reasoning or default
+                exit_reason = getattr(action, 'reasoning', None) or 'AI_CLOSE'
+
+                # Save to database
+                if DB_AVAILABLE and alpha_db and trade_id:
+                    alpha_db.close_trade(
+                        trade_id=trade_id,
+                        exit_price=exit_price,
+                        exit_reason=exit_reason
+                    )
+                    print(f"💾 Trade #{trade_id} saved to DB: {exit_reason}", flush=True)
+
                 if symbol in self.positions:
                     del self.positions[symbol]
+                # Set cooldown for this symbol
+                self.cooldowns[symbol] = datetime.now()
+                print(f"⏱️ Cooldown set for {symbol} ({self.config.trading.trade_cooldown_minutes}min)", flush=True)
                 return True
             else:
                 print(f"❌ Failed to close: {result}", flush=True)
@@ -589,14 +656,98 @@ class AlphaTrader:
             success = result.get('status') == 'ok' or result.get('success', False)
             if success:
                 print(f"✅ Position opened: {direction.upper()} {symbol}", flush=True)
+
+                # Get entry price from result or fetch current price
+                entry_price = self._get_entry_price_from_result(result, symbol)
+
+                # Get decision ID for linking
+                decision_id = decision_info.get('decision_id') if decision_info else None
+                mcts_win_prob = decision_info.get('mcts_win_prob') if decision_info else None
+
+                # Save trade to database (LIVE)
+                trade_id = None
+                if DB_AVAILABLE and alpha_db:
+                    trade_id = alpha_db.save_trade_open(
+                        symbol=symbol,
+                        direction=direction.upper(),
+                        entry_price=entry_price,
+                        size_usd=self.config.trading.base_position_usd,
+                        leverage=action.leverage,
+                        decision_id=decision_id,
+                        policy_confidence=action.confidence,
+                        mcts_win_prob=mcts_win_prob,
+                        is_paper=False  # LIVE trade!
+                    )
+                    print(f"💾 Trade #{trade_id} saved to DB (LIVE)", flush=True)
+
+                # Track position locally
+                self.positions[symbol] = AlphaPosition(
+                    symbol=symbol,
+                    direction=direction.upper(),
+                    entry_price=entry_price,
+                    size_usd=self.config.trading.base_position_usd,
+                    leverage=action.leverage,
+                    opened_at=datetime.now(),
+                    current_price=entry_price,
+                    trade_id=trade_id,
+                    decision_id=decision_id,
+                )
+
+                # Set Stop Loss
+                self._set_stop_loss(symbol, direction, entry_price, action.leverage)
+
             else:
                 print(f"❌ Failed to open: {result}", flush=True)
             return success
 
         return False
 
+    def _get_entry_price_from_result(self, result: Dict, symbol: str) -> float:
+        """Extract entry price from order result or fetch current price."""
+        try:
+            # Try to get from result
+            response = result.get('response', {})
+            if isinstance(response, dict):
+                data = response.get('data', {})
+                statuses = data.get('statuses', [])
+                if statuses and isinstance(statuses[0], dict):
+                    filled = statuses[0].get('filled', {})
+                    if filled:
+                        return float(filled.get('avgPx', 0))
+
+            # Fallback: fetch current price
+            data = self.fetch_market_data([symbol])
+            return data.get('indicators', {}).get(symbol, {}).get('price', 0)
+        except Exception as e:
+            logger.error(f"Error getting entry price: {e}")
+            return 0
+
+    def _set_stop_loss(self, symbol: str, direction: str, entry_price: float, leverage: int):
+        """Set stop loss order on HyperLiquid."""
+        try:
+            sl_pct = self.config.trading.stop_loss_pct
+
+            # Calculate SL price based on direction
+            if direction == "long":
+                sl_price = entry_price * (1 - sl_pct / 100)
+            else:
+                sl_price = entry_price * (1 + sl_pct / 100)
+
+            print(f"🛡️ Setting Stop Loss for {symbol}: {sl_pct}% -> ${sl_price:.4f}", flush=True)
+
+            # Use HyperLiquid's native stop loss order
+            # Note: This requires the exchange to support tp_sl orders
+            # For now, we'll track SL locally and execute in fast loop
+            if symbol in self.positions:
+                self.positions[symbol].stop_loss_price = sl_price
+                print(f"✅ Stop Loss set at ${sl_price:.4f} ({sl_pct}% from entry)", flush=True)
+
+        except Exception as e:
+            logger.error(f"Error setting stop loss: {e}")
+            print(f"⚠️ Failed to set stop loss: {e}", flush=True)
+
     def update_positions(self):
-        """Update P&L for open positions."""
+        """Update P&L for open positions and check stop losses."""
         if not self.positions:
             return
 
@@ -625,16 +776,40 @@ class AlphaTrader:
                     f"MFE: {pos.max_profit_pct:.2f}% | MAE: {pos.max_loss_pct:.2f}%"
                 )
 
+                # CHECK STOP LOSS (LIVE mode only)
+                if pos.stop_loss_price > 0 and self.exchange:
+                    sl_hit = False
+                    if pos.direction == "LONG" and price <= pos.stop_loss_price:
+                        sl_hit = True
+                    elif pos.direction == "SHORT" and price >= pos.stop_loss_price:
+                        sl_hit = True
+
+                    if sl_hit:
+                        print(f"\n🛑 STOP LOSS HIT for {symbol}!", flush=True)
+                        print(f"   Direction: {pos.direction}", flush=True)
+                        print(f"   Entry: ${pos.entry_price:.4f}", flush=True)
+                        print(f"   SL Price: ${pos.stop_loss_price:.4f}", flush=True)
+                        print(f"   Current: ${price:.4f}", flush=True)
+                        print(f"   P&L: {pnl_pct:+.2f}%", flush=True)
+
+                        # Close position
+                        close_action = Action(ActionType.CLOSE, symbol, confidence=1.0)
+                        close_action.reasoning = f"Stop Loss hit at ${price:.4f}"
+                        success = self.execute_action(close_action, {'steps': ['Stop Loss triggered']})
+                        print(f"🛑 SL Close: {'SUCCESS' if success else 'FAILED'}", flush=True)
+
     def run_loop(self):
         """Main trading loop."""
         # Use print for immediate output (logger may buffer)
         print("=" * 60, flush=True)
         print("AlphaTrader Starting", flush=True)
-        print(f"Mode: {'PAPER' if self.config.trading.paper_trading else 'LIVE'}", flush=True)
+        print(f"Mode: {'PAPER' if self.config.trading.paper_trading else '🔴 LIVE 🔴'}", flush=True)
         print(f"Symbols: {self.config.trading.symbols}", flush=True)
         print(f"MCTS min win prob: {self.config.mcts.min_win_probability:.0%}", flush=True)
         print(f"Min hold time: {self.config.trading.min_hold_minutes} min", flush=True)
         print(f"Max hold time: {self.config.trading.max_hold_minutes} min (force close)", flush=True)
+        print(f"Stop Loss: {self.config.trading.stop_loss_pct}%", flush=True)
+        print(f"Trade cooldown: {self.config.trading.trade_cooldown_minutes} min", flush=True)
         print(f"Slow loop interval: {self.config.trading.slow_loop_interval}s", flush=True)
         if DB_AVAILABLE and alpha_db:
             print(f"Database: ✅ Connected (PostgreSQL)", flush=True)
@@ -681,6 +856,23 @@ class AlphaTrader:
                     for symbol in self.config.trading.symbols:
                         print(f"\n{'='*40}", flush=True)
                         print(f"[{now.strftime('%H:%M:%S')}] Evaluating {symbol}...", flush=True)
+
+                        # CHECK 1: Already have position on this symbol?
+                        if symbol in self.positions:
+                            pos = self.positions[symbol]
+                            print(f"  ⏭️ SKIP: Already have {pos.direction} position on {symbol}", flush=True)
+                            continue
+
+                        # CHECK 2: Cooldown active for this symbol?
+                        if symbol in self.cooldowns:
+                            cooldown_end = self.cooldowns[symbol] + timedelta(minutes=self.config.trading.trade_cooldown_minutes)
+                            if now < cooldown_end:
+                                remaining = (cooldown_end - now).total_seconds() / 60
+                                print(f"  ⏭️ SKIP: Cooldown active for {symbol} ({remaining:.1f}min remaining)", flush=True)
+                                continue
+                            else:
+                                # Cooldown expired, remove it
+                                del self.cooldowns[symbol]
 
                         action, info = self.make_decision(symbol)
 

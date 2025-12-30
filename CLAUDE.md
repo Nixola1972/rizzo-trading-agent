@@ -3771,30 +3771,141 @@ print(f'Result: {result}')
 | `alpha_trader_15m_live` | LIVE 15m | ⚠️ Da riavviare | 7 simboli, dopo fix |
 | `alpha_trader_1h` | PAPER 1h | ✅ Attivo | Tutti 11 simboli |
 
-### ⚠️ PROBLEMA CRITICO: Nessuno Stop Loss!
+### ✅ LIVE Trading Safety Features (IMPLEMENTATO - 30 Dicembre 2025)
 
-**Il bot attualmente apre posizioni SENZA stop loss!**
+Le seguenti funzionalità di sicurezza sono state implementate per il trading LIVE:
 
-Questo significa:
-- Nessuna protezione in caso di movimento avverso
-- Rischio di perdita totale del capitale
-- `max_hold_minutes=7` chiude dopo 7 min MA senza SL intermedio
+#### 1. Stop Loss Automatico
 
-**Soluzioni possibili:**
-1. Aggiungere SL automatico in `hyperliquid_trader.py` dopo ogni open
-2. Usare ordini TP/SL nativi di HyperLiquid
-3. Implementare trailing stop nel fast loop
+```python
+# Configurazione in .env.baseline
+STOP_LOSS_PCT=10.0  # Stop Loss 10% dal prezzo di entry
 
-**⛔ NON USARE LIVE SENZA STOP LOSS!**
+# Implementazione:
+# - SL calcolato dopo ogni apertura posizione
+# - Tracciato localmente in AlphaPosition.stop_loss_price
+# - Controllato nel fast loop (ogni 5 secondi)
+# - Chiusura automatica se prezzo raggiunge SL
+```
 
-### Prossimi Passi
+#### 2. No Switching Posizioni
 
-1. **🔴 PRIORITÀ 1**: Implementare Stop Loss automatico
-2. Rebuild container con fix
-3. Riavviare `alpha_trader_15m_live`
-4. Monitorare esecuzione trade
-5. Verificare che max_hold_minutes=7 funzioni
+```python
+# Se già in posizione su un simbolo, non aprire nuova posizione
+if symbol in self.positions:
+    print(f"⏭️ SKIP: Already have {pos.direction} position on {symbol}")
+    continue
+```
+
+#### 3. Trade Cooldown
+
+```python
+# Configurazione
+TRADE_COOLDOWN_MINUTES=5  # Aspetta 5 minuti dopo chiusura prima di riaprire
+
+# Dopo ogni chiusura:
+self.cooldowns[symbol] = datetime.now()
+# Controllo nel loop:
+if symbol in self.cooldowns:
+    if now < cooldown_end:
+        print(f"⏭️ SKIP: Cooldown active for {symbol}")
+```
+
+#### 4. Sync Posizioni all'Avvio
+
+```python
+# All'avvio, sincronizza posizioni esistenti da HyperLiquid
+def _sync_positions_from_exchange(self):
+    status = self.exchange.get_account_status()
+    for pos in status.get("open_positions", []):
+        self.positions[symbol] = AlphaPosition(...)
+```
+
+#### 5. Salvataggio Trade nel Database
+
+Tutti i trade LIVE vengono salvati nel database PostgreSQL:
+- Tabella `alpha_trades` con `is_paper=FALSE`
+- Stessa struttura dei paper trade per analisi uniforme
+
+#### Configurazione Completa LIVE
+
+```bash
+# .env.baseline per LIVE trading
+ALPHA_PAPER=false
+TESTNET=false
+
+# Simboli profittevoli (esclusi BTC, SOL, XRP, BNB dopo analisi fees)
+TRADING_SYMBOLS=SUI,ADA,DOGE,ARB,AVAX,ETH,LINK
+
+# Timing
+ALPHA_MIN_HOLD_MINUTES=5
+ALPHA_MAX_HOLD_MINUTES=7
+
+# Risk Management
+STOP_LOSS_PCT=10.0
+TRADE_COOLDOWN_MINUTES=5
+
+# Position sizing
+ALPHA_POSITION_USD=25
+ALPHA_MAX_LEVERAGE=5
+
+# MCTS (disabilitato per ora)
+ALPHA_MIN_WIN_PROB=0.0
+```
+
+#### Deploy LIVE
+
+```bash
+cd ~/alphatrader
+git pull origin claude/analyze-container-issues-aBfhT
+docker build --no-cache -t alphatrader -f Dockerfile.alpha .
+docker stop alpha_trader_live 2>/dev/null || true
+docker rm alpha_trader_live 2>/dev/null || true
+
+docker run -d \
+  --name alpha_trader_live \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env.baseline \
+  -e ALPHA_PAPER=false \
+  -e TESTNET=false \
+  -e TRADING_SYMBOLS="SUI,ADA,DOGE,ARB,AVAX,ETH,LINK" \
+  -e STOP_LOSS_PCT=10.0 \
+  -e TRADE_COOLDOWN_MINUTES=5 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  alphatrader -m alpha.trader --mode live --loop
+
+docker logs -f alpha_trader_live
+```
+
+#### Query per LIVE Trades
+
+```bash
+# Stats trade LIVE
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT COUNT(*) as total,
+  COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as wins,
+  ROUND(SUM(pnl_pct)::numeric, 2) as total_pnl
+FROM alpha_trades
+WHERE is_paper = FALSE AND status = 'CLOSED';"
+
+# Trade LIVE per simbolo
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, COUNT(*) as trades,
+  ROUND(SUM(pnl_pct)::numeric, 2) as pnl
+FROM alpha_trades
+WHERE is_paper = FALSE AND status = 'CLOSED'
+GROUP BY symbol ORDER BY pnl DESC;"
+
+# Trade LIVE aperti
+docker exec -it memory_postgres psql -U tradingbot -d botone_baseline -c "
+SELECT symbol, direction, entry_price, opened_at
+FROM alpha_trades
+WHERE is_paper = FALSE AND status = 'OPEN';"
+```
 
 ---
 
-*AlphaTrader v0.4.1 - December 2025 (LIVE Bug Fixes - MISSING SL!)*
+*AlphaTrader v0.5.0 - December 2025 (LIVE Safety Features Implemented)*

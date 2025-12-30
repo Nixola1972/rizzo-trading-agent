@@ -214,6 +214,10 @@ class TradingConfig:
     max_drawdown_pct: float = 10.0  # Stop trading if DD > 10%
     max_daily_loss_pct: float = 5.0  # Stop trading if daily loss > 5%
     max_open_positions: int = 3
+    stop_loss_pct: float = 10.0  # Stop loss percentage (default 10%)
+
+    # Trade cooldown
+    trade_cooldown_minutes: int = 5  # Minutes to wait after closing before reopening same symbol
 
     # Execution
     slippage_pct: float = 0.05  # Assume 0.05% slippage
@@ -299,6 +303,8 @@ class AlphaConfig:
         config.trading.max_leverage = _env_int("ALPHA_MAX_LEVERAGE", 5)
         config.trading.min_hold_minutes = _env_int("ALPHA_MIN_HOLD_MINUTES", 5)
         config.trading.max_hold_minutes = _env_int("ALPHA_MAX_HOLD_MINUTES", 7)
+        config.trading.stop_loss_pct = _env_float("STOP_LOSS_PCT", 10.0)
+        config.trading.trade_cooldown_minutes = _env_int("TRADE_COOLDOWN_MINUTES", 5)
 
         # Symbols - hardcode all 11, only override if TRADING_SYMBOLS explicitly set
         # NOTE: Ignore SYMBOLS env var (may be set by old .env files in container)
