@@ -390,6 +390,9 @@ def close_trade_1h(
     if not PSYCOPG2_AVAILABLE:
         return
 
+    # Truncate exit_reason to 30 chars (database limit)
+    exit_reason = str(exit_reason)[:30] if exit_reason else "UNKNOWN"
+
     with get_connection() as conn:
         if not conn:
             return
