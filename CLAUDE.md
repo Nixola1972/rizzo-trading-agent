@@ -3674,4 +3674,110 @@ chmod +x alpha/deploy_live.sh
 
 ---
 
-*AlphaTrader v0.4.0 - December 2025 (LIVE Ready)*
+## 🔧 Bug Fix - LIVE Trading (30 Dicembre 2025)
+
+### Problemi Risolti
+
+| Bug | Causa | Fix | File |
+|-----|-------|-----|------|
+| `HyperLiquidTrader is None` | Import raggruppato con altri moduli - se uno fallisce, tutti falliscono | Separato import di HyperLiquidTrader | `alpha/trader.py` |
+| `TESTNET sempre True` | Logica `or` sbagliata: `False or True = True` | Cambiato a check esplicito per "false" | `alpha/config.py` |
+| `Execution: FAILED` (senza errore) | Codice cercava `result.get('success')` ma API ritorna `status: 'ok'` | Check per `status == 'ok'` | `alpha/trader.py` |
+
+### Codice Corretto
+
+**1. Import HyperLiquidTrader separato (`alpha/trader.py` linea 54-61):**
+```python
+# Import HyperLiquidTrader SEPARATELY (required for live trading)
+HyperLiquidTrader = None
+try:
+    from hyperliquid_trader import HyperLiquidTrader
+    logging.info("HyperLiquidTrader imported successfully")
+except ImportError as e:
+    logging.warning(f"HyperLiquidTrader not available: {e}")
+    HyperLiquidTrader = None
+```
+
+**2. Fix TESTNET logic (`alpha/config.py` linea 269-275):**
+```python
+# TESTNET: check both env vars, default to True for safety
+testnet_env = os.getenv("TESTNET", "").lower().strip()
+if testnet_env in ("false", "0", "no", "off"):
+    config.hl_testnet = False
+else:
+    config.hl_testnet = _env_bool("HL_TESTNET", True)
+```
+
+**3. Fix result check (`alpha/trader.py` linea 583-589):**
+```python
+# Check for success - API returns 'status': 'ok' not 'success'
+success = result.get('status') == 'ok' or result.get('success', False)
+if success:
+    print(f"✅ Position opened: {direction.upper()} {symbol}", flush=True)
+else:
+    print(f"❌ Failed to open: {result}", flush=True)
+return success
+```
+
+### Comandi Debug Utili
+
+```bash
+# Test connessione HyperLiquid
+docker run -it --rm \
+  --env-file .env.baseline \
+  -e TESTNET=false \
+  --entrypoint python \
+  alphatrader -c "
+from hyperliquid.info import Info
+from hyperliquid.utils import constants
+import os
+addr = os.getenv('WALLET_ADDRESS')
+info = Info(constants.MAINNET_API_URL, skip_ws=True)
+state = info.user_state(addr)
+print(f'Balance: \${float(state[\"marginSummary\"][\"accountValue\"]):.2f}')
+"
+
+# Test ordine manuale
+docker run -it --rm \
+  --env-file .env.baseline \
+  -e TESTNET=false \
+  --network unified-memory-stack_memory-net \
+  --entrypoint python \
+  alphatrader -c "
+from hyperliquid_trader import HyperLiquidTrader
+import os
+trader = HyperLiquidTrader(
+    secret_key=os.getenv('PRIVATE_KEY'),
+    account_address=os.getenv('WALLET_ADDRESS'),
+    testnet=False
+)
+result = trader.execute_signal({
+    'operation': 'open',
+    'symbol': 'SUI',
+    'direction': 'long',
+    'target_portion_of_balance': 0.1,
+    'leverage': 3,
+    'reason': 'test'
+})
+print(f'Result: {result}')
+"
+```
+
+### Stato Container
+
+| Container | Mode | Stato | Note |
+|-----------|------|-------|------|
+| `alpha_trader` | PAPER 15m | ✅ Attivo | Tutti 11 simboli |
+| `alpha_trader_15m_live` | LIVE 15m | ⚠️ Da riavviare | 7 simboli, dopo fix |
+| `alpha_trader_1h` | PAPER 1h | ✅ Attivo | Tutti 11 simboli |
+
+### Prossimi Passi
+
+1. Rebuild container con fix
+2. Riavviare `alpha_trader_15m_live`
+3. Monitorare esecuzione trade
+4. Verificare che max_hold_minutes=7 funzioni
+
+---
+
+*AlphaTrader v0.4.1 - December 2025 (LIVE Bug Fixes)*
