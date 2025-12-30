@@ -421,7 +421,15 @@ class AlphaTrader1H:
                 # Make decision
                 action = self.make_decision(symbol, market_data)
                 if not action:
+                    logger.warning(f"[1H] {symbol}: No action returned from make_decision")
                     continue
+
+                # Log the decision
+                action_name = action.action_type.name if action.action_type else "NONE"
+                logger.info(f"[1H] {symbol}: Decision={action_name} conf={action.confidence:.1%} value={action.value_estimate:.3f}")
+
+                if action.mcts_win_prob is not None:
+                    logger.info(f"[1H] {symbol}: MCTS win_prob={action.mcts_win_prob:.1%} approved={action.mcts_approved}")
 
                 # Execute if approved
                 if action.action_type != ActionType.HOLD:
