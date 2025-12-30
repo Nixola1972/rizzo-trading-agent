@@ -164,6 +164,7 @@ class AlphaTrader1H:
             # The model was trained on 1h data, but for live trading we use current market state
             status, indicators = get_hyperliquid_indicators(symbol)
             if status != "ok" or not indicators:
+                logger.warning(f"[1H] {symbol}: get_hyperliquid_indicators returned status={status}, indicators={bool(indicators)}")
                 return None
 
             # Get fear & greed
@@ -416,6 +417,7 @@ class AlphaTrader1H:
                 # Get market data
                 market_data = self.get_market_data_1h(symbol)
                 if not market_data:
+                    logger.warning(f"[1H] {symbol}: No market data returned")
                     continue
 
                 # Make decision
