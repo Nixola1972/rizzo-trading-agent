@@ -42,29 +42,31 @@ class HyperLiquidTrader:
     #                            VALIDAZIONE INPUT
     # ----------------------------------------------------------------------
     def _validate_order_input(self, order_json: Dict[str, Any]):
-        required_fields = [
-            "operation",
-            "symbol",
-            "direction",
-            "target_portion_of_balance",
-            "leverage",
-            "reason",
-        ]
+        # Base required fields
+        if "operation" not in order_json:
+            raise ValueError("Missing required field: operation")
 
-        for f in required_fields:
-            if f not in order_json:
-                raise ValueError(f"Missing required field: {f}")
+        if "symbol" not in order_json:
+            raise ValueError("Missing required field: symbol")
 
-        if order_json["operation"] not in ("open", "close", "hold"):
+        op = order_json["operation"]
+        if op not in ("open", "close", "hold"):
             raise ValueError("operation must be 'open', 'close', or 'hold'")
 
-        if order_json["direction"] not in ("long", "short"):
-            raise ValueError("direction must be 'long' or 'short'")
+        # Additional fields required only for OPEN
+        if op == "open":
+            required_for_open = ["direction", "target_portion_of_balance", "leverage"]
+            for f in required_for_open:
+                if f not in order_json:
+                    raise ValueError(f"Missing required field for open: {f}")
 
-        try:
-            float(order_json["target_portion_of_balance"])
-        except:
-            raise ValueError("target_portion_of_balance must be a number")
+            if order_json["direction"] not in ("long", "short"):
+                raise ValueError("direction must be 'long' or 'short'")
+
+            try:
+                float(order_json["target_portion_of_balance"])
+            except:
+                raise ValueError("target_portion_of_balance must be a number")
 
     # ----------------------------------------------------------------------
     #                           MIN SIZE / TICK SIZE

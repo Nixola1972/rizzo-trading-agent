@@ -213,6 +213,48 @@ class AlphaTrader:
             logger.error(f"Failed to sync positions: {e}")
             print(f"⚠️ Could not sync positions from exchange: {e}", flush=True)
 
+    def _sync_and_cleanup_positions(self):
+        """Check if local positions still exist on exchange, remove if not."""
+        try:
+            # Get actual positions from exchange
+            status = self.exchange.get_account_status()
+            exchange_positions = {pos.get("symbol"): pos for pos in status.get("open_positions", [])}
+
+            # Check each local position
+            for symbol in list(self.positions.keys()):
+                if symbol not in exchange_positions:
+                    pos = self.positions[symbol]
+                    print(f"🔄 Position {symbol} no longer on exchange - cleaning up", flush=True)
+
+                    # Close in database if needed
+                    if DB_AVAILABLE and alpha_db and pos.trade_id:
+                        # Try to get a reasonable exit price
+                        data = self.fetch_market_data([symbol])
+                        exit_price = data.get('indicators', {}).get(symbol, {}).get('price', pos.current_price)
+
+                        alpha_db.close_trade(
+                            trade_id=pos.trade_id,
+                            exit_price=exit_price,
+                            exit_reason="MANUAL_CLOSE"
+                        )
+                        print(f"💾 Trade #{pos.trade_id} marked as MANUAL_CLOSE", flush=True)
+
+                    # Remove from local tracking
+                    del self.positions[symbol]
+                    # Set cooldown
+                    self.cooldowns[symbol] = datetime.now()
+
+            # Also check for positions on exchange that we don't know about
+            for symbol, pos_data in exchange_positions.items():
+                if symbol in self.config.trading.symbols and symbol not in self.positions:
+                    print(f"⚠️ Found untracked position on exchange: {symbol}", flush=True)
+                    # Optionally add it to local tracking
+                    # For now just warn - don't auto-add as we don't have decision context
+
+        except Exception as e:
+            logger.error(f"Error syncing positions: {e}")
+            print(f"⚠️ Position sync error: {e}", flush=True)
+
     def _load_checkpoint(self, path: str):
         """Load model weights from checkpoint."""
         try:
@@ -941,6 +983,10 @@ class AlphaTrader:
                 if seconds_since_last >= slow_interval:
                     print(f"[Slow loop triggered] {seconds_since_last:.0f}s since last", flush=True)
                     last_slow = now
+
+                    # SYNC POSITIONS: Detect manually closed positions (LIVE mode)
+                    if self.exchange and not self.config.trading.paper_trading:
+                        self._sync_and_cleanup_positions()
 
                     # CHECK MAX HOLD: Force close positions held too long
                     max_hold = self.config.trading.max_hold_minutes
