@@ -216,6 +216,13 @@ class TradingConfig:
     max_open_positions: int = 3
     stop_loss_pct: float = 10.0  # Stop loss percentage (default 10%)
 
+    # Profit Lock (3 stages)
+    profit_lock_1_trigger: float = 0.50  # Stage 1: median reached
+    profit_lock_1_sl: float = 0.20       # Lock profit at this level
+    profit_lock_2_trigger: float = 0.90  # Stage 2: optimal reached
+    profit_lock_2_sl: float = 0.50       # Lock profit at this level
+    hard_take_profit_pct: float = 1.60   # Stage 3: sniper exit (native order on exchange)
+
     # Trade cooldown
     trade_cooldown_minutes: int = 5  # Minutes to wait after closing before reopening same symbol
 
@@ -305,6 +312,13 @@ class AlphaConfig:
         config.trading.max_hold_minutes = _env_int("ALPHA_MAX_HOLD_MINUTES", 7)
         config.trading.stop_loss_pct = _env_float("STOP_LOSS_PCT", 10.0)
         config.trading.trade_cooldown_minutes = _env_int("TRADE_COOLDOWN_MINUTES", 5)
+
+        # Profit Lock parameters
+        config.trading.profit_lock_1_trigger = _env_float("PROFIT_LOCK_1_TRIGGER", 0.50)
+        config.trading.profit_lock_1_sl = _env_float("PROFIT_LOCK_1_SL", 0.20)
+        config.trading.profit_lock_2_trigger = _env_float("PROFIT_LOCK_2_TRIGGER", 0.90)
+        config.trading.profit_lock_2_sl = _env_float("PROFIT_LOCK_2_SL", 0.50)
+        config.trading.hard_take_profit_pct = _env_float("HARD_TAKE_PROFIT_PCT", 1.60)
 
         # Symbols - hardcode all 11, only override if TRADING_SYMBOLS explicitly set
         # NOTE: Ignore SYMBOLS env var (may be set by old .env files in container)

@@ -467,6 +467,112 @@ class HyperLiquidTrader:
             print(f"❌ Error cancelling order: {e}")
             return {"status": "error", "error": str(e)}
 
+    # ----------------------------------------------------------------------
+    #                        TAKE PROFIT ORDER
+    # ----------------------------------------------------------------------
+    def place_take_profit(self, symbol: str, direction: str, size: float, trigger_price: float) -> Dict[str, Any]:
+        """
+        Place a take profit order on HyperLiquid.
+
+        Args:
+            symbol: Trading pair (e.g., "ETH", "SUI")
+            direction: Current position direction ("long" or "short")
+            size: Position size to close
+            trigger_price: Price at which TP triggers
+
+        Returns:
+            Order result from exchange
+        """
+        try:
+            # For TP on LONG position: we SELL when price goes UP (is_buy=False)
+            # For TP on SHORT position: we BUY when price goes DOWN (is_buy=True)
+            is_buy = (direction.lower() == "short")
+
+            # Get current price for debugging
+            mids = self.info.all_mids()
+            current_price = float(mids.get(symbol, trigger_price))
+
+            # Get symbol info for proper rounding
+            symbol_info = None
+            for perp in self.meta["universe"]:
+                if perp["name"] == symbol:
+                    symbol_info = perp
+                    break
+
+            px_decimals = int(symbol_info.get("pxDecimals", 2)) if symbol_info else 2
+            trigger_price = round(trigger_price, px_decimals)
+            limit_price = trigger_price  # Same price for market order
+
+            # Take Profit order type - tpsl is REQUIRED by SDK
+            tp_order_type = {
+                "trigger": {
+                    "triggerPx": trigger_price,
+                    "isMarket": True,
+                    "tpsl": "tp"  # This is a Take Profit
+                }
+            }
+
+            print(f"🎯 Placing TP order on HyperLiquid:")
+            print(f"   Symbol: {symbol}")
+            print(f"   Current price: ${current_price}")
+            print(f"   Direction to close: {'BUY' if is_buy else 'SELL'}")
+            print(f"   Size: {size}")
+            print(f"   Trigger price: ${trigger_price}")
+            print(f"   Distance: {abs(current_price - trigger_price) / current_price * 100:.2f}%")
+
+            result = self.exchange.order(
+                symbol,
+                is_buy,
+                size,
+                limit_price,
+                tp_order_type,
+                reduce_only=True  # Only closes existing position
+            )
+
+            if result.get('status') == 'ok':
+                print(f"   Full response: {result}")
+
+                tp_order_id = None
+                response = result.get('response', {})
+                if isinstance(response, dict):
+                    data = response.get('data', {})
+                    statuses = data.get('statuses', [])
+
+                    if statuses:
+                        order_info = statuses[0]
+                        print(f"   Status[0]: {order_info}")
+
+                        # CHECK FOR ERROR IN RESPONSE!
+                        if isinstance(order_info, dict) and 'error' in order_info:
+                            error_msg = order_info.get('error', 'Unknown error')
+                            print(f"❌ Take Profit order REJECTED: {error_msg}")
+                            return {"status": "error", "error": error_msg}
+
+                        if isinstance(order_info, dict):
+                            if 'resting' in order_info:
+                                tp_order_id = order_info['resting'].get('oid')
+                            elif 'filled' in order_info:
+                                tp_order_id = order_info['filled'].get('oid')
+                            elif 'oid' in order_info:
+                                tp_order_id = order_info.get('oid')
+
+                if tp_order_id:
+                    print(f"✅ Take Profit order placed successfully")
+                    print(f"   Order ID: {tp_order_id}")
+                    result['tp_order_id'] = tp_order_id
+                else:
+                    print(f"   ⚠️ Could not extract order ID from response")
+            else:
+                print(f"⚠️ TP order response: {result}")
+
+            return result
+
+        except Exception as e:
+            print(f"❌ Error placing take profit: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "error": str(e)}
+
     def get_open_orders(self, symbol: str = None) -> List[Dict[str, Any]]:
         """
         Get all open orders, optionally filtered by symbol.

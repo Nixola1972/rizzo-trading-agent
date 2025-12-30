@@ -105,6 +105,9 @@ class AlphaPosition:
     max_loss_pct: float = 0.0
     stop_loss_price: float = 0.0  # Stop loss trigger price
     sl_order_id: Optional[int] = None  # HyperLiquid SL order ID
+    take_profit_price: float = 0.0  # Take profit trigger price (1.60%)
+    tp_order_id: Optional[int] = None  # HyperLiquid TP order ID
+    current_sl_lock_stage: int = 0  # 0=none, 1=stage1 (0.20%), 2=stage2 (0.50%)
     size_coins: float = 0.0  # Position size in coins (for SL order)
     trade_id: Optional[int] = None  # Database trade ID
     decision_id: Optional[int] = None  # Database decision ID
@@ -760,6 +763,9 @@ class AlphaTrader:
                 # Set Stop Loss on exchange
                 self._set_stop_loss(symbol, direction, entry_price, action.leverage)
 
+                # Set Take Profit on exchange (hard TP at 1.60%)
+                self._set_take_profit(symbol, direction, entry_price)
+
             else:
                 print(f"❌ Failed to open: {result}", flush=True)
             return success
@@ -937,6 +943,136 @@ class AlphaTrader:
         except Exception as e:
             print(f"❌ Emergency close error: {e}", flush=True)
 
+    def _set_take_profit(self, symbol: str, direction: str, entry_price: float) -> bool:
+        """
+        Set take profit order on HyperLiquid (native exchange order).
+        Called at trade opening to set TP at hard_take_profit_pct.
+
+        Returns:
+            True if TP was successfully placed, False otherwise
+        """
+        try:
+            tp_pct = self.config.trading.hard_take_profit_pct
+
+            # Calculate TP price based on direction
+            if direction == "long":
+                tp_price = entry_price * (1 + tp_pct / 100)
+            else:
+                tp_price = entry_price * (1 - tp_pct / 100)
+
+            print(f"🎯 Setting Take Profit for {symbol}: {tp_pct}% -> ${tp_price:.4f}", flush=True)
+
+            # Store TP price locally for tracking
+            if symbol in self.positions:
+                self.positions[symbol].take_profit_price = tp_price
+
+            # Place REAL TP order on HyperLiquid (LIVE mode only)
+            if self.exchange and not self.config.trading.paper_trading:
+                pos = self.positions.get(symbol)
+                if pos and pos.size_coins > 0:
+                    result = self.exchange.place_take_profit(
+                        symbol=symbol,
+                        direction=direction,
+                        size=pos.size_coins,
+                        trigger_price=tp_price
+                    )
+
+                    if result.get('status') == 'ok':
+                        tp_order_id = result.get('tp_order_id')
+                        if tp_order_id:
+                            self.positions[symbol].tp_order_id = tp_order_id
+                            print(f"✅ TP order placed on exchange (ID: {tp_order_id})", flush=True)
+                            return True
+                        else:
+                            print(f"⚠️ TP placed but no order ID returned", flush=True)
+                            return True  # Still consider it placed
+                    else:
+                        print(f"⚠️ TP order failed: {result}", flush=True)
+                        return False
+                else:
+                    print(f"⚠️ Cannot place TP: position size unknown", flush=True)
+                    return False
+            else:
+                # Paper trading: just track locally
+                print(f"✅ Take Profit tracked locally at ${tp_price:.4f} ({tp_pct}% from entry)", flush=True)
+                return True
+
+        except Exception as e:
+            logger.error(f"Error setting take profit: {e}")
+            print(f"⚠️ Failed to set take profit: {e}", flush=True)
+            return False
+
+    def _update_profit_lock(self, symbol: str, pos: AlphaPosition, current_pnl_pct: float):
+        """
+        Update stop loss based on profit lock stages.
+        Called every fast loop iteration.
+
+        Stage 1: At 0.50% profit -> Lock SL at +0.20%
+        Stage 2: At 0.90% profit -> Lock SL at +0.50%
+        """
+        try:
+            stage1_trigger = self.config.trading.profit_lock_1_trigger
+            stage1_sl = self.config.trading.profit_lock_1_sl
+            stage2_trigger = self.config.trading.profit_lock_2_trigger
+            stage2_sl = self.config.trading.profit_lock_2_sl
+
+            new_sl_pct = None
+            new_stage = pos.current_sl_lock_stage
+
+            # Check Stage 2 first (higher priority)
+            if current_pnl_pct >= stage2_trigger and pos.current_sl_lock_stage < 2:
+                new_sl_pct = stage2_sl
+                new_stage = 2
+                print(f"📈 {symbol}: Stage 2 reached! PnL {current_pnl_pct:.2f}% >= {stage2_trigger}%", flush=True)
+                print(f"   Locking SL at +{stage2_sl}%", flush=True)
+
+            # Check Stage 1
+            elif current_pnl_pct >= stage1_trigger and pos.current_sl_lock_stage < 1:
+                new_sl_pct = stage1_sl
+                new_stage = 1
+                print(f"📈 {symbol}: Stage 1 reached! PnL {current_pnl_pct:.2f}% >= {stage1_trigger}%", flush=True)
+                print(f"   Locking SL at +{stage1_sl}%", flush=True)
+
+            # If we need to update SL
+            if new_sl_pct is not None and new_stage > pos.current_sl_lock_stage:
+                # Calculate new SL price
+                if pos.direction == "LONG":
+                    new_sl_price = pos.entry_price * (1 + new_sl_pct / 100)
+                else:
+                    new_sl_price = pos.entry_price * (1 - new_sl_pct / 100)
+
+                # Update local tracking
+                old_sl = pos.stop_loss_price
+                pos.stop_loss_price = new_sl_price
+                pos.current_sl_lock_stage = new_stage
+
+                print(f"🔒 {symbol}: SL updated ${old_sl:.2f} -> ${new_sl_price:.2f}", flush=True)
+
+                # For LIVE mode: Cancel old SL and place new one
+                if self.exchange and not self.config.trading.paper_trading:
+                    # Cancel old SL order if exists
+                    if pos.sl_order_id:
+                        cancel_result = self.exchange.cancel_order(symbol, pos.sl_order_id)
+                        if cancel_result.get('status') == 'ok':
+                            print(f"   Cancelled old SL order {pos.sl_order_id}", flush=True)
+
+                    # Place new SL order
+                    if pos.size_coins > 0:
+                        result = self.exchange.place_stop_loss(
+                            symbol=symbol,
+                            direction=pos.direction.lower(),
+                            size=pos.size_coins,
+                            trigger_price=new_sl_price
+                        )
+                        if result.get('status') == 'ok':
+                            new_order_id = result.get('sl_order_id')
+                            if new_order_id:
+                                pos.sl_order_id = new_order_id
+                                print(f"   New SL order placed (ID: {new_order_id})", flush=True)
+
+        except Exception as e:
+            logger.error(f"Error updating profit lock: {e}")
+
     def update_positions(self):
         """Update P&L for open positions and check stop losses."""
         if not self.positions:
@@ -967,23 +1103,48 @@ class AlphaTrader:
                     f"MFE: {pos.max_profit_pct:.2f}% | MAE: {pos.max_loss_pct:.2f}%"
                 )
 
-                # LIVE MODE: Check if exchange SL triggered (position no longer exists)
-                if self.exchange and pos.sl_order_id:
+                # PROFIT LOCK: Update stop loss based on profit stages (every fast loop)
+                # Stage 1: At 0.50% profit → Lock SL at +0.20%
+                # Stage 2: At 0.90% profit → Lock SL at +0.50%
+                # Stage 3 (TP): At 1.60% → Exchange closes position automatically
+                if not self.config.trading.paper_trading:
+                    self._update_profit_lock(symbol, pos, pnl_pct)
+
+                # LIVE MODE: Check if exchange SL/TP triggered (position no longer exists)
+                if self.exchange and (pos.sl_order_id or pos.tp_order_id):
                     # Periodically verify position still exists on exchange
                     exchange_size = self._get_position_size_from_exchange(symbol)
                     if exchange_size == 0:
-                        # Position was closed by exchange (SL triggered!)
-                        print(f"\n🛑 SL TRIGGERED ON EXCHANGE for {symbol}!", flush=True)
+                        # Position was closed by exchange (SL or TP triggered!)
+                        # Determine if it was SL or TP based on P&L
+                        tp_threshold = self.config.trading.hard_take_profit_pct * 0.8  # 80% of TP = likely TP hit
+
+                        if pnl_pct >= tp_threshold:
+                            exit_reason = "TP_HIT_EXCHANGE"
+                            exit_price = pos.take_profit_price if pos.take_profit_price > 0 else price
+                            emoji = "🎯"
+                            print(f"\n{emoji} TAKE PROFIT HIT ON EXCHANGE for {symbol}!", flush=True)
+                        elif pnl_pct >= 0 and pos.current_sl_lock_stage > 0:
+                            exit_reason = f"PROFIT_LOCK_SL_S{pos.current_sl_lock_stage}"
+                            exit_price = pos.stop_loss_price if pos.stop_loss_price > 0 else price
+                            emoji = "🔒"
+                            print(f"\n{emoji} PROFIT LOCK SL (Stage {pos.current_sl_lock_stage}) for {symbol}!", flush=True)
+                        else:
+                            exit_reason = "SL_HIT_EXCHANGE"
+                            exit_price = pos.stop_loss_price if pos.stop_loss_price > 0 else price
+                            emoji = "🛑"
+                            print(f"\n{emoji} STOP LOSS HIT ON EXCHANGE for {symbol}!", flush=True)
+
                         print(f"   P&L when closed: ~{pnl_pct:+.2f}%", flush=True)
 
                         # Save to database
                         if DB_AVAILABLE and alpha_db and pos.trade_id:
                             alpha_db.close_trade(
                                 trade_id=pos.trade_id,
-                                exit_price=pos.stop_loss_price,
-                                exit_reason="SL_HIT_EXCHANGE"
+                                exit_price=exit_price,
+                                exit_reason=exit_reason
                             )
-                            print(f"💾 Trade #{pos.trade_id} saved to DB: SL_HIT_EXCHANGE", flush=True)
+                            print(f"💾 Trade #{pos.trade_id} saved to DB: {exit_reason}", flush=True)
 
                         # Remove from local tracking
                         del self.positions[symbol]
