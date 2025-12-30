@@ -372,11 +372,15 @@ class HyperLiquidTrader:
 
             # Get price decimals - this is CRITICAL for ETH (uses 1 decimal, not 2)
             px_decimals = int(symbol_info.get("pxDecimals", 2)) if symbol_info else 2
-            print(f"   pxDecimals for {symbol}: {px_decimals}")
+            sz_decimals = int(symbol_info.get("szDecimals", 4)) if symbol_info else 4
+            print(f"   pxDecimals for {symbol}: {px_decimals}, szDecimals: {sz_decimals}")
 
             # Round trigger and limit price to correct decimals
             trigger_price = round(trigger_price, px_decimals)
             limit_price = trigger_price  # Same price for market order
+
+            # Round size to correct decimals - CRITICAL for ETH!
+            size = round(size, sz_decimals)
 
             # Stop Loss order type - tpsl is REQUIRED by SDK
             stop_order_type = {
@@ -500,8 +504,12 @@ class HyperLiquidTrader:
                     break
 
             px_decimals = int(symbol_info.get("pxDecimals", 2)) if symbol_info else 2
+            sz_decimals = int(symbol_info.get("szDecimals", 4)) if symbol_info else 4
             trigger_price = round(trigger_price, px_decimals)
             limit_price = trigger_price  # Same price for market order
+
+            # Round size to correct decimals - CRITICAL for ETH!
+            size = round(size, sz_decimals)
 
             # Take Profit order type - tpsl is REQUIRED by SDK
             tp_order_type = {
