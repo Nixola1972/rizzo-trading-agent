@@ -168,8 +168,9 @@ class AlphaTrader1H:
                 logger.warning(f"[1H] {symbol}: No indicators returned")
                 return None
 
-            # Get fear & greed
-            fear_greed = get_fear_greed_index() or 50
+            # Get fear & greed (returns dict with 'value' key)
+            fg_data = get_fear_greed_index()
+            fear_greed = fg_data.get('value', 50) if fg_data else 50
 
             return {
                 'symbol': symbol,
