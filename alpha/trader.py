@@ -104,6 +104,8 @@ class AlphaPosition:
     max_profit_pct: float = 0.0
     max_loss_pct: float = 0.0
     stop_loss_price: float = 0.0  # Stop loss trigger price
+    sl_order_id: Optional[int] = None  # HyperLiquid SL order ID
+    size_coins: float = 0.0  # Position size in coins (for SL order)
     trade_id: Optional[int] = None  # Database trade ID
     decision_id: Optional[int] = None  # Database decision ID
 
@@ -595,9 +597,19 @@ class AlphaTrader:
         symbol = action.symbol
 
         if action.action_type == ActionType.CLOSE:
-            # Get position info before closing (for DB)
+            # Get position info before closing (for DB and SL cancellation)
             pos = self.positions.get(symbol)
             trade_id = pos.trade_id if pos else None
+            sl_order_id = pos.sl_order_id if pos else None
+
+            # Cancel SL order first (if exists)
+            if sl_order_id and self.exchange:
+                print(f"🗑️ Cancelling SL order {sl_order_id} for {symbol}...", flush=True)
+                cancel_result = self.exchange.cancel_order(symbol, sl_order_id)
+                if cancel_result.get('status') == 'ok':
+                    print(f"✅ SL order cancelled", flush=True)
+                else:
+                    print(f"⚠️ SL cancel result: {cancel_result}", flush=True)
 
             result = self.exchange.execute_signal({
                 'operation': 'close',
@@ -660,6 +672,15 @@ class AlphaTrader:
                 # Get entry price from result or fetch current price
                 entry_price = self._get_entry_price_from_result(result, symbol)
 
+                # Get size in coins from result or fetch from exchange
+                size_coins = self._get_size_coins_from_result(result)
+                if size_coins == 0:
+                    # Fallback: fetch from exchange after a short delay
+                    import time
+                    time.sleep(0.5)
+                    size_coins = self._get_position_size_from_exchange(symbol)
+                print(f"📊 Position size: {size_coins} {symbol}", flush=True)
+
                 # Get decision ID for linking
                 decision_id = decision_info.get('decision_id') if decision_info else None
                 mcts_win_prob = decision_info.get('mcts_win_prob') if decision_info else None
@@ -689,11 +710,12 @@ class AlphaTrader:
                     leverage=action.leverage,
                     opened_at=datetime.now(),
                     current_price=entry_price,
+                    size_coins=size_coins,  # Store size in coins for SL order
                     trade_id=trade_id,
                     decision_id=decision_id,
                 )
 
-                # Set Stop Loss
+                # Set Stop Loss on exchange
                 self._set_stop_loss(symbol, direction, entry_price, action.leverage)
 
             else:
@@ -722,8 +744,38 @@ class AlphaTrader:
             logger.error(f"Error getting entry price: {e}")
             return 0
 
+    def _get_size_coins_from_result(self, result: Dict) -> float:
+        """Extract filled size in coins from order result."""
+        try:
+            response = result.get('response', {})
+            if isinstance(response, dict):
+                data = response.get('data', {})
+                statuses = data.get('statuses', [])
+                if statuses and isinstance(statuses[0], dict):
+                    filled = statuses[0].get('filled', {})
+                    if filled:
+                        return float(filled.get('totalSz', 0))
+            return 0
+        except Exception as e:
+            logger.error(f"Error getting size from result: {e}")
+            return 0
+
+    def _get_position_size_from_exchange(self, symbol: str) -> float:
+        """Get current position size in coins from exchange."""
+        try:
+            if not self.exchange:
+                return 0
+            status = self.exchange.get_account_status()
+            for pos in status.get("open_positions", []):
+                if pos.get("symbol") == symbol:
+                    return abs(pos.get("size", 0))
+            return 0
+        except Exception as e:
+            logger.error(f"Error getting position size: {e}")
+            return 0
+
     def _set_stop_loss(self, symbol: str, direction: str, entry_price: float, leverage: int):
-        """Set stop loss order on HyperLiquid."""
+        """Set stop loss order on HyperLiquid (native exchange order)."""
         try:
             sl_pct = self.config.trading.stop_loss_pct
 
@@ -735,12 +787,36 @@ class AlphaTrader:
 
             print(f"🛡️ Setting Stop Loss for {symbol}: {sl_pct}% -> ${sl_price:.4f}", flush=True)
 
-            # Use HyperLiquid's native stop loss order
-            # Note: This requires the exchange to support tp_sl orders
-            # For now, we'll track SL locally and execute in fast loop
+            # Store SL price locally for tracking
             if symbol in self.positions:
                 self.positions[symbol].stop_loss_price = sl_price
-                print(f"✅ Stop Loss set at ${sl_price:.4f} ({sl_pct}% from entry)", flush=True)
+
+            # Place REAL SL order on HyperLiquid (LIVE mode only)
+            if self.exchange and not self.config.trading.paper_trading:
+                pos = self.positions.get(symbol)
+                if pos and pos.size_coins > 0:
+                    result = self.exchange.place_stop_loss(
+                        symbol=symbol,
+                        direction=direction,
+                        size=pos.size_coins,
+                        trigger_price=sl_price
+                    )
+
+                    if result.get('status') == 'ok':
+                        sl_order_id = result.get('sl_order_id')
+                        if sl_order_id:
+                            self.positions[symbol].sl_order_id = sl_order_id
+                            print(f"✅ SL order placed on exchange (ID: {sl_order_id})", flush=True)
+                        else:
+                            print(f"✅ SL order placed on exchange", flush=True)
+                    else:
+                        print(f"⚠️ SL order may have failed: {result}", flush=True)
+                        # Keep local tracking as backup
+                else:
+                    print(f"⚠️ Cannot place SL: position size unknown", flush=True)
+            else:
+                # Paper trading: just track locally
+                print(f"✅ Stop Loss tracked locally at ${sl_price:.4f} ({sl_pct}% from entry)", flush=True)
 
         except Exception as e:
             logger.error(f"Error setting stop loss: {e}")
@@ -776,8 +852,33 @@ class AlphaTrader:
                     f"MFE: {pos.max_profit_pct:.2f}% | MAE: {pos.max_loss_pct:.2f}%"
                 )
 
-                # CHECK STOP LOSS (LIVE mode only)
-                if pos.stop_loss_price > 0 and self.exchange:
+                # LIVE MODE: Check if exchange SL triggered (position no longer exists)
+                if self.exchange and pos.sl_order_id:
+                    # Periodically verify position still exists on exchange
+                    exchange_size = self._get_position_size_from_exchange(symbol)
+                    if exchange_size == 0:
+                        # Position was closed by exchange (SL triggered!)
+                        print(f"\n🛑 SL TRIGGERED ON EXCHANGE for {symbol}!", flush=True)
+                        print(f"   P&L when closed: ~{pnl_pct:+.2f}%", flush=True)
+
+                        # Save to database
+                        if DB_AVAILABLE and alpha_db and pos.trade_id:
+                            alpha_db.close_trade(
+                                trade_id=pos.trade_id,
+                                exit_price=pos.stop_loss_price,
+                                exit_reason="SL_HIT_EXCHANGE"
+                            )
+                            print(f"💾 Trade #{pos.trade_id} saved to DB: SL_HIT_EXCHANGE", flush=True)
+
+                        # Remove from local tracking
+                        del self.positions[symbol]
+                        # Set cooldown
+                        self.cooldowns[symbol] = datetime.now()
+                        print(f"⏱️ Cooldown set for {symbol}", flush=True)
+                        continue  # Skip rest of loop for this symbol
+
+                # PAPER MODE: Check stop loss locally
+                elif self.config.trading.paper_trading and pos.stop_loss_price > 0:
                     sl_hit = False
                     if pos.direction == "LONG" and price <= pos.stop_loss_price:
                         sl_hit = True
@@ -792,7 +893,7 @@ class AlphaTrader:
                         print(f"   Current: ${price:.4f}", flush=True)
                         print(f"   P&L: {pnl_pct:+.2f}%", flush=True)
 
-                        # Close position
+                        # Close position (paper)
                         close_action = Action(ActionType.CLOSE, symbol, confidence=1.0)
                         close_action.reasoning = f"Stop Loss hit at ${price:.4f}"
                         success = self.execute_action(close_action, {'steps': ['Stop Loss triggered']})

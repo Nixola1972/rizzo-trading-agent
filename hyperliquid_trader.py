@@ -322,14 +322,116 @@ class HyperLiquidTrader:
         """Mostra i limiti di trading per un simbolo o tutti"""
         print("\n📊 LIMITI TRADING HYPERLIQUID")
         print("-" * 60)
-        
+
         for perp in self.meta["universe"]:
             if symbol and perp["name"] != symbol:
                 continue
-                
+
             print(f"\nSymbol: {perp['name']}")
             print(f"  Min Size: {perp.get('minSz', 'N/A')}")
             print(f"  Size Decimals: {perp.get('szDecimals', 'N/A')}")
             print(f"  Price Decimals: {perp.get('pxDecimals', 'N/A')}")
             print(f"  Max Leverage: {perp.get('maxLeverage', 'N/A')}")
             print(f"  Only Isolated: {perp.get('onlyIsolated', False)}")
+
+    # ----------------------------------------------------------------------
+    #                        STOP LOSS ORDER
+    # ----------------------------------------------------------------------
+    def place_stop_loss(self, symbol: str, direction: str, size: float, trigger_price: float) -> Dict[str, Any]:
+        """
+        Place a stop loss order on HyperLiquid.
+
+        Args:
+            symbol: Trading pair (e.g., "ETH", "BTC")
+            direction: Current position direction ("long" or "short")
+            size: Position size to close
+            trigger_price: Price at which SL triggers
+
+        Returns:
+            Order result from exchange
+        """
+        try:
+            # For SL on LONG position: we need to SELL (is_buy=False)
+            # For SL on SHORT position: we need to BUY (is_buy=True)
+            is_buy = (direction.lower() == "short")
+
+            # Get current price for limit order (set slightly worse than trigger)
+            mids = self.info.all_mids()
+            current_price = float(mids.get(symbol, trigger_price))
+
+            # Set limit price slightly worse than trigger to ensure fill
+            # For SELL (closing long): limit below trigger
+            # For BUY (closing short): limit above trigger
+            if is_buy:
+                limit_price = trigger_price * 1.01  # 1% above trigger for buy
+            else:
+                limit_price = trigger_price * 0.99  # 1% below trigger for sell
+
+            # Round limit price to appropriate decimals
+            symbol_info = None
+            for perp in self.meta["universe"]:
+                if perp["name"] == symbol:
+                    symbol_info = perp
+                    break
+
+            px_decimals = int(symbol_info.get("pxDecimals", 2)) if symbol_info else 2
+            limit_price = round(limit_price, px_decimals)
+            trigger_price = round(trigger_price, px_decimals)
+
+            # Stop Loss order type
+            stop_order_type = {
+                "trigger": {
+                    "triggerPx": trigger_price,
+                    "isMarket": True,  # Market order when triggered
+                    "tpsl": "sl"  # This is a Stop Loss
+                }
+            }
+
+            print(f"🛡️ Placing SL order on HyperLiquid:")
+            print(f"   Symbol: {symbol}")
+            print(f"   Direction to close: {'BUY' if is_buy else 'SELL'}")
+            print(f"   Size: {size}")
+            print(f"   Trigger price: ${trigger_price}")
+            print(f"   Limit price: ${limit_price}")
+
+            result = self.exchange.order(
+                symbol,
+                is_buy,
+                size,
+                limit_price,
+                stop_order_type,
+                reduce_only=True  # Only closes existing position
+            )
+
+            if result.get('status') == 'ok':
+                print(f"✅ Stop Loss order placed successfully")
+                # Extract order ID if available
+                response = result.get('response', {})
+                if isinstance(response, dict):
+                    data = response.get('data', {})
+                    statuses = data.get('statuses', [])
+                    if statuses:
+                        order_info = statuses[0]
+                        if isinstance(order_info, dict) and 'resting' in order_info:
+                            oid = order_info['resting'].get('oid')
+                            print(f"   Order ID: {oid}")
+                            result['sl_order_id'] = oid
+            else:
+                print(f"⚠️ SL order response: {result}")
+
+            return result
+
+        except Exception as e:
+            print(f"❌ Error placing stop loss: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "error": str(e)}
+
+    def cancel_order(self, symbol: str, order_id: int) -> Dict[str, Any]:
+        """Cancel an order by ID."""
+        try:
+            result = self.exchange.cancel(symbol, order_id)
+            return result
+        except Exception as e:
+            print(f"❌ Error cancelling order: {e}")
+            return {"status": "error", "error": str(e)}
