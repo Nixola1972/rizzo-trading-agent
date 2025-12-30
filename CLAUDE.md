@@ -2886,7 +2886,8 @@ docker run -d --name dl_15m \
 | `KeyError: 'indicators'` | Formato dati Binance diverso | Usare `load_hyperliquid_data()` che converte formato |
 | `Reward: nan` | `episode_stats` vuoto | Aggiungere `trainer.episode_stats.append(stats)` dopo ogni episodio |
 | `get_hyperliquid_indicators() got unexpected argument 'interval'` | Funzione non accetta parametro interval | Rimuovere `interval` dalla chiamata |
-| `'int' object has no attribute 'state_dim'` | MCTS inizializzato con parametri errati | Cambiare `MCTS(policy, value, config)` → `MCTS(config.mcts)` |
+| `'int' object has no attribute 'state_dim'` (MCTS) | MCTS inizializzato con parametri errati | Cambiare `MCTS(policy, value, config)` → `MCTS(config.mcts)` |
+| `'int' object has no attribute 'state_dim'` (Networks) | `create_policy/value_network()` riceve int invece di NetworkConfig | Passare `self.config.network` invece di `state_dim` |
 
 ---
 
