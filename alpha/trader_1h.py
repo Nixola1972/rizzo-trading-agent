@@ -161,9 +161,10 @@ class AlphaTrader1H:
             return None
 
         try:
-            # Get indicators (uses 1h candles internally based on ALPHA_INTERVAL)
-            indicators = get_hyperliquid_indicators(symbol, interval="1h")
-            if not indicators:
+            # Get indicators (function uses default 15m candles, but that's fine for live decisions)
+            # The model was trained on 1h data, but for live trading we use current market state
+            status, indicators = get_hyperliquid_indicators(symbol)
+            if status != "ok" or not indicators:
                 return None
 
             # Get fear & greed
