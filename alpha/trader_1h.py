@@ -256,7 +256,10 @@ class AlphaTrader1H:
             state_tensor = torch.FloatTensor(state.to_vector(target_symbol=symbol)).unsqueeze(0)
 
             with torch.no_grad():
-                action_probs = self.policy_net(state_tensor)
+                # policy_net returns: (action_probs, leverage, size_pct, confidence, entropy)
+                policy_output = self.policy_net(state_tensor)
+                action_probs = policy_output[0]  # First element is action_probs
+                net_confidence = policy_output[3]  # Fourth element is confidence
                 value = self.value_net(state_tensor)
 
             # Get action from policy
