@@ -3771,13 +3771,30 @@ print(f'Result: {result}')
 | `alpha_trader_15m_live` | LIVE 15m | ⚠️ Da riavviare | 7 simboli, dopo fix |
 | `alpha_trader_1h` | PAPER 1h | ✅ Attivo | Tutti 11 simboli |
 
+### ⚠️ PROBLEMA CRITICO: Nessuno Stop Loss!
+
+**Il bot attualmente apre posizioni SENZA stop loss!**
+
+Questo significa:
+- Nessuna protezione in caso di movimento avverso
+- Rischio di perdita totale del capitale
+- `max_hold_minutes=7` chiude dopo 7 min MA senza SL intermedio
+
+**Soluzioni possibili:**
+1. Aggiungere SL automatico in `hyperliquid_trader.py` dopo ogni open
+2. Usare ordini TP/SL nativi di HyperLiquid
+3. Implementare trailing stop nel fast loop
+
+**⛔ NON USARE LIVE SENZA STOP LOSS!**
+
 ### Prossimi Passi
 
-1. Rebuild container con fix
-2. Riavviare `alpha_trader_15m_live`
-3. Monitorare esecuzione trade
-4. Verificare che max_hold_minutes=7 funzioni
+1. **🔴 PRIORITÀ 1**: Implementare Stop Loss automatico
+2. Rebuild container con fix
+3. Riavviare `alpha_trader_15m_live`
+4. Monitorare esecuzione trade
+5. Verificare che max_hold_minutes=7 funzioni
 
 ---
 
-*AlphaTrader v0.4.1 - December 2025 (LIVE Bug Fixes)*
+*AlphaTrader v0.4.1 - December 2025 (LIVE Bug Fixes - MISSING SL!)*
