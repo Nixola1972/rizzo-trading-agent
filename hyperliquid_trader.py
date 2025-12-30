@@ -1,6 +1,6 @@
 import json
 from decimal import Decimal, ROUND_DOWN
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 import eth_account
 from eth_account.signers.local import LocalAccount
@@ -437,3 +437,59 @@ class HyperLiquidTrader:
         except Exception as e:
             print(f"❌ Error cancelling order: {e}")
             return {"status": "error", "error": str(e)}
+
+    def get_open_orders(self, symbol: str = None) -> List[Dict[str, Any]]:
+        """
+        Get all open orders, optionally filtered by symbol.
+
+        Returns:
+            List of open orders with order details
+        """
+        try:
+            open_orders = self.info.open_orders(self.account_address)
+
+            if symbol:
+                # Filter by symbol
+                open_orders = [o for o in open_orders if o.get('coin') == symbol]
+
+            return open_orders
+        except Exception as e:
+            print(f"❌ Error getting open orders: {e}")
+            return []
+
+    def verify_sl_order_exists(self, symbol: str, expected_trigger_price: float, tolerance_pct: float = 0.5) -> Optional[int]:
+        """
+        Verify that a stop loss order exists for a symbol.
+
+        Args:
+            symbol: Trading pair
+            expected_trigger_price: Expected SL trigger price
+            tolerance_pct: Price tolerance percentage (default 0.5%)
+
+        Returns:
+            Order ID if found, None otherwise
+        """
+        try:
+            open_orders = self.get_open_orders(symbol)
+
+            for order in open_orders:
+                # Check if it's a trigger order (SL/TP)
+                order_type = order.get('orderType', '')
+                if 'trigger' not in order_type.lower() and 'stop' not in order_type.lower():
+                    continue
+
+                # Check trigger price matches (within tolerance)
+                trigger_px = float(order.get('triggerPx', 0))
+                if trigger_px == 0:
+                    continue
+
+                price_diff_pct = abs(trigger_px - expected_trigger_price) / expected_trigger_price * 100
+                if price_diff_pct <= tolerance_pct:
+                    order_id = order.get('oid')
+                    print(f"✅ Found SL order: ID={order_id}, trigger=${trigger_px}")
+                    return order_id
+
+            return None
+        except Exception as e:
+            print(f"❌ Error verifying SL order: {e}")
+            return None

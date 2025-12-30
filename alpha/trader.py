@@ -816,8 +816,16 @@ class AlphaTrader:
             logger.error(f"Error getting position size: {e}")
             return 0
 
-    def _set_stop_loss(self, symbol: str, direction: str, entry_price: float, leverage: int):
-        """Set stop loss order on HyperLiquid (native exchange order)."""
+    def _set_stop_loss(self, symbol: str, direction: str, entry_price: float, leverage: int) -> bool:
+        """
+        Set stop loss order on HyperLiquid (native exchange order).
+
+        Returns:
+            True if SL was successfully placed or verified, False otherwise
+        """
+        MAX_RETRIES = 3
+        RETRY_DELAY = 2  # seconds
+
         try:
             sl_pct = self.config.trading.stop_loss_pct
 
@@ -837,32 +845,97 @@ class AlphaTrader:
             if self.exchange and not self.config.trading.paper_trading:
                 pos = self.positions.get(symbol)
                 if pos and pos.size_coins > 0:
-                    result = self.exchange.place_stop_loss(
-                        symbol=symbol,
-                        direction=direction,
-                        size=pos.size_coins,
-                        trigger_price=sl_price
-                    )
+                    sl_order_id = None
 
-                    if result.get('status') == 'ok':
-                        sl_order_id = result.get('sl_order_id')
-                        if sl_order_id:
-                            self.positions[symbol].sl_order_id = sl_order_id
-                            print(f"✅ SL order placed on exchange (ID: {sl_order_id})", flush=True)
+                    # Retry loop for placing SL
+                    for attempt in range(1, MAX_RETRIES + 1):
+                        print(f"📤 Attempt {attempt}/{MAX_RETRIES} to place SL order...", flush=True)
+
+                        result = self.exchange.place_stop_loss(
+                            symbol=symbol,
+                            direction=direction,
+                            size=pos.size_coins,
+                            trigger_price=sl_price
+                        )
+
+                        if result.get('status') == 'ok':
+                            sl_order_id = result.get('sl_order_id')
+                            if sl_order_id:
+                                self.positions[symbol].sl_order_id = sl_order_id
+                                print(f"✅ SL order placed on exchange (ID: {sl_order_id})", flush=True)
+                                return True
+                            else:
+                                # Order ID not in response, verify by querying open orders
+                                print(f"⚠️ No order ID in response, verifying on exchange...", flush=True)
+                                time.sleep(1)  # Give exchange time to process
+
+                                verified_id = self.exchange.verify_sl_order_exists(symbol, sl_price)
+                                if verified_id:
+                                    self.positions[symbol].sl_order_id = verified_id
+                                    print(f"✅ SL order verified on exchange (ID: {verified_id})", flush=True)
+                                    return True
+                                else:
+                                    print(f"⚠️ Could not verify SL order on exchange", flush=True)
                         else:
-                            print(f"✅ SL order placed on exchange", flush=True)
+                            print(f"⚠️ SL order attempt {attempt} failed: {result}", flush=True)
+
+                        # Wait before retry (except on last attempt)
+                        if attempt < MAX_RETRIES:
+                            print(f"⏳ Waiting {RETRY_DELAY}s before retry...", flush=True)
+                            time.sleep(RETRY_DELAY)
+
+                    # All retries exhausted - CRITICAL WARNING
+                    print(f"", flush=True)
+                    print(f"🚨🚨🚨 CRITICAL: STOP LOSS NOT PLACED FOR {symbol}! 🚨🚨🚨", flush=True)
+                    print(f"   Position is UNPROTECTED!", flush=True)
+                    print(f"   Entry: ${entry_price:.4f}, Expected SL: ${sl_price:.4f}", flush=True)
+                    print(f"", flush=True)
+
+                    # Check config for what to do when SL fails
+                    close_on_sl_fail = os.environ.get('CLOSE_ON_SL_FAIL', 'false').lower() == 'true'
+
+                    if close_on_sl_fail:
+                        print(f"🔴 CLOSE_ON_SL_FAIL=true -> Closing position for safety", flush=True)
+                        self._close_position_emergency(symbol, "SL_PLACEMENT_FAILED")
+                        return False
                     else:
-                        print(f"⚠️ SL order may have failed: {result}", flush=True)
-                        # Keep local tracking as backup
+                        print(f"⚠️ Position remains open WITHOUT stop loss protection!", flush=True)
+                        print(f"   Set CLOSE_ON_SL_FAIL=true to auto-close on SL failure", flush=True)
+                        return False
+
                 else:
                     print(f"⚠️ Cannot place SL: position size unknown", flush=True)
+                    return False
             else:
                 # Paper trading: just track locally
                 print(f"✅ Stop Loss tracked locally at ${sl_price:.4f} ({sl_pct}% from entry)", flush=True)
+                return True
 
         except Exception as e:
             logger.error(f"Error setting stop loss: {e}")
             print(f"⚠️ Failed to set stop loss: {e}", flush=True)
+            return False
+
+    def _close_position_emergency(self, symbol: str, reason: str):
+        """Emergency close a position when SL cannot be placed."""
+        try:
+            print(f"🔴 Emergency closing {symbol}: {reason}", flush=True)
+
+            if self.exchange:
+                result = self.exchange.execute_signal({
+                    'operation': 'close',
+                    'symbol': symbol
+                })
+
+                if result.get('status') == 'ok':
+                    print(f"✅ Position {symbol} emergency closed", flush=True)
+                    if symbol in self.positions:
+                        del self.positions[symbol]
+                    self.cooldowns[symbol] = datetime.now()
+                else:
+                    print(f"❌ Emergency close failed: {result}", flush=True)
+        except Exception as e:
+            print(f"❌ Emergency close error: {e}", flush=True)
 
     def update_positions(self):
         """Update P&L for open positions and check stop losses."""
