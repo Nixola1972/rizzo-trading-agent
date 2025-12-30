@@ -557,10 +557,15 @@ class AlphaTrader:
                 'direction': 'long',  # Will close whatever is open
                 'reason': 'AlphaTrader decision',
             })
-            if result.get('success'):
+            # Check for success - API returns 'status': 'ok' not 'success'
+            success = result.get('status') == 'ok' or result.get('success', False)
+            if success:
+                print(f"✅ Position closed: {symbol}", flush=True)
                 if symbol in self.positions:
                     del self.positions[symbol]
                 return True
+            else:
+                print(f"❌ Failed to close: {result}", flush=True)
             return False
 
         elif action.action_type in (ActionType.OPEN_LONG, ActionType.OPEN_SHORT):
@@ -580,7 +585,13 @@ class AlphaTrader:
                 'reason': f'AlphaTrader: {action.confidence:.1%} confidence',
             })
 
-            return result.get('success', False)
+            # Check for success - API returns 'status': 'ok' not 'success'
+            success = result.get('status') == 'ok' or result.get('success', False)
+            if success:
+                print(f"✅ Position opened: {direction.upper()} {symbol}", flush=True)
+            else:
+                print(f"❌ Failed to open: {result}", flush=True)
+            return success
 
         return False
 
