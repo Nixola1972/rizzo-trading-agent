@@ -610,6 +610,7 @@ class AlphaTrader:
         print(f"Symbols: {self.config.trading.symbols}", flush=True)
         print(f"MCTS min win prob: {self.config.mcts.min_win_probability:.0%}", flush=True)
         print(f"Min hold time: {self.config.trading.min_hold_minutes} min", flush=True)
+        print(f"Max hold time: {self.config.trading.max_hold_minutes} min (force close)", flush=True)
         print(f"Slow loop interval: {self.config.trading.slow_loop_interval}s", flush=True)
         if DB_AVAILABLE and alpha_db:
             print(f"Database: ✅ Connected (PostgreSQL)", flush=True)
@@ -640,6 +641,18 @@ class AlphaTrader:
                 if seconds_since_last >= slow_interval:
                     print(f"[Slow loop triggered] {seconds_since_last:.0f}s since last", flush=True)
                     last_slow = now
+
+                    # CHECK MAX HOLD: Force close positions held too long
+                    max_hold = self.config.trading.max_hold_minutes
+                    for sym, pos in list(self.positions.items()):
+                        time_held = (datetime.now() - pos.opened_at).total_seconds() / 60
+                        if time_held >= max_hold:
+                            print(f"\n⏰ [MAX_HOLD] {sym} held {time_held:.1f}min >= {max_hold}min - FORCE CLOSING!", flush=True)
+                            # Force close this position
+                            close_action = Action(ActionType.CLOSE, sym, confidence=1.0)
+                            close_action.reasoning = f"Max hold time exceeded ({time_held:.1f}min >= {max_hold}min)"
+                            success = self.execute_action(close_action, {'steps': ['Max hold exceeded']})
+                            print(f"⏰ [MAX_HOLD] Force close {sym}: {'SUCCESS' if success else 'FAILED'}", flush=True)
 
                     for symbol in self.config.trading.symbols:
                         print(f"\n{'='*40}", flush=True)

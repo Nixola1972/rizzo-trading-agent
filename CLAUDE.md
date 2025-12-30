@@ -3553,3 +3553,125 @@ FROM alpha_trades_1h WHERE status='OPEN';"
 ```
 
 ---
+
+## 📊 AlphaTrader 15m - Analisi Paper Trading & Produzione
+
+### Risultati Paper Trading (30 Dicembre 2025)
+
+Dopo **2107 trade chiusi**, ecco l'analisi completa:
+
+| Metrica | Valore |
+|---------|--------|
+| **Trade Totali** | 2107 |
+| **P&L Lordo** | +115.21% |
+| **Win Rate** | ~53% |
+| **Durata Media** | ~8 minuti |
+
+### Analisi Durata Trade (Critica!)
+
+La durata del trade è il fattore più importante:
+
+| Durata | Trades | WR | Avg P&L | Totale P&L | Status |
+|--------|--------|-----|---------|------------|--------|
+| <5m | 141 | 44.7% | -0.03% | -3.51 | ⚠️ Troppo breve |
+| **5-7m** | **1382** | **56.3%** | **+0.21%** | **+291.04** | ✅ **SWEET SPOT** |
+| 7-9m | 218 | 50.2% | -0.03% | -6.86 | ⚠️ Marginale |
+| 9-11m | 101 | 43.6% | -0.14% | -14.60 | ❌ Perde |
+| 11-15m | 98 | 33.7% | -0.39% | -38.55 | ❌ Perde |
+| >15m | 133 | 35.1% | -0.99% | -117.84 | ❌❌ Disastroso |
+
+**Conclusione**: Trade >7 minuti perdono soldi. Implementato `max_hold_minutes=7`.
+
+### Analisi Simboli con Fees
+
+Con fee ~0.2€ per trade (open+close), alcuni simboli diventano negativi:
+
+**Calcolo**: Position $25 × leva 5x = $125 notional. P&L in EUR = (P&L% / 100) × $125 × 0.92
+
+| Simbolo | Trades (5-7m) | WR | P&L Lordo € | Fees € | **Netto €** | Status |
+|---------|---------------|-----|-------------|--------|-------------|--------|
+| **SUI** | 119 | 56.3% | 40.2€ | 23.8€ | **+16.4€** | 🟢 TOP |
+| **ADA** | 115 | 51.3% | 38.9€ | 23.0€ | **+15.9€** | 🟢 TOP |
+| **DOGE** | 131 | 58.0% | 41.2€ | 26.2€ | **+15.0€** | 🟢 TOP |
+| **ARB** | 119 | 57.1% | 38.3€ | 23.8€ | **+14.5€** | 🟢 TOP |
+| **AVAX** | 117 | 54.7% | 37.7€ | 23.4€ | **+14.3€** | 🟢 TOP |
+| **ETH** | 128 | 62.5% | 34.8€ | 25.6€ | **+9.2€** | 🟡 OK |
+| **LINK** | 129 | 55.8% | 34.6€ | 25.8€ | **+8.8€** | 🟡 OK |
+| BTC | 121 | 56.2% | 21.0€ | 24.2€ | -3.2€ | 🔴 ESCLUSO |
+| SOL | 135 | 45.2% | 18.6€ | 27.0€ | -8.4€ | 🔴 ESCLUSO |
+| XRP | 137 | 61.3% | 16.1€ | 27.4€ | -11.3€ | 🔴 ESCLUSO |
+| BNB | 131 | 60.3% | 13.4€ | 26.2€ | -12.8€ | 🔴 ESCLUSO |
+
+### Configurazione LIVE Ottimizzata
+
+File: `.env.alpha.live`
+
+```bash
+# Simboli profittevoli (esclusi BTC, SOL, XRP, BNB)
+TRADING_SYMBOLS=SUI,ADA,DOGE,ARB,AVAX,ETH,LINK
+
+# Timing critico (5-7 min sweet spot)
+ALPHA_MIN_HOLD_MINUTES=5
+ALPHA_MAX_HOLD_MINUTES=7
+
+# MCTS disabilitato (dati mostrano che peggiora)
+ALPHA_MIN_WIN_PROB=0.0
+
+# Position sizing conservativo
+ALPHA_POSITION_USD=25
+ALPHA_MAX_LEVERAGE=5
+```
+
+### Comandi Docker LIVE
+
+```bash
+# Avvia container LIVE 15m (con simboli ottimizzati)
+docker run -d \
+  --name alpha_trader_live \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env.baseline \
+  -e ALPHA_PAPER=false \
+  -e TRADING_SYMBOLS="SUI,ADA,DOGE,ARB,AVAX,ETH,LINK" \
+  -e ALPHA_MIN_HOLD_MINUTES=5 \
+  -e ALPHA_MAX_HOLD_MINUTES=7 \
+  -e ALPHA_MIN_WIN_PROB=0.0 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  alphatrader -m alpha.trader --mode live --loop
+
+# Logs
+docker logs -f alpha_trader_live
+
+# Stop
+docker stop alpha_trader_live
+```
+
+### Script Deployment
+
+```bash
+# Deploy automatico LIVE
+cd ~/alphatrader
+chmod +x alpha/deploy_live.sh
+./alpha/deploy_live.sh
+```
+
+### Confronto Strategie
+
+| Strategia | Simboli | P&L Netto Stimato |
+|-----------|---------|-------------------|
+| Tutti (11) | BTC,ETH,SOL... | +58.9€ |
+| **Solo profittevoli (7)** | SUI,ADA,DOGE,ARB,AVAX,ETH,LINK | **+94.1€** |
+| Solo TOP (5) | SUI,ADA,DOGE,ARB,AVAX | +76.1€ |
+
+### Note Importanti
+
+1. **max_hold_minutes=7**: Trade > 7 minuti vengono chiusi forzatamente
+2. **MCTS disabilitato**: I dati mostrano che non migliora le performance
+3. **7 simboli su 11**: BTC, SOL, XRP, BNB esclusi perché negativi dopo fees
+4. **Paper trading continua**: Container `alpha_trader` resta attivo per raccogliere più dati
+
+---
+
+*AlphaTrader v0.4.0 - December 2025 (LIVE Ready)*
