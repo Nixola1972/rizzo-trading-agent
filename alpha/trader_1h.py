@@ -129,10 +129,9 @@ class AlphaTrader1H:
             try:
                 checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
-                # Create networks
-                state_dim = self.config.network.state_dim
-                self.policy_net = create_policy_network(state_dim)
-                self.value_net = create_value_network(state_dim)
+                # Create networks (pass NetworkConfig, not state_dim)
+                self.policy_net = create_policy_network(self.config.network)
+                self.value_net = create_value_network(self.config.network)
 
                 # Load weights
                 if 'policy_state_dict' in checkpoint:
