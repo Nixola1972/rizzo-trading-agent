@@ -392,7 +392,7 @@ class HyperLiquidTrader:
             # Stop Loss order type - tpsl is REQUIRED by SDK
             stop_order_type = {
                 "trigger": {
-                    "triggerPx": str(trigger_price),  # Convert to string
+                    "triggerPx": trigger_price,  # Must be float
                     "isMarket": True,
                     "tpsl": "sl"  # Required by HyperLiquid SDK
                 }
@@ -528,7 +528,7 @@ class HyperLiquidTrader:
             # Take Profit order type - tpsl is REQUIRED by SDK
             tp_order_type = {
                 "trigger": {
-                    "triggerPx": str(trigger_price),  # Convert to string
+                    "triggerPx": trigger_price,  # Must be float
                     "isMarket": True,
                     "tpsl": "tp"  # This is a Take Profit
                 }
