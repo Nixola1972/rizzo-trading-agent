@@ -1097,15 +1097,15 @@ class AlphaTrader:
                 # Calculate time held
                 time_held = (datetime.now() - pos.opened_at).total_seconds() / 60
 
-                # Clear status line for each position
-                sl_status = f"${pos.stop_loss_price:.2f}" if pos.stop_loss_price > 0 else "❌ NONE"
-                tp_status = f"${pos.take_profit_price:.2f}" if pos.take_profit_price > 0 else "❌ NONE"
+                # Clear status line for each position (with more decimals)
+                sl_status = f"${pos.stop_loss_price:.4f}" if pos.stop_loss_price > 0 else "❌ NONE"
+                tp_status = f"${pos.take_profit_price:.4f}" if pos.take_profit_price > 0 else "❌ NONE"
                 stage_emoji = ["⚪", "🟡", "🟢"][min(pos.current_sl_lock_stage, 2)]
                 pnl_emoji = "🟢" if pnl_pct > 0 else "🔴" if pnl_pct < -1 else "⚪"
 
-                print(f"[FAST] {symbol} {pos.direction} | ${price:.2f} | {pnl_emoji} P&L {pnl_pct:+.2f}% | "
-                      f"Stage {stage_emoji}{pos.current_sl_lock_stage} | SL {sl_status} | TP {tp_status} | "
-                      f"⏱️ {time_held:.1f}m", flush=True)
+                print(f"[FAST] {symbol} {pos.direction} | Entry ${pos.entry_price:.4f} → Now ${price:.4f} | "
+                      f"{pnl_emoji} P&L {pnl_pct:+.3f}% | Stage {stage_emoji}{pos.current_sl_lock_stage} | "
+                      f"SL {sl_status} | TP {tp_status} | ⏱️ {time_held:.1f}m", flush=True)
 
                 # Update MFE/MAE in database
                 if DB_AVAILABLE and alpha_db and pos.trade_id:
