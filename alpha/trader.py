@@ -60,6 +60,16 @@ except ImportError as e:
     logging.warning(f"HyperLiquidTrader not available: {e}")
     HyperLiquidTrader = None
 
+# Import HyperLiquid SDK directly for real-time prices (works in paper mode too)
+HyperLiquidInfo = None
+try:
+    from hyperliquid.info import Info as HyperLiquidInfo
+    from hyperliquid.utils import constants as hl_constants
+    logging.info("HyperLiquid SDK imported for real-time prices")
+except ImportError:
+    HyperLiquidInfo = None
+    hl_constants = None
+
 # Import shared modules from parent OR use standalone
 try:
     from indicators import get_hyperliquid_indicators
@@ -166,6 +176,16 @@ class AlphaTrader:
                 testnet=self.config.hl_testnet,
             )
             logger.info("✅ Connected to HyperLiquid LIVE!")
+
+        # Initialize HyperLiquid Info for real-time prices (works in paper mode too)
+        self._hl_info = None
+        if HyperLiquidInfo and hl_constants:
+            try:
+                api_url = hl_constants.MAINNET_API_URL if not self.config.hl_testnet else hl_constants.TESTNET_API_URL
+                self._hl_info = HyperLiquidInfo(api_url, skip_ws=True)
+                logger.info("✅ HyperLiquid Info initialized for real-time prices")
+            except Exception as e:
+                logger.warning(f"Could not initialize HyperLiquid Info: {e}")
 
         # State
         self.positions: Dict[str, AlphaPosition] = {}
@@ -1078,9 +1098,32 @@ class AlphaTrader:
         if not self.positions:
             return
 
+        # Get real-time prices from exchange or SDK (not candles!)
+        live_prices = {}
+        symbols_to_check = list(self.positions.keys())
+
+        if self.exchange:
+            # LIVE mode: use exchange
+            try:
+                live_prices = self.exchange.get_live_prices(symbols_to_check)
+            except Exception as e:
+                print(f"⚠️ Could not get live prices from exchange: {e}", flush=True)
+
+        if not live_prices and self._hl_info:
+            # PAPER mode or fallback: use SDK directly
+            try:
+                mids = self._hl_info.all_mids()
+                live_prices = {s: float(mids.get(s, 0)) for s in symbols_to_check}
+            except Exception as e:
+                print(f"⚠️ Could not get live prices from SDK: {e}", flush=True)
+
         for symbol, pos in list(self.positions.items()):
-            data = self.fetch_market_data([symbol])
-            price = data.get('indicators', {}).get(symbol, {}).get('price', 0)
+            # Use live price if available, fallback to candles
+            price = live_prices.get(symbol, 0)
+            if price == 0:
+                # Fallback to candles (slower, updates every 15min)
+                data = self.fetch_market_data([symbol])
+                price = data.get('indicators', {}).get(symbol, {}).get('price', 0)
 
             if price > 0:
                 pos.current_price = price

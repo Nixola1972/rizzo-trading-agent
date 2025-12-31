@@ -264,6 +264,28 @@ class HyperLiquidTrader:
         return res
 
     # ----------------------------------------------------------------------
+    #                           PREZZI REAL-TIME
+    # ----------------------------------------------------------------------
+    def get_live_prices(self, symbols: list = None) -> Dict[str, float]:
+        """
+        Get real-time mid prices for symbols.
+
+        Args:
+            symbols: List of symbols to get prices for. If None, returns all.
+
+        Returns:
+            Dict mapping symbol to current mid price (float)
+        """
+        try:
+            mids = self.info.all_mids()
+            if symbols:
+                return {s: float(mids.get(s, 0)) for s in symbols}
+            return {s: float(p) for s, p in mids.items()}
+        except Exception as e:
+            print(f"Error getting live prices: {e}", flush=True)
+            return {}
+
+    # ----------------------------------------------------------------------
     #                           STATO ACCOUNT
     # ----------------------------------------------------------------------
     def get_account_status(self) -> Dict[str, Any]:
