@@ -2984,4 +2984,198 @@ docker restart alpha_trader
 
 ---
 
+## 📈 Correlazione Candele ↔ Durata Trade Ottimale
+
+### Scoperta Chiave (Dicembre 2025)
+
+I trade da **5-15 minuti** hanno il **56% win rate** (migliore) perché il modello è trainato su **candele da 15 minuti**.
+
+```
+TRAINING su candele 15 min:
+├─ RSI(14) = guarda 14 × 15min = 3.5 ore di storia
+├─ MACD = EMA su 26 candele = ~6.5 ore di storia
+└─ Il modello predice cosa succederà nei PROSSIMI 15 MINUTI
+
+RISULTATO:
+├─ Trade < 5 min:   44.7% WR  ← Chiusi PRIMA della predizione
+├─ Trade 5-15 min:  56.0% WR  ← Chiusi QUANDO si realizza ✅
+├─ Trade 15-30 min: 36.4% WR  ← Oltre l'orizzonte predittivo
+└─ Trade > 1 ora:   20.0% WR  ← Troppo lontano
+```
+
+### Implicazione
+
+| Timeframe Candele | Durata Trade Ottimale | Trade/Giorno | Fees |
+|-------------------|----------------------|--------------|------|
+| 1 min | 1-5 min | ~200 | €€€€ |
+| 5 min | 5-15 min | ~50-100 | €€€ |
+| **15 min** | **15-45 min** | **~20-50** | **€€** |
+| 1 ora | 1-4 ore | ~5-15 | € |
+| 4 ore | 4-16 ore | ~2-5 | ¢ |
+
+---
+
+## 🔀 Proposta: Multi-Timeframe Models
+
+### Architettura Proposta
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     MULTI-TIMEFRAME ALPHATRADER                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   PAPER TRADING (Fase 1)               LIVE TRADING (Fase 2)                │
+│   ┌─────────────────┐                  ┌─────────────────┐                  │
+│   │ alpha_15min     │      dopo        │ alpha_15min     │                  │
+│   │ (paper)         │   ─────────▶     │ (LIVE)          │                  │
+│   │ tabella: alpha_trades_15min        │                 │                  │
+│   └─────────────────┘                  └─────────────────┘                  │
+│                                                                             │
+│   ┌─────────────────┐                  ┌─────────────────┐                  │
+│   │ alpha_1hour     │      dopo        │ alpha_1hour     │                  │
+│   │ (paper)         │   ─────────▶     │ (LIVE)          │                  │
+│   │ tabella: alpha_trades_1hour        │                 │                  │
+│   └─────────────────┘                  └─────────────────┘                  │
+│                                                                             │
+│   Confronto dopo 2+ settimane paper trading                                 │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Training Modello 1h
+
+```bash
+# 1. Scaricare dati 1h da Binance
+cd ~/alphatrader
+docker run -v $(pwd)/alpha/data:/app/alpha/data \
+  alphatrader python -m alpha.binance_data_loader --interval 1h --days 365
+
+# 2. Trainare nuovo modello
+docker run -it \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  alphatrader python -m alpha.trainer \
+    --data-source binance \
+    --interval 1h \
+    --episodes 10000 \
+    --output alpha/checkpoints/model_1hour.pt
+
+# 3. Deploy paper trading 1h
+docker run -d --name alpha_trader_1hour \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env \
+  -e ALPHA_MODEL=model_1hour.pt \
+  -e ALPHA_VARIANT=1hour \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  alphatrader python -m alpha.trader --mode paper --loop
+```
+
+---
+
+## 📊 Proposta: Tick Data Recording
+
+### Perché Registrare Tutti i Dati Intra-Trade
+
+```
+Trade LONG da 10 minuti:
+─────────────────────────────────────────────────────
+Min 0:  Apri a $100
+Min 3:  Prezzo $103 (+3%)  ← PICCO MASSIMO
+Min 5:  Prezzo $102 (+2%)
+Min 8:  Prezzo $100 (0%)
+Min 10: Chiudi a $99 (-1%)  ← PERDITA
+
+Domande che i tick data rispondono:
+├─ A che minuto si raggiunge il picco? (Min 3)
+├─ Qual era RSI al picco? (Es: 72)
+├─ Quanto profit lasciato sul tavolo? (+4%)
+└─ Pattern: "Quando RSI > 70 durante trade, chiudi!"
+```
+
+### Schema Tabella Proposta
+
+```sql
+CREATE TABLE alpha_trade_ticks (
+    id SERIAL PRIMARY KEY,
+    trade_id INTEGER REFERENCES alpha_trades(id),
+    timestamp TIMESTAMPTZ NOT NULL,
+
+    -- Prezzo e P&L
+    price DECIMAL(20,8),
+    unrealized_pnl_pct DECIMAL(8,4),
+
+    -- Leva (importante per calcoli P&L)
+    leverage INTEGER,
+
+    -- Indicatori in quel momento
+    rsi DECIMAL(6,2),
+    macd DECIMAL(12,6),
+    adx DECIMAL(6,2),
+
+    -- Flag per trovare picco facilmente
+    is_max_pnl BOOLEAN DEFAULT FALSE,
+    is_min_pnl BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX idx_ticks_trade ON alpha_trade_ticks(trade_id);
+CREATE INDEX idx_ticks_time ON alpha_trade_ticks(timestamp);
+```
+
+### Stima Storage
+
+| Trade | Durata | Ticks (ogni 5s) | Storage |
+|-------|--------|-----------------|---------|
+| 1 | 10 min | 120 | ~6 KB |
+| 1,000 | - | 120,000 | ~6 MB |
+| 10,000 | - | 1,200,000 | ~60 MB |
+| 100,000 | - | 12,000,000 | ~600 MB |
+
+**600 MB per 100k trade = gestibilissimo!**
+
+### Query Analisi Possibili
+
+```sql
+-- A che minuto si raggiunge il picco in media?
+SELECT
+  ROUND(AVG(EXTRACT(EPOCH FROM (t.timestamp - tr.opened_at))/60)::numeric, 1) as avg_peak_minute
+FROM alpha_trade_ticks t
+JOIN alpha_trades tr ON t.trade_id = tr.id
+WHERE t.is_max_pnl = TRUE;
+
+-- RSI medio quando si raggiunge il picco
+SELECT ROUND(AVG(rsi)::numeric, 1) as avg_rsi_at_peak
+FROM alpha_trade_ticks WHERE is_max_pnl = TRUE;
+
+-- Correlazione leva vs profit lasciato sul tavolo
+SELECT
+  leverage,
+  ROUND(AVG(mfe_pct - pnl_pct)::numeric, 2) as avg_left_on_table
+FROM alpha_trades WHERE status = 'CLOSED'
+GROUP BY leverage ORDER BY leverage;
+```
+
+---
+
+## 📋 Piano Implementazione
+
+### Fase 1: Paper Trading Multi-Timeframe
+- [ ] Creare modello 1h (training ~4 ore)
+- [ ] Deploy paper 15min (già attivo ✅)
+- [ ] Deploy paper 1h (nuovo)
+- [ ] Implementare tick data recording
+- [ ] Raccogliere 2000+ trade per timeframe
+
+### Fase 2: Analisi e Confronto
+- [ ] Confrontare win rate 15min vs 1h
+- [ ] Analizzare costi fees
+- [ ] Identificare timeframe migliore
+
+### Fase 3: Live Trading (Solo Migliore)
+- [ ] Attivare live SOLO sul timeframe vincente
+- [ ] Monitoraggio attento prime settimane
+
+---
+
 *AlphaTrader v0.3.0 - December 2025 (Paper Trading Active)*
