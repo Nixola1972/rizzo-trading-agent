@@ -216,6 +216,54 @@ def init_tables():
                     ON alpha_equity(timestamp DESC);
             """)
 
+            # Table for intra-trade tick data (for peak analysis and retraining)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS alpha_trade_ticks (
+                    id SERIAL PRIMARY KEY,
+
+                    -- Link to trade
+                    trade_id INTEGER REFERENCES alpha_trades(id) ON DELETE CASCADE,
+
+                    -- Timestamp
+                    tick_time TIMESTAMPTZ DEFAULT NOW(),
+                    seconds_since_open INTEGER,
+
+                    -- Price data
+                    price DECIMAL(20,8) NOT NULL,
+                    pnl_pct DECIMAL(8,4),
+
+                    -- Is this the peak profit point?
+                    is_peak BOOLEAN DEFAULT FALSE,
+                    peak_pnl_pct DECIMAL(8,4),
+
+                    -- Indicators at this moment
+                    rsi DECIMAL(6,2),
+                    macd DECIMAL(12,6),
+                    adx DECIMAL(6,2),
+                    ema_stack VARCHAR(20),
+                    bb_position VARCHAR(20),
+                    obv_trend VARCHAR(10),
+                    volume_ratio DECIMAL(6,3),
+
+                    -- Market conditions
+                    funding_rate DECIMAL(12,8),
+                    open_interest DECIMAL(20,2),
+
+                    -- Trade context (stored for easy querying)
+                    symbol VARCHAR(10),
+                    direction VARCHAR(5),
+                    entry_price DECIMAL(20,8),
+                    leverage INTEGER
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_alpha_ticks_trade
+                    ON alpha_trade_ticks(trade_id);
+                CREATE INDEX IF NOT EXISTS idx_alpha_ticks_time
+                    ON alpha_trade_ticks(tick_time DESC);
+                CREATE INDEX IF NOT EXISTS idx_alpha_ticks_peak
+                    ON alpha_trade_ticks(trade_id, is_peak) WHERE is_peak = TRUE;
+            """)
+
             conn.commit()
             logger.info("AlphaTrader tables created successfully")
             return True
@@ -548,6 +596,189 @@ def save_equity_snapshot(
             conn.commit()
         except Exception as e:
             logger.error(f"Error saving equity: {e}")
+
+
+def save_trade_tick(
+    trade_id: int,
+    price: float,
+    pnl_pct: float,
+    seconds_since_open: int,
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    leverage: int,
+    rsi: Optional[float] = None,
+    macd: Optional[float] = None,
+    adx: Optional[float] = None,
+    ema_stack: Optional[str] = None,
+    bb_position: Optional[str] = None,
+    obv_trend: Optional[str] = None,
+    volume_ratio: Optional[float] = None,
+    funding_rate: Optional[float] = None,
+    open_interest: Optional[float] = None,
+) -> Optional[int]:
+    """
+    Save a tick data point for an open trade.
+
+    This captures the state at each monitoring interval (e.g., every 5 seconds)
+    for later analysis of peak timing and optimal exit points.
+
+    Returns tick ID.
+    """
+    if not PSYCOPG2_AVAILABLE:
+        return None
+
+    with get_connection() as conn:
+        if not conn:
+            return None
+
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO alpha_trade_ticks (
+                    trade_id, price, pnl_pct, seconds_since_open,
+                    symbol, direction, entry_price, leverage,
+                    rsi, macd, adx, ema_stack, bb_position, obv_trend,
+                    volume_ratio, funding_rate, open_interest
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                RETURNING id
+            """, (
+                trade_id,
+                float(price) if price else 0,
+                float(pnl_pct) if pnl_pct else 0,
+                int(seconds_since_open) if seconds_since_open else 0,
+                symbol, direction,
+                float(entry_price) if entry_price else 0,
+                int(leverage) if leverage else 1,
+                float(rsi) if rsi else None,
+                float(macd) if macd else None,
+                float(adx) if adx else None,
+                ema_stack, bb_position, obv_trend,
+                float(volume_ratio) if volume_ratio else None,
+                float(funding_rate) if funding_rate else None,
+                float(open_interest) if open_interest else None,
+            ))
+
+            result = cur.fetchone()
+            tick_id = result[0] if result else None
+            conn.commit()
+            return tick_id
+
+        except Exception as e:
+            logger.error(f"Error saving trade tick: {e}")
+            return None
+
+
+def update_peak_tick(trade_id: int, peak_pnl_pct: float):
+    """
+    Mark the tick with highest P&L as the peak for a trade.
+
+    This is called when a trade is closed to identify which tick
+    had the maximum profit (for peak timing analysis).
+    """
+    if not PSYCOPG2_AVAILABLE:
+        return
+
+    with get_connection() as conn:
+        if not conn:
+            return
+
+        try:
+            cur = conn.cursor()
+
+            # First, reset all is_peak flags for this trade
+            cur.execute("""
+                UPDATE alpha_trade_ticks
+                SET is_peak = FALSE, peak_pnl_pct = NULL
+                WHERE trade_id = %s
+            """, (trade_id,))
+
+            # Then find and mark the peak tick
+            cur.execute("""
+                UPDATE alpha_trade_ticks
+                SET is_peak = TRUE, peak_pnl_pct = %s
+                WHERE id = (
+                    SELECT id FROM alpha_trade_ticks
+                    WHERE trade_id = %s
+                    ORDER BY pnl_pct DESC
+                    LIMIT 1
+                )
+            """, (float(peak_pnl_pct), trade_id))
+
+            conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error updating peak tick: {e}")
+
+
+def get_trade_ticks(trade_id: int) -> list:
+    """Get all tick data for a trade (for analysis)."""
+    if not PSYCOPG2_AVAILABLE:
+        return []
+
+    with get_connection() as conn:
+        if not conn:
+            return []
+
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("""
+                SELECT * FROM alpha_trade_ticks
+                WHERE trade_id = %s
+                ORDER BY tick_time ASC
+            """, (trade_id,))
+
+            return [dict(row) for row in cur.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Error getting trade ticks: {e}")
+            return []
+
+
+def get_peak_analysis(limit: int = 100) -> list:
+    """
+    Get peak timing analysis for recent trades.
+
+    Returns data showing when peaks occurred relative to trade duration.
+    Useful for understanding optimal exit timing.
+    """
+    if not PSYCOPG2_AVAILABLE:
+        return []
+
+    with get_connection() as conn:
+        if not conn:
+            return []
+
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("""
+                SELECT
+                    t.id as trade_id,
+                    t.symbol,
+                    t.direction,
+                    t.leverage,
+                    t.duration_seconds,
+                    t.pnl_pct as final_pnl,
+                    t.mfe_pct as max_profit,
+                    tick.seconds_since_open as peak_seconds,
+                    tick.peak_pnl_pct,
+                    tick.rsi as peak_rsi,
+                    tick.macd as peak_macd,
+                    ROUND(tick.seconds_since_open::numeric / NULLIF(t.duration_seconds, 0) * 100, 1) as peak_pct_of_duration
+                FROM alpha_trades t
+                LEFT JOIN alpha_trade_ticks tick ON tick.trade_id = t.id AND tick.is_peak = TRUE
+                WHERE t.status = 'CLOSED' AND t.duration_seconds > 0
+                ORDER BY t.closed_at DESC
+                LIMIT %s
+            """, (limit,))
+
+            return [dict(row) for row in cur.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Error getting peak analysis: {e}")
+            return []
 
 
 # Initialize tables on module import

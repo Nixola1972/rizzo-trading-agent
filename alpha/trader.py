@@ -450,16 +450,19 @@ class AlphaTrader:
                 pos = self.positions[symbol]
                 print(
                     f"[PAPER] CLOSE {symbol} {pos.direction} | "
-                    f"P&L: {pos.unrealized_pnl_pct:.2f}%", flush=True
+                    f"P&L: {pos.unrealized_pnl_pct:.2f}% | "
+                    f"MFE: {pos.max_profit_pct:.2f}%", flush=True
                 )
 
-                # Save trade close to database
+                # Save trade close to database and mark peak tick
                 if DB_AVAILABLE and alpha_db and pos.trade_id:
                     alpha_db.close_trade(
                         trade_id=pos.trade_id,
                         exit_price=pos.current_price,
                         exit_reason="AI_CLOSE"
                     )
+                    # Mark the peak tick for analysis
+                    alpha_db.update_peak_tick(pos.trade_id, pos.max_profit_pct)
 
                 if pos.unrealized_pnl_pct > 0:
                     self.winning_trades += 1
@@ -572,13 +575,14 @@ class AlphaTrader:
         return False
 
     def update_positions(self):
-        """Update P&L for open positions."""
+        """Update P&L for open positions and record tick data."""
         if not self.positions:
             return
 
         for symbol, pos in list(self.positions.items()):
             data = self.fetch_market_data([symbol])
-            price = data.get('indicators', {}).get(symbol, {}).get('price', 0)
+            indicators = data.get('indicators', {}).get(symbol, {})
+            price = indicators.get('price', 0)
 
             if price > 0:
                 pos.current_price = price
@@ -595,6 +599,63 @@ class AlphaTrader:
                 # Update MFE/MAE in database
                 if DB_AVAILABLE and alpha_db and pos.trade_id:
                     alpha_db.update_trade_prices(pos.trade_id, price, pos.direction)
+
+                    # Record tick data for peak analysis
+                    seconds_since_open = int((datetime.utcnow() - pos.opened_at).total_seconds())
+
+                    # Determine EMA stack
+                    ema20 = indicators.get('ema20', 0)
+                    ema50 = indicators.get('ema50', 0)
+                    if price > ema20 > ema50:
+                        ema_stack = 'bullish'
+                    elif price < ema20 < ema50:
+                        ema_stack = 'bearish'
+                    else:
+                        ema_stack = 'neutral'
+
+                    # Determine BB position
+                    bb_upper = indicators.get('bb_upper', 0)
+                    bb_lower = indicators.get('bb_lower', 0)
+                    if bb_upper > 0 and bb_lower > 0:
+                        if price > bb_upper:
+                            bb_position = 'ABOVE_UPPER'
+                        elif price < bb_lower:
+                            bb_position = 'BELOW_LOWER'
+                        elif price > (bb_upper + bb_lower) / 2:
+                            bb_position = 'UPPER_HALF'
+                        else:
+                            bb_position = 'LOWER_HALF'
+                    else:
+                        bb_position = 'UNKNOWN'
+
+                    # Determine OBV trend
+                    obv_trend_val = indicators.get('obv_trend', 0)
+                    if obv_trend_val > 0.1:
+                        obv_trend = 'RISING'
+                    elif obv_trend_val < -0.1:
+                        obv_trend = 'FALLING'
+                    else:
+                        obv_trend = 'FLAT'
+
+                    alpha_db.save_trade_tick(
+                        trade_id=pos.trade_id,
+                        price=price,
+                        pnl_pct=pnl_pct,
+                        seconds_since_open=seconds_since_open,
+                        symbol=symbol,
+                        direction=pos.direction,
+                        entry_price=pos.entry_price,
+                        leverage=pos.leverage,
+                        rsi=indicators.get('rsi_14'),
+                        macd=indicators.get('macd'),
+                        adx=indicators.get('adx'),
+                        ema_stack=ema_stack,
+                        bb_position=bb_position,
+                        obv_trend=obv_trend,
+                        volume_ratio=indicators.get('volume_ratio'),
+                        funding_rate=indicators.get('funding_rate'),
+                        open_interest=indicators.get('open_interest'),
+                    )
 
                 logger.debug(
                     f"{symbol} {pos.direction}: P&L {pnl_pct:+.2f}% | "
