@@ -3161,10 +3161,12 @@ GROUP BY leverage ORDER BY leverage;
 ## 📋 Piano Implementazione
 
 ### Fase 1: Paper Trading Multi-Timeframe
+- [x] Supporto multi-timeframe nel trainer (`--interval` argument) ✅
+- [x] Binance data loader con interval (`--interval 1h`) ✅
+- [x] Deploy paper 15min (già attivo ✅)
+- [x] Implementare tick data recording ✅
 - [ ] Creare modello 1h (training ~4 ore)
-- [ ] Deploy paper 15min (già attivo ✅)
 - [ ] Deploy paper 1h (nuovo)
-- [ ] Implementare tick data recording
 - [ ] Raccogliere 2000+ trade per timeframe
 
 ### Fase 2: Analisi e Confronto
@@ -3178,4 +3180,209 @@ GROUP BY leverage ORDER BY leverage;
 
 ---
 
-*AlphaTrader v0.3.0 - December 2025 (Paper Trading Active)*
+## ✅ Implementazione Tick Data Recording (Completata)
+
+### Schema Tabella (Creata Automaticamente)
+
+```sql
+CREATE TABLE alpha_trade_ticks (
+    id SERIAL PRIMARY KEY,
+    trade_id INTEGER REFERENCES alpha_trades(id) ON DELETE CASCADE,
+    tick_time TIMESTAMPTZ DEFAULT NOW(),
+    seconds_since_open INTEGER,
+
+    -- Prezzo e P&L
+    price DECIMAL(20,8) NOT NULL,
+    pnl_pct DECIMAL(8,4),
+
+    -- Flag per trovare picco
+    is_peak BOOLEAN DEFAULT FALSE,
+    peak_pnl_pct DECIMAL(8,4),
+
+    -- Indicatori al momento del tick
+    rsi DECIMAL(6,2),
+    macd DECIMAL(12,6),
+    adx DECIMAL(6,2),
+    ema_stack VARCHAR(20),       -- bullish/bearish/neutral
+    bb_position VARCHAR(20),     -- ABOVE_UPPER/UPPER_HALF/LOWER_HALF/BELOW_LOWER
+    obv_trend VARCHAR(10),       -- RISING/FALLING/FLAT
+    volume_ratio DECIMAL(6,3),
+    funding_rate DECIMAL(12,8),
+    open_interest DECIMAL(20,2),
+
+    -- Contesto trade (per query facili)
+    symbol VARCHAR(10),
+    direction VARCHAR(5),
+    entry_price DECIMAL(20,8),
+    leverage INTEGER
+);
+```
+
+### Come Funziona
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     TICK DATA RECORDING FLOW                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   FAST LOOP (ogni 5 secondi)                                                │
+│   │                                                                         │
+│   └─▶ update_positions()                                                    │
+│       │                                                                     │
+│       ├─▶ Fetch indicatori (price, RSI, MACD, BB, etc.)                    │
+│       ├─▶ Calcola P&L %                                                     │
+│       ├─▶ save_trade_tick()  ← SALVA TUTTO NEL DB                          │
+│       │   ├─ price, pnl_pct, seconds_since_open                            │
+│       │   ├─ rsi, macd, adx, ema_stack, bb_position, obv_trend             │
+│       │   └─ symbol, direction, entry_price, leverage                      │
+│       │                                                                     │
+│       └─▶ update_trade_prices()  (MFE/MAE)                                 │
+│                                                                             │
+│   CLOSE TRADE                                                               │
+│   │                                                                         │
+│   └─▶ update_peak_tick(trade_id, max_profit_pct)                           │
+│       └─ Marca il tick con P&L massimo come "is_peak = TRUE"               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Query Analisi Peak
+
+```sql
+-- Peak analysis: quando si raggiunge il picco e con quali condizioni?
+SELECT
+    t.id as trade_id,
+    t.symbol,
+    t.direction,
+    t.leverage,
+    t.duration_seconds,
+    t.pnl_pct as final_pnl,
+    t.mfe_pct as max_profit,
+    tick.seconds_since_open as peak_seconds,
+    ROUND(tick.seconds_since_open::numeric / 60, 1) as peak_minutes,
+    tick.peak_pnl_pct,
+    tick.rsi as peak_rsi,
+    tick.macd as peak_macd,
+    tick.ema_stack as peak_ema,
+    ROUND(tick.seconds_since_open::numeric / NULLIF(t.duration_seconds, 0) * 100, 1) as peak_pct_of_duration
+FROM alpha_trades t
+LEFT JOIN alpha_trade_ticks tick ON tick.trade_id = t.id AND tick.is_peak = TRUE
+WHERE t.status = 'CLOSED' AND t.duration_seconds > 0
+ORDER BY t.closed_at DESC
+LIMIT 50;
+
+-- A che minuto medio si raggiunge il picco?
+SELECT
+    symbol,
+    ROUND(AVG(tick.seconds_since_open) / 60.0, 1) as avg_peak_minutes,
+    ROUND(AVG(tick.rsi)::numeric, 1) as avg_rsi_at_peak,
+    COUNT(*) as trades
+FROM alpha_trades t
+JOIN alpha_trade_ticks tick ON tick.trade_id = t.id AND tick.is_peak = TRUE
+WHERE t.status = 'CLOSED'
+GROUP BY symbol
+ORDER BY trades DESC;
+
+-- Tutti i tick di un singolo trade (per debug)
+SELECT * FROM alpha_trade_ticks
+WHERE trade_id = 123
+ORDER BY tick_time ASC;
+```
+
+---
+
+## 🔧 VPS Commands: Multi-Timeframe Setup
+
+### Step 1: Preparazione
+
+```bash
+# Aggiorna codice
+cd ~/alphatrader
+git pull origin claude/continue-latest-branch-Wvo2L
+docker build --no-cache -t alphatrader -f Dockerfile.alpha .
+```
+
+### Step 2: Download Dati 1h (opzionale, se vuoi trainare 1h model)
+
+```bash
+# Scarica dati 1h (ultimi 365 giorni)
+docker run -v $(pwd)/alpha/data:/app/alpha/data \
+  alphatrader python -m alpha.binance_data_loader \
+    --interval 1h \
+    --symbols BTC ETH SOL DOGE XRP BNB \
+    --start-year 2020
+
+# Verifica file creati
+ls -la alpha/data/training_episodes_binance_1h.pkl
+```
+
+### Step 3: Training Modello 1h (opzionale)
+
+```bash
+# Train 1-hour model (takes ~2-4 hours)
+docker run -it \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  alphatrader python -m alpha.trainer \
+    --data-source binance \
+    --interval 1h \
+    --episodes 10000 \
+    --entropy-coef 0.05 \
+    --output final_model_1h.pt
+
+# Verifica checkpoint
+ls -la alpha/checkpoints/final_model_1h.pt
+```
+
+### Step 4: Deploy Paper Trading 15min (Attuale)
+
+```bash
+# Già attivo - verifica
+docker ps | grep alpha_trader
+docker logs --tail 50 alpha_trader
+```
+
+### Step 5: Deploy Paper Trading 1h (Nuovo)
+
+```bash
+# TODO: Quando modello 1h è trainato, deploy con:
+docker run -d --name alpha_trader_1h \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --env-file .env \
+  -e ALPHA_SLOW_LOOP_INTERVAL=3600 \
+  --network unified-memory-stack_memory-net \
+  --restart unless-stopped \
+  --entrypoint python \
+  alphatrader -m alpha.trader --mode paper --loop
+
+# Per usare modello specifico, modificare config.py o usare arg:
+# --model alpha/checkpoints/final_model_1h.pt
+```
+
+---
+
+## 📊 Trainer Arguments (Multi-Timeframe)
+
+```bash
+python -m alpha.trainer \
+  --data-source binance \
+  --interval 15m|1h|4h \           # Candle interval
+  --episodes 10000 \               # Total training iterations
+  --entropy-coef 0.05 \            # Exploration (higher = more variety)
+  --output final_model_1h.pt \     # Custom output filename
+  --resume checkpoint.pt           # Continue from existing weights
+```
+
+| Argument | Default | Descrizione |
+|----------|---------|-------------|
+| `--interval` | 15m | 1m, 5m, 15m, 1h, 4h |
+| `--data-source` | binance | binance, hyperliquid, synthetic |
+| `--episodes` | 1000 | Numero episodi training |
+| `--entropy-coef` | 0.05 | Esplorazione (↑ = più varietà) |
+| `--output` | final_model_{interval}.pt | Nome file output |
+| `--resume` | None | Continua da checkpoint |
+
+---
+
+*AlphaTrader v0.4.0 - January 2026 (Multi-Timeframe + Tick Recording)*
