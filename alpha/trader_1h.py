@@ -84,6 +84,10 @@ class AlphaPosition1H:
     max_loss_pct: float = 0.0
     trade_id: Optional[int] = None
     decision_id: Optional[int] = None
+    # Profit Lock fields (same as 15m model)
+    stop_loss_price: float = 0.0
+    take_profit_price: float = 0.0
+    current_sl_lock_stage: int = 0  # 0=none, 1=stage1, 2=stage2
 
 
 class AlphaTrader1H:
@@ -410,6 +414,46 @@ class AlphaTrader1H:
 
         del self.positions[symbol]
         return True
+
+    def _update_profit_lock(self, symbol: str, position: AlphaPosition1H, current_pnl_pct: float):
+        """
+        Update stop loss based on profit lock stages (same logic as 15m model).
+
+        Stage 1: At profit_lock_1_trigger% -> Lock SL at profit_lock_1_sl%
+        Stage 2: At profit_lock_2_trigger% -> Lock SL at profit_lock_2_sl%
+        """
+        stage1_trigger = self.config.trading.profit_lock_1_trigger
+        stage1_sl = self.config.trading.profit_lock_1_sl
+        stage2_trigger = self.config.trading.profit_lock_2_trigger
+        stage2_sl = self.config.trading.profit_lock_2_sl
+
+        new_sl_pct = None
+        new_stage = position.current_sl_lock_stage
+
+        # Check Stage 2 first (higher priority)
+        if current_pnl_pct >= stage2_trigger and position.current_sl_lock_stage < 2:
+            new_sl_pct = stage2_sl
+            new_stage = 2
+            logger.info(f"[1H] 📈 {symbol}: Stage 2! PnL {current_pnl_pct:.2f}% >= {stage2_trigger}% -> Lock SL at +{stage2_sl}%")
+
+        # Check Stage 1
+        elif current_pnl_pct >= stage1_trigger and position.current_sl_lock_stage < 1:
+            new_sl_pct = stage1_sl
+            new_stage = 1
+            logger.info(f"[1H] 📈 {symbol}: Stage 1! PnL {current_pnl_pct:.2f}% >= {stage1_trigger}% -> Lock SL at +{stage1_sl}%")
+
+        # Update SL if stage changed
+        if new_sl_pct is not None and new_stage > position.current_sl_lock_stage:
+            # Calculate new SL price
+            if position.direction == "LONG":
+                new_sl_price = position.entry_price * (1 + new_sl_pct / 100)
+            else:
+                new_sl_price = position.entry_price * (1 - new_sl_pct / 100)
+
+            old_sl = position.stop_loss_price
+            position.stop_loss_price = new_sl_price
+            position.current_sl_lock_stage = new_stage
+            logger.info(f"[1H] 🔒 {symbol}: SL updated ${old_sl:.2f} -> ${new_sl_price:.2f}")
 
     def check_positions(self):
         """Check and manage open positions."""
