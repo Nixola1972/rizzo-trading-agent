@@ -113,8 +113,9 @@ class PPOTrainer:
     PPO is a stable, sample-efficient RL algorithm that works well for continuous action spaces.
     """
 
-    def __init__(self, config: Optional[TrainingConfig] = None):
+    def __init__(self, config: Optional[TrainingConfig] = None, candle_hours: float = 0.25):
         self.config = config or get_config().training
+        self.candle_hours = candle_hours  # Duration of each candle in hours (0.25 = 15min, 1.0 = 1h)
 
         if not TORCH_AVAILABLE:
             logger.warning("PyTorch not available. Training disabled.")
@@ -379,7 +380,7 @@ class PPOTrainer:
 
                     position['current_price'] = current_price
                     position['unrealized_pnl_pct'] = pnl_pct
-                    position['duration_hours'] = (i - entry_idx) * 0.25  # Assuming 15min candles
+                    position['duration_hours'] = (i - entry_idx) * self.candle_hours
                     position['max_profit_pct'] = max(position['max_profit_pct'], pnl_pct)
                     position['max_loss_pct'] = min(position['max_loss_pct'], pnl_pct)
 
@@ -441,6 +442,8 @@ class PPOTrainer:
             'policy_optimizer': self.policy_optimizer.state_dict(),
             'value_optimizer': self.value_optimizer.state_dict(),
             'best_reward': self.best_reward,
+            'interval': getattr(self, 'interval', '15m'),  # Candle interval used for training
+            'candle_hours': self.candle_hours,
         }, path)
 
         logger.info(f"Saved checkpoint to {path}")
@@ -717,14 +720,31 @@ def main():
                        help='Entropy coefficient (higher = more exploration, default: 0.01)')
     parser.add_argument('--symbol', type=str, default='BTC',
                        help='Symbol to train on (for filtering)')
+    parser.add_argument('--interval', type=str, default='15m',
+                       choices=['1m', '5m', '15m', '1h', '4h'],
+                       help='Candle interval (default: 15m)')
+    parser.add_argument('--output', type=str, default=None,
+                       help='Output model filename (default: final_model.pt)')
     args = parser.parse_args()
+
+    # Calculate candle duration in hours based on interval
+    interval_hours = {
+        '1m': 1/60,
+        '5m': 5/60,
+        '15m': 0.25,  # 15 min = 0.25 hours
+        '1h': 1.0,
+        '4h': 4.0
+    }
+    candle_hours = interval_hours.get(args.interval, 0.25)
 
     if not TORCH_AVAILABLE:
         logger.error("PyTorch is required for training. Please install: pip install torch")
         sys.exit(1)
 
-    # Create trainer
-    trainer = PPOTrainer()
+    # Create trainer with candle interval
+    logger.info(f"Training with {args.interval} candles (candle_hours={candle_hours})")
+    trainer = PPOTrainer(candle_hours=candle_hours)
+    trainer.interval = args.interval  # Store for checkpoint saving
 
     # Apply entropy coefficient override if specified
     if args.entropy_coef is not None:
@@ -856,8 +876,11 @@ def main():
                 checkpoint_path = os.path.join(args.checkpoint_dir, f"checkpoint_{global_step}.pt")
                 trainer.save_checkpoint(checkpoint_path)
 
-    # Save final model
-    final_path = os.path.join(args.checkpoint_dir, "final_model.pt")
+    # Save final model (use custom name if specified)
+    if args.output:
+        final_path = os.path.join(args.checkpoint_dir, args.output)
+    else:
+        final_path = os.path.join(args.checkpoint_dir, f"final_model_{args.interval}.pt")
     trainer.save_checkpoint(final_path)
 
     # Final summary
@@ -889,6 +912,8 @@ def main():
             "best_reward": round(best_avg_reward, 4),
             "best_model": os.path.join(args.checkpoint_dir, "best_model.pt"),
             "final_model": final_path,
+            "interval": args.interval,
+            "candle_hours": candle_hours,
             "completed_at": datetime.utcnow().isoformat(),
         }
         status_path = os.path.join(args.checkpoint_dir, "training_status.json")
