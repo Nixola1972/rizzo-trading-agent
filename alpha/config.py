@@ -213,7 +213,7 @@ class TradingConfig:
     # Risk management
     max_drawdown_pct: float = 10.0  # Stop trading if DD > 10%
     max_daily_loss_pct: float = 5.0  # Stop trading if daily loss > 5%
-    max_open_positions: int = 3
+    max_open_positions: int = 11  # Allow all 11 trading symbols
     stop_loss_pct: float = 10.0  # Stop loss percentage (default 10%)
 
     # Profit Lock (3 stages)
@@ -311,6 +311,7 @@ class AlphaConfig:
         config.trading.min_hold_minutes = _env_int("ALPHA_MIN_HOLD_MINUTES", 5)
         config.trading.max_hold_minutes = _env_int("ALPHA_MAX_HOLD_MINUTES", 7)
         config.trading.stop_loss_pct = _env_float("STOP_LOSS_PCT", 10.0)
+        config.trading.max_open_positions = _env_int("ALPHA_MAX_OPEN_POSITIONS", 11)  # Allow all 11 symbols
         config.trading.trade_cooldown_minutes = _env_int("TRADE_COOLDOWN_MINUTES", 5)
 
         # Profit Lock parameters
