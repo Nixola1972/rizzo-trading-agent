@@ -187,6 +187,11 @@ def init_tables_1h():
                     -- Exit info
                     exit_reason VARCHAR(30),
 
+                    -- Profit Lock tracking
+                    stop_loss_price DECIMAL(20,8),
+                    take_profit_price DECIMAL(20,8),
+                    current_sl_lock_stage INTEGER DEFAULT 0,
+
                     -- Status
                     status VARCHAR(10) DEFAULT 'OPEN',
                     is_paper BOOLEAN DEFAULT TRUE,
@@ -378,6 +383,40 @@ def update_trade_prices_1h(trade_id: int, current_price: float, direction: str):
             conn.commit()
         except Exception as e:
             logger.error(f"[1H] Error updating trade prices: {e}")
+
+
+def update_profit_lock_1h(
+    trade_id: int,
+    stop_loss_price: float,
+    take_profit_price: float,
+    sl_lock_stage: int
+):
+    """Update profit lock fields for 1H trade."""
+
+    if not PSYCOPG2_AVAILABLE:
+        return
+
+    with get_connection() as conn:
+        if not conn:
+            return
+
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE alpha_trades_1h
+                SET stop_loss_price = %s,
+                    take_profit_price = %s,
+                    current_sl_lock_stage = %s
+                WHERE id = %s
+            """, (
+                float(stop_loss_price) if stop_loss_price else None,
+                float(take_profit_price) if take_profit_price else None,
+                int(sl_lock_stage),
+                trade_id
+            ))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"[1H] Error updating profit lock: {e}")
 
 
 def close_trade_1h(

@@ -25,6 +25,7 @@ import sys
 import time
 import logging
 import argparse
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 from dataclasses import dataclass
@@ -102,6 +103,10 @@ class AlphaTrader1H:
 
         # Paper trading balance
         self.paper_balance = 1000.0
+
+        # Thread control
+        self._running = False
+        self._fast_thread = None
 
         # Load models
         self.policy_net = None
@@ -333,9 +338,20 @@ class AlphaTrader1H:
         return False
 
     def _open_position(self, symbol: str, direction: str, price: float, action: Action) -> bool:
-        """Open a new position."""
+        """Open a new position with SL/TP set."""
         size_usd = self.config.trading.base_position_usd
         leverage = min(self.config.trading.max_leverage, 3)  # Lower leverage for 1h
+
+        # Calculate initial SL and TP
+        stop_loss_pct = self.config.trading.stop_loss_pct
+        take_profit_pct = self.config.trading.hard_take_profit_pct
+
+        if direction == "LONG":
+            stop_loss_price = price * (1 - stop_loss_pct / 100)
+            take_profit_price = price * (1 + take_profit_pct / 100)
+        else:
+            stop_loss_price = price * (1 + stop_loss_pct / 100)
+            take_profit_price = price * (1 - take_profit_pct / 100)
 
         # Save to DB
         decision_id = None
@@ -373,7 +389,10 @@ class AlphaTrader1H:
                 is_paper=self.config.trading.paper_trading
             )
 
-        # Create position
+            # Save initial SL/TP to DB
+            alpha_db.update_profit_lock_1h(trade_id, stop_loss_price, take_profit_price, 0)
+
+        # Create position with SL/TP
         self.positions[symbol] = AlphaPosition1H(
             symbol=symbol,
             direction=direction,
@@ -383,10 +402,13 @@ class AlphaTrader1H:
             opened_at=datetime.now(),
             current_price=price,
             trade_id=trade_id,
-            decision_id=decision_id
+            decision_id=decision_id,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+            current_sl_lock_stage=0
         )
 
-        logger.info(f"[1H] ✅ OPENED {direction} {symbol} @ ${price:.2f}")
+        logger.info(f"[1H] ✅ OPENED {direction} {symbol} @ ${price:.2f} | SL: ${stop_loss_price:.2f} | TP: ${take_profit_price:.2f}")
         return True
 
     def _close_position(self, symbol: str, price: float, reason: str) -> bool:
@@ -456,7 +478,10 @@ class AlphaTrader1H:
             logger.info(f"[1H] 🔒 {symbol}: SL updated ${old_sl:.2f} -> ${new_sl_price:.2f}")
 
     def check_positions(self):
-        """Check and manage open positions."""
+        """
+        Check and manage open positions (SLOW loop).
+        This runs every 5 minutes with the main trading loop.
+        """
         for symbol, position in list(self.positions.items()):
             try:
                 market_data = self.get_market_data_1h(symbol)
@@ -476,29 +501,143 @@ class AlphaTrader1H:
                 position.max_profit_pct = max(position.max_profit_pct, pnl_pct)
                 position.max_loss_pct = min(position.max_loss_pct, pnl_pct)
 
-                # Update DB
+                # Update DB (prices for MFE/MAE)
                 if DB_AVAILABLE and alpha_db and position.trade_id:
                     alpha_db.update_trade_prices_1h(position.trade_id, price, position.direction)
 
                 # Check hold time
                 hold_minutes = (datetime.now() - position.opened_at).total_seconds() / 60
 
-                # Check for close conditions
+                # 1. Check max hold time (120 min for 1H model)
+                max_hold = self.config.trading.max_hold_minutes
+                if max_hold > 0 and hold_minutes >= max_hold:
+                    logger.info(f"[1H] ⏰ {symbol}: Max hold time reached ({hold_minutes:.0f}m >= {max_hold}m)")
+                    self._close_position(symbol, price, "MAX_HOLD_TIME")
+                    continue
+
+                # 2. Check Take Profit hit (hard TP)
+                tp_hit = False
+                if position.direction == "LONG" and price >= position.take_profit_price:
+                    tp_hit = True
+                elif position.direction == "SHORT" and price <= position.take_profit_price:
+                    tp_hit = True
+
+                if tp_hit:
+                    logger.info(f"[1H] 🎯 {symbol}: Take Profit hit @ ${price:.2f}")
+                    self._close_position(symbol, price, "TP_HIT")
+                    continue
+
+                # 3. Check Stop Loss hit (dynamic SL from profit lock)
+                sl_hit = False
+                if position.direction == "LONG" and price <= position.stop_loss_price:
+                    sl_hit = True
+                elif position.direction == "SHORT" and price >= position.stop_loss_price:
+                    sl_hit = True
+
+                if sl_hit:
+                    stage = position.current_sl_lock_stage
+                    reason = f"SL_HIT_S{stage}" if stage > 0 else "SL_HIT"
+                    logger.info(f"[1H] 🛑 {symbol}: Stop Loss hit @ ${price:.2f} (stage {stage})")
+                    self._close_position(symbol, price, reason)
+                    continue
+
+                # 4. Check for AI close signal (only after min hold)
                 if hold_minutes >= self.config.trading.min_hold_minutes:
-                    # Get fresh decision
                     action = self.make_decision(symbol, market_data)
                     if action and action.action_type == ActionType.CLOSE:
-                        self._close_position(symbol, price, "SIGNAL")
-                    # Also check if significant profit
-                    elif pnl_pct > 2.0:  # 2% profit threshold for 1h model
-                        self._close_position(symbol, price, "TAKE_PROFIT")
-
-                # Emergency stop loss
-                if pnl_pct < -5.0:  # 5% stop loss
-                    self._close_position(symbol, price, "STOP_LOSS")
+                        self._close_position(symbol, price, "AI_SIGNAL")
 
             except Exception as e:
                 logger.error(f"[1H] Error checking position {symbol}: {e}")
+
+    def fast_loop_check(self):
+        """
+        FAST loop: Check positions every 5 seconds for trailing stop.
+        Updates prices, MFE/MAE, and profit lock stages.
+        """
+        for symbol, position in list(self.positions.items()):
+            try:
+                # Get real-time price (use cached or fetch)
+                market_data = self.get_market_data_1h(symbol)
+                if not market_data:
+                    continue
+
+                price = market_data.get('price', 0)
+                if price <= 0:
+                    continue
+
+                position.current_price = price
+
+                # Calculate current P&L
+                if position.direction == "LONG":
+                    pnl_pct = ((price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                else:
+                    pnl_pct = ((position.entry_price - price) / position.entry_price) * 100 * position.leverage
+
+                position.unrealized_pnl_pct = pnl_pct
+
+                # Track MFE/MAE
+                old_max = position.max_profit_pct
+                position.max_profit_pct = max(position.max_profit_pct, pnl_pct)
+                position.max_loss_pct = min(position.max_loss_pct, pnl_pct)
+
+                # Update DB with new max/min prices
+                if DB_AVAILABLE and alpha_db and position.trade_id:
+                    alpha_db.update_trade_prices_1h(position.trade_id, price, position.direction)
+
+                # Update profit lock stages
+                old_stage = position.current_sl_lock_stage
+                self._update_profit_lock(symbol, position, pnl_pct)
+
+                # If stage changed, update DB
+                if position.current_sl_lock_stage > old_stage:
+                    if DB_AVAILABLE and alpha_db and position.trade_id:
+                        alpha_db.update_profit_lock_1h(
+                            position.trade_id,
+                            position.stop_loss_price,
+                            position.take_profit_price,
+                            position.current_sl_lock_stage
+                        )
+
+                # Check SL/TP hits
+                sl_hit = False
+                tp_hit = False
+
+                if position.direction == "LONG":
+                    sl_hit = price <= position.stop_loss_price
+                    tp_hit = price >= position.take_profit_price
+                else:
+                    sl_hit = price >= position.stop_loss_price
+                    tp_hit = price <= position.take_profit_price
+
+                # Execute close if hit
+                if tp_hit:
+                    logger.info(f"[1H-FAST] 🎯 {symbol}: TP hit @ ${price:.2f}")
+                    self._close_position(symbol, price, "TP_HIT")
+                elif sl_hit:
+                    stage = position.current_sl_lock_stage
+                    reason = f"SL_HIT_S{stage}" if stage > 0 else "SL_HIT"
+                    logger.info(f"[1H-FAST] 🛑 {symbol}: SL hit @ ${price:.2f} (stage {stage})")
+                    self._close_position(symbol, price, reason)
+                else:
+                    # Log status periodically
+                    if position.max_profit_pct != old_max:
+                        logger.debug(f"[1H-FAST] {symbol}: P&L {pnl_pct:+.2f}% | MFE {position.max_profit_pct:.2f}% | Stage {position.current_sl_lock_stage}")
+
+            except Exception as e:
+                logger.error(f"[1H-FAST] Error checking {symbol}: {e}")
+
+    def _run_fast_loop(self):
+        """Fast loop thread: runs every 5 seconds."""
+        logger.info("[1H] Fast loop thread started (5s interval)")
+        while self._running:
+            try:
+                if self.positions:  # Only run if we have positions
+                    self.fast_loop_check()
+                time.sleep(5)
+            except Exception as e:
+                logger.error(f"[1H-FAST] Loop error: {e}")
+                time.sleep(5)
 
     def run_once(self):
         """Run one trading cycle."""
@@ -553,20 +692,31 @@ class AlphaTrader1H:
         logger.info(f"[1H] Status: {open_count} open positions, Balance: ${self.paper_balance:.2f}")
 
     def run_loop(self):
-        """Run continuous trading loop."""
-        logger.info(f"[1H] Starting trading loop (interval: {self.config.interval.loop_interval_seconds}s)")
+        """Run continuous trading loop with fast loop thread for trailing."""
+        logger.info(f"[1H] Starting trading loop (slow: {self.config.interval.loop_interval_seconds}s, fast: 5s)")
 
-        while True:
-            try:
-                self.run_once()
-                time.sleep(self.config.interval.loop_interval_seconds)
+        # Start fast loop thread for trailing
+        self._running = True
+        self._fast_thread = threading.Thread(target=self._run_fast_loop, daemon=True)
+        self._fast_thread.start()
 
-            except KeyboardInterrupt:
-                logger.info("[1H] Shutting down...")
-                break
-            except Exception as e:
-                logger.error(f"[1H] Loop error: {e}")
-                time.sleep(60)
+        try:
+            while self._running:
+                try:
+                    self.run_once()
+                    time.sleep(self.config.interval.loop_interval_seconds)
+
+                except Exception as e:
+                    logger.error(f"[1H] Loop error: {e}")
+                    time.sleep(60)
+
+        except KeyboardInterrupt:
+            logger.info("[1H] Shutting down...")
+        finally:
+            self._running = False
+            if self._fast_thread:
+                self._fast_thread.join(timeout=10)
+            logger.info("[1H] Stopped.")
 
 
 def main():
