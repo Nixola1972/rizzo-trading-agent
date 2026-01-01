@@ -273,14 +273,21 @@ class AlphaTrader1H:
                           ActionType.CLOSE]
             action_type = action_types[min(action_idx, len(action_types) - 1)]
 
-            # MCTS validation if enabled
+            # MCTS: always run for logging, but veto only if min_win_probability > 0
             mcts_approved = True
             mcts_win_prob = None
 
-            if self.mcts and self.config.mcts.min_win_probability > 0:
-                mcts_result = self.mcts.search(state)
-                mcts_win_prob = mcts_result.win_probability
-                mcts_approved = mcts_result.should_execute
+            if self.mcts and action_type in (ActionType.OPEN_LONG, ActionType.OPEN_SHORT):
+                try:
+                    mcts_result = self.mcts.search(state)
+                    mcts_win_prob = mcts_result.win_probability
+                    # Only use as veto if threshold is set
+                    if self.config.mcts.min_win_probability > 0:
+                        mcts_approved = mcts_result.should_execute
+                    # Always log for analysis
+                    logger.info(f"[1H] {symbol}: MCTS win_prob={mcts_win_prob:.1%} (veto={'ON' if self.config.mcts.min_win_probability > 0 else 'OFF'})")
+                except Exception as e:
+                    logger.warning(f"[1H] MCTS error for {symbol}: {e}")
 
             # Create action with valid fields only
             action = Action(
