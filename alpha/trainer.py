@@ -758,15 +758,21 @@ def main():
 
     # Load data based on source
     if args.data_source == 'binance':
-        logger.info("Loading Binance historical data...")
-        # Try Binance-specific path first
-        binance_path = args.data_path.replace('.pkl', '_binance.pkl')
-        if os.path.exists(binance_path):
-            data_path = binance_path
+        logger.info(f"Loading Binance historical data ({args.interval})...")
+        # Try interval-specific Binance path first
+        binance_interval_path = f"alpha/data/training_episodes_binance_{args.interval}.pkl"
+        binance_generic_path = "alpha/data/training_episodes_binance.pkl"
+
+        if os.path.exists(binance_interval_path):
+            data_path = binance_interval_path
+            logger.info(f"Using interval-specific data: {data_path}")
+        elif os.path.exists(binance_generic_path):
+            data_path = binance_generic_path
+            logger.warning(f"Interval-specific file not found, using generic: {data_path}")
         elif os.path.exists(args.data_path):
             data_path = args.data_path
         else:
-            data_path = "alpha/data/training_episodes_binance.pkl"
+            data_path = binance_interval_path  # Will trigger error with download instructions
 
         episodes = load_hyperliquid_data(
             data_path=data_path,
@@ -774,8 +780,8 @@ def main():
         )
 
         if not episodes:
-            logger.error("No Binance data loaded. Please download data first:")
-            logger.error("  python -m alpha.binance_data_loader --symbols BTC ETH SOL --start-year 2020")
+            logger.error(f"No Binance data loaded for {args.interval}. Please download data first:")
+            logger.error(f"  python -m alpha.binance_data_loader --symbols BTC ETH SOL --start-year 2020 --interval {args.interval}")
             sys.exit(1)
 
     elif args.data_source == 'hyperliquid':

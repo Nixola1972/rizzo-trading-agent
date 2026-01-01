@@ -465,8 +465,8 @@ def download_all_data(
             df = loader.add_indicators(df)
             all_data[symbol] = df
 
-            # Save raw data
-            parquet_path = os.path.join(output_dir, f"{symbol}_binance_candles.parquet")
+            # Save raw data (include interval in filename)
+            parquet_path = os.path.join(output_dir, f"{symbol}_binance_{interval}_candles.parquet")
             df.to_parquet(parquet_path)
             logger.info(f"Saved {symbol} to {parquet_path}")
 
@@ -475,9 +475,9 @@ def download_all_data(
             all_episodes.extend(episodes)
             logger.info(f"Created {len(episodes)} training episodes for {symbol}")
 
-    # Save all episodes
+    # Save all episodes (include interval in filename)
     if all_episodes:
-        episodes_path = os.path.join(output_dir, "training_episodes_binance.pkl")
+        episodes_path = os.path.join(output_dir, f"training_episodes_binance_{interval}.pkl")
         with open(episodes_path, "wb") as f:
             pickle.dump(all_episodes, f)
         logger.info(f"\n{'='*50}")
