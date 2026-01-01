@@ -279,8 +279,8 @@ class AlphaTrader1H:
 
             if self.mcts and self.config.mcts.min_win_probability > 0:
                 mcts_result = self.mcts.search(state)
-                mcts_win_prob = mcts_result.get('win_probability', 0)
-                mcts_approved = mcts_win_prob >= self.config.mcts.min_win_probability
+                mcts_win_prob = mcts_result.win_probability
+                mcts_approved = mcts_result.should_execute
 
             # Create action with valid fields only
             action = Action(
