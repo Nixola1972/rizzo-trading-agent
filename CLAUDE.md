@@ -11,7 +11,7 @@ Questo repository contiene **due sistemi di trading indipendenti** che girano su
 | Progetto | Cartella VPS | Branch | Descrizione |
 |----------|--------------|--------|-------------|
 | **Rizzo/Botone** | `~/rizzo-trading-agent` | `main` | Bot di produzione con AI LLM (DeepSeek) |
-| **AlphaTrader** | `~/alphatrader` | `claude/continue-latest-branch-Wvo2L` | Sistema RL ispirato ad AlphaGo |
+| **AlphaTrader** | `~/alphatrader` | `claude/analyze-container-issues-aBfhT` | Sistema RL ispirato ad AlphaGo |
 
 ### Rizzo/Botone (Production)
 
@@ -34,7 +34,7 @@ Decisioni: AI LLM (DeepSeek via OpenRouter)
 
 ```
 Cartella: ~/alphatrader
-Branch: claude/continue-latest-branch-Wvo2L
+Branch: claude/analyze-container-issues-aBfhT
 
 Containers:
 ├─ alpha_training        (training RL)
@@ -65,7 +65,7 @@ git checkout main
 
 # 2. AlphaTrader (nuovo, separato)
 cd ~
-git clone -b claude/continue-latest-branch-Wvo2L \
+git clone -b claude/analyze-container-issues-aBfhT \
   https://github.com/Nixola1972/rizzo-trading-agent.git alphatrader
 cd ~/alphatrader
 mkdir -p alpha/data alpha/checkpoints
@@ -82,7 +82,7 @@ docker-compose up -d --build
 
 # Aggiornare AlphaTrader
 cd ~/alphatrader
-git pull origin claude/continue-latest-branch-Wvo2L
+git pull origin claude/analyze-container-issues-aBfhT
 docker build --no-cache -t alphatrader -f Dockerfile.alpha .
 ```
 
@@ -3111,7 +3111,7 @@ FROM alpha_decisions ORDER BY created_at DESC LIMIT 20;"
 ### Rebuild & Restart AlphaTrader
 ```bash
 cd ~/alphatrader
-git pull origin claude/continue-latest-branch-Wvo2L
+git pull origin claude/analyze-container-issues-aBfhT
 docker build --no-cache -t alphatrader -f Dockerfile.alpha .
 docker stop alpha_trader && docker rm alpha_trader
 docker run -d --name alpha_trader \
