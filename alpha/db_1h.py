@@ -1,0 +1,590 @@
+"""
+AlphaTrader 1H Database Module
+==============================
+
+Separate tables for the 1-hour model, completely independent from 15m tables.
+All tables have "_1h" suffix to avoid conflicts.
+
+Tables:
+- alpha_decisions_1h: Every decision made by 1h model
+- alpha_trades_1h: Paper/live trades for 1h model
+- alpha_equity_1h: Equity curve tracking for 1h model
+"""
+
+import os
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Dict, Optional, Any, List
+from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """Convert numpy types and other non-JSON-serializable types to native Python."""
+    import numpy as np
+
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    elif hasattr(obj, '__dict__'):
+        return sanitize_for_json(obj.__dict__)
+    else:
+        return obj
+
+
+# Try to import psycopg2
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor, Json
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+    logger.warning("psycopg2 not installed - database logging disabled")
+
+
+def get_database_url() -> Optional[str]:
+    """Get database URL from environment."""
+    return os.getenv("DATABASE_URL") or os.getenv("ALPHA_DATABASE_URL")
+
+
+@contextmanager
+def get_connection():
+    """Get a database connection with context manager."""
+    if not PSYCOPG2_AVAILABLE:
+        yield None
+        return
+
+    db_url = get_database_url()
+    if not db_url:
+        logger.warning("No DATABASE_URL configured")
+        yield None
+        return
+
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url)
+        yield conn
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+        if conn:
+            conn.rollback()
+        yield None
+    finally:
+        if conn:
+            conn.close()
+
+
+def init_tables_1h():
+    """Create AlphaTrader 1H tables if they don't exist."""
+    if not PSYCOPG2_AVAILABLE:
+        return False
+
+    with get_connection() as conn:
+        if not conn:
+            return False
+
+        try:
+            cur = conn.cursor()
+
+            # Table for every decision made by AlphaTrader 1H model
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS alpha_decisions_1h (
+                    id SERIAL PRIMARY KEY,
+
+                    -- Timestamp
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+
+                    -- Symbol and Decision
+                    symbol VARCHAR(10) NOT NULL,
+                    policy_action VARCHAR(20) NOT NULL,
+                    final_action VARCHAR(20) NOT NULL,
+
+                    -- Confidence
+                    policy_confidence DECIMAL(5,4),
+                    value_estimate DECIMAL(8,6),
+                    win_probability DECIMAL(5,4),
+
+                    -- MCTS
+                    mcts_approved BOOLEAN,
+                    mcts_win_prob DECIMAL(5,4),
+                    mcts_reason TEXT,
+
+                    -- Market State at Decision Time
+                    price DECIMAL(20,8),
+                    rsi DECIMAL(6,2),
+                    macd DECIMAL(12,6),
+                    adx DECIMAL(6,2),
+                    fear_greed INTEGER,
+
+                    -- Full state for analysis
+                    market_data JSONB,
+                    decision_info JSONB,
+
+                    -- Validation (filled later)
+                    price_after_1h DECIMAL(20,8),
+                    price_after_4h DECIMAL(20,8),
+                    was_correct BOOLEAN,
+
+                    -- Indexes
+                    CONSTRAINT idx_alpha_decisions_1h_symbol_time UNIQUE (symbol, created_at)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_alpha_decisions_1h_created
+                    ON alpha_decisions_1h(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_alpha_decisions_1h_symbol
+                    ON alpha_decisions_1h(symbol);
+            """)
+
+            # Table for paper trades (1H model)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS alpha_trades_1h (
+                    id SERIAL PRIMARY KEY,
+
+                    -- Identification
+                    symbol VARCHAR(10) NOT NULL,
+                    direction VARCHAR(5) NOT NULL,
+
+                    -- Timestamps
+                    opened_at TIMESTAMPTZ NOT NULL,
+                    closed_at TIMESTAMPTZ,
+                    duration_seconds INTEGER,
+
+                    -- Prices
+                    entry_price DECIMAL(20,8) NOT NULL,
+                    exit_price DECIMAL(20,8),
+                    size_usd DECIMAL(10,2),
+                    leverage INTEGER DEFAULT 1,
+
+                    -- P&L
+                    pnl_usd DECIMAL(10,4),
+                    pnl_pct DECIMAL(8,4),
+
+                    -- MFE/MAE
+                    max_price DECIMAL(20,8),
+                    min_price DECIMAL(20,8),
+                    mfe_pct DECIMAL(8,4),
+                    mae_pct DECIMAL(8,4),
+
+                    -- Decision context
+                    decision_id INTEGER REFERENCES alpha_decisions_1h(id),
+                    policy_confidence DECIMAL(5,4),
+                    mcts_win_prob DECIMAL(5,4),
+
+                    -- Exit info
+                    exit_reason VARCHAR(30),
+
+                    -- Status
+                    status VARCHAR(10) DEFAULT 'OPEN',
+                    is_paper BOOLEAN DEFAULT TRUE,
+
+                    -- Metadata
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_alpha_trades_1h_symbol
+                    ON alpha_trades_1h(symbol);
+                CREATE INDEX IF NOT EXISTS idx_alpha_trades_1h_status
+                    ON alpha_trades_1h(status);
+                CREATE INDEX IF NOT EXISTS idx_alpha_trades_1h_opened
+                    ON alpha_trades_1h(opened_at DESC);
+            """)
+
+            # Table for equity curve tracking (1H model)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS alpha_equity_1h (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TIMESTAMPTZ DEFAULT NOW(),
+                    equity_usd DECIMAL(12,2) NOT NULL,
+                    open_positions INTEGER DEFAULT 0,
+                    total_trades INTEGER DEFAULT 0,
+                    winning_trades INTEGER DEFAULT 0,
+                    total_pnl_usd DECIMAL(12,2) DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_alpha_equity_1h_time
+                    ON alpha_equity_1h(timestamp DESC);
+            """)
+
+            conn.commit()
+            logger.info("AlphaTrader 1H tables created successfully")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error creating 1H tables: {e}")
+            conn.rollback()
+            return False
+
+
+def save_decision_1h(
+    symbol: str,
+    policy_action: str,
+    final_action: str,
+    policy_confidence: float,
+    value_estimate: float,
+    win_probability: float,
+    mcts_approved: Optional[bool],
+    mcts_win_prob: Optional[float],
+    mcts_reason: Optional[str],
+    price: float,
+    rsi: float,
+    macd: float,
+    adx: float,
+    fear_greed: int,
+    market_data: Dict,
+    decision_info: Dict
+) -> Optional[int]:
+    """Save a 1H decision to the database. Returns decision ID."""
+
+    if not PSYCOPG2_AVAILABLE:
+        return None
+
+    with get_connection() as conn:
+        if not conn:
+            return None
+
+        try:
+            cur = conn.cursor()
+            safe_market_data = sanitize_for_json(market_data)
+            safe_decision_info = sanitize_for_json(decision_info)
+
+            cur.execute("""
+                INSERT INTO alpha_decisions_1h (
+                    symbol, policy_action, final_action,
+                    policy_confidence, value_estimate, win_probability,
+                    mcts_approved, mcts_win_prob, mcts_reason,
+                    price, rsi, macd, adx, fear_greed,
+                    market_data, decision_info
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                RETURNING id
+            """, (
+                symbol, policy_action, final_action,
+                float(policy_confidence) if policy_confidence else 0,
+                float(value_estimate) if value_estimate else 0,
+                float(win_probability) if win_probability else 0,
+                mcts_approved,
+                float(mcts_win_prob) if mcts_win_prob else None,
+                mcts_reason,
+                float(price) if price else 0,
+                float(rsi) if rsi else 50,
+                float(macd) if macd else 0,
+                float(adx) if adx else 25,
+                int(fear_greed) if fear_greed else 50,
+                Json(safe_market_data), Json(safe_decision_info)
+            ))
+
+            result = cur.fetchone()
+            decision_id = result[0] if result else None
+            conn.commit()
+
+            logger.info(f"[1H] Saved decision #{decision_id} for {symbol}: {final_action}")
+            return decision_id
+
+        except Exception as e:
+            logger.error(f"[1H] Error saving decision: {e}")
+            return None
+
+
+def save_trade_open_1h(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    size_usd: float,
+    leverage: int,
+    decision_id: Optional[int],
+    policy_confidence: float,
+    mcts_win_prob: Optional[float],
+    is_paper: bool = True
+) -> Optional[int]:
+    """Save a new 1H trade opening. Returns trade ID."""
+
+    if not PSYCOPG2_AVAILABLE:
+        return None
+
+    with get_connection() as conn:
+        if not conn:
+            return None
+
+        try:
+            cur = conn.cursor()
+            safe_entry_price = float(entry_price) if entry_price else 0
+            safe_size_usd = float(size_usd) if size_usd else 0
+            safe_leverage = int(leverage) if leverage else 1
+            safe_confidence = float(policy_confidence) if policy_confidence else 0
+            safe_mcts_prob = float(mcts_win_prob) if mcts_win_prob else None
+
+            cur.execute("""
+                INSERT INTO alpha_trades_1h (
+                    symbol, direction, opened_at,
+                    entry_price, size_usd, leverage,
+                    decision_id, policy_confidence, mcts_win_prob,
+                    max_price, min_price, status, is_paper
+                ) VALUES (
+                    %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s
+                )
+                RETURNING id
+            """, (
+                symbol, direction, safe_entry_price, safe_size_usd, safe_leverage,
+                decision_id, safe_confidence, safe_mcts_prob,
+                safe_entry_price, safe_entry_price, is_paper
+            ))
+
+            result = cur.fetchone()
+            trade_id = result[0] if result else None
+            conn.commit()
+
+            logger.info(f"[1H] Saved trade #{trade_id}: {direction} {symbol} @ ${entry_price:.2f}")
+            return trade_id
+
+        except Exception as e:
+            logger.error(f"[1H] Error saving trade: {e}")
+            return None
+
+
+def update_trade_prices_1h(trade_id: int, current_price: float, direction: str):
+    """Update max/min prices for MFE/MAE tracking (1H model)."""
+
+    if not PSYCOPG2_AVAILABLE:
+        return
+
+    with get_connection() as conn:
+        if not conn:
+            return
+
+        try:
+            cur = conn.cursor()
+            safe_price = float(current_price) if current_price else 0
+            cur.execute("""
+                UPDATE alpha_trades_1h
+                SET max_price = GREATEST(max_price, %s),
+                    min_price = LEAST(min_price, %s)
+                WHERE id = %s
+            """, (safe_price, safe_price, trade_id))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"[1H] Error updating trade prices: {e}")
+
+
+def close_trade_1h(
+    trade_id: int,
+    exit_price: float,
+    exit_reason: str
+):
+    """Close a 1H trade and calculate P&L."""
+
+    if not PSYCOPG2_AVAILABLE:
+        return
+
+    with get_connection() as conn:
+        if not conn:
+            return
+
+        try:
+            cur = conn.cursor()
+
+            # Get trade info
+            cur.execute("""
+                SELECT entry_price, direction, leverage, opened_at, max_price, min_price
+                FROM alpha_trades_1h WHERE id = %s
+            """, (trade_id,))
+
+            row = cur.fetchone()
+            if not row:
+                return
+
+            entry_price_raw, direction, leverage, opened_at, max_price_raw, min_price_raw = row
+
+            # Convert Decimal to float for arithmetic
+            entry_price_f = float(entry_price_raw) if entry_price_raw else 0
+            max_price_f = float(max_price_raw) if max_price_raw else entry_price_f
+            min_price_f = float(min_price_raw) if min_price_raw else entry_price_f
+            exit_price_f = float(exit_price) if exit_price else 0
+            leverage_f = float(leverage) if leverage else 1
+
+            # Calculate P&L
+            if entry_price_f == 0:
+                pnl_pct = mfe_pct = mae_pct = 0
+            elif direction == "LONG":
+                pnl_pct = ((exit_price_f - entry_price_f) / entry_price_f) * 100 * leverage_f
+                mfe_pct = ((max_price_f - entry_price_f) / entry_price_f) * 100 * leverage_f
+                mae_pct = ((min_price_f - entry_price_f) / entry_price_f) * 100 * leverage_f
+            else:
+                pnl_pct = ((entry_price_f - exit_price_f) / entry_price_f) * 100 * leverage_f
+                mfe_pct = ((entry_price_f - min_price_f) / entry_price_f) * 100 * leverage_f
+                mae_pct = ((entry_price_f - max_price_f) / entry_price_f) * 100 * leverage_f
+
+            # Calculate duration
+            duration = int((datetime.now(timezone.utc) - opened_at).total_seconds())
+
+            # Update trade
+            cur.execute("""
+                UPDATE alpha_trades_1h
+                SET closed_at = NOW(),
+                    exit_price = %s,
+                    pnl_pct = %s,
+                    mfe_pct = %s,
+                    mae_pct = %s,
+                    duration_seconds = %s,
+                    exit_reason = %s,
+                    status = 'CLOSED'
+                WHERE id = %s
+            """, (exit_price_f, pnl_pct, mfe_pct, mae_pct, duration, exit_reason, trade_id))
+
+            conn.commit()
+            logger.info(f"[1H] Closed trade #{trade_id}: {pnl_pct:+.2f}%")
+
+        except Exception as e:
+            logger.error(f"[1H] Error closing trade: {e}")
+
+
+def get_open_trade_1h(symbol: str) -> Optional[Dict]:
+    """Get open 1H trade for a symbol."""
+
+    if not PSYCOPG2_AVAILABLE:
+        return None
+
+    with get_connection() as conn:
+        if not conn:
+            return None
+
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("""
+                SELECT * FROM alpha_trades_1h
+                WHERE symbol = %s AND status = 'OPEN'
+                ORDER BY opened_at DESC LIMIT 1
+            """, (symbol,))
+
+            return cur.fetchone()
+
+        except Exception as e:
+            logger.error(f"[1H] Error getting open trade: {e}")
+            return None
+
+
+def get_all_open_trades_1h() -> List[Dict]:
+    """Get ALL open 1H trades from database.
+
+    This is called on startup to restore positions after container restart.
+    Returns list of trade dicts with all fields needed to reconstruct positions.
+    """
+
+    if not PSYCOPG2_AVAILABLE:
+        return []
+
+    with get_connection() as conn:
+        if not conn:
+            return []
+
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("""
+                SELECT id, symbol, direction, entry_price, size_usd, leverage,
+                       opened_at, max_price, min_price, decision_id,
+                       policy_confidence, mcts_win_prob
+                FROM alpha_trades_1h
+                WHERE status = 'OPEN'
+                ORDER BY opened_at ASC
+            """)
+
+            rows = cur.fetchall()
+            logger.info(f"[1H] Loaded {len(rows)} open positions from database")
+            return [dict(row) for row in rows]
+
+        except Exception as e:
+            logger.error(f"[1H] Error loading open trades: {e}")
+            return []
+
+
+def get_stats_1h() -> Dict:
+    """Get overall AlphaTrader 1H stats."""
+
+    if not PSYCOPG2_AVAILABLE:
+        return {}
+
+    with get_connection() as conn:
+        if not conn:
+            return {}
+
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+
+            # Trade stats
+            cur.execute("""
+                SELECT
+                    COUNT(*) as total_trades,
+                    COUNT(CASE WHEN pnl_pct > 0 THEN 1 END) as winning_trades,
+                    COALESCE(SUM(pnl_pct), 0) as total_pnl_pct,
+                    COALESCE(AVG(pnl_pct), 0) as avg_pnl_pct,
+                    COUNT(CASE WHEN status = 'OPEN' THEN 1 END) as open_trades
+                FROM alpha_trades_1h
+            """)
+            trade_stats = cur.fetchone()
+
+            # Decision stats
+            cur.execute("""
+                SELECT
+                    COUNT(*) as total_decisions,
+                    COUNT(CASE WHEN final_action != 'HOLD' THEN 1 END) as action_decisions,
+                    COUNT(CASE WHEN mcts_approved = FALSE THEN 1 END) as mcts_vetoes
+                FROM alpha_decisions_1h
+            """)
+            decision_stats = cur.fetchone()
+
+            return {
+                'trades': dict(trade_stats) if trade_stats else {},
+                'decisions': dict(decision_stats) if decision_stats else {},
+            }
+
+        except Exception as e:
+            logger.error(f"[1H] Error getting stats: {e}")
+            return {}
+
+
+def save_equity_snapshot_1h(
+    equity_usd: float,
+    open_positions: int,
+    total_trades: int,
+    winning_trades: int,
+    total_pnl_usd: float
+):
+    """Save equity curve data point for 1H model."""
+
+    if not PSYCOPG2_AVAILABLE:
+        return
+
+    with get_connection() as conn:
+        if not conn:
+            return
+
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO alpha_equity_1h (
+                    equity_usd, open_positions, total_trades,
+                    winning_trades, total_pnl_usd
+                ) VALUES (%s, %s, %s, %s, %s)
+            """, (equity_usd, open_positions, total_trades, winning_trades, total_pnl_usd))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"[1H] Error saving equity: {e}")
+
+
+# Initialize tables on module import
+if PSYCOPG2_AVAILABLE and get_database_url():
+    init_tables_1h()
