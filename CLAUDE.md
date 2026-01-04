@@ -3385,4 +3385,199 @@ python -m alpha.trainer \
 
 ---
 
-*AlphaTrader v0.4.0 - January 2026 (Multi-Timeframe + Tick Recording)*
+## 🔄 VPS Structure: Separate 15m and 1h Systems (January 2026)
+
+### Files on VPS (~/alphatrader) - NOT in Git
+
+Sul VPS esistono file aggiuntivi non presenti nel repository git:
+
+| File | Size | Descrizione |
+|------|------|-------------|
+| `alpha/trader.py` | **62KB** | 15m con FAST loop esteso (doppio del git - 31KB!) |
+| `alpha/trader_1h.py` | 21KB | 1h trader separato |
+| `alpha/db_1h.py` | 18KB | Database module per 1h (tabelle separate) |
+| `alpha/trainer_1h.py` | 9KB | Trainer per 1h |
+| `Dockerfile.alpha_1h` | ~1.5KB | Container per 1h |
+| `alpha/entrypoint_1h.sh` | ~2KB | Entrypoint per 1h |
+
+### Container 1h (Dockerfile.alpha_1h)
+
+```dockerfile
+# Completely independent from 15m model.
+# Uses separate:
+#   - Checkpoints (alpha/checkpoints/*_1h.pt)
+#   - Data (alpha/data/hourly/)
+#   - DB tables (alpha_trades_1h, alpha_decisions_1h)
+
+FROM python:3.11-slim
+WORKDIR /app
+# ... (deps installation)
+ENV ALPHA_INTERVAL=1h
+ENTRYPOINT ["/app/alpha/entrypoint_1h.sh"]
+```
+
+### Comandi Container 1h
+
+```bash
+# Build
+docker build -t alphatrader_1h -f Dockerfile.alpha_1h .
+
+# Download dati 1h
+docker run alphatrader_1h download
+
+# Training
+docker run alphatrader_1h train
+
+# Paper trading
+docker run -d --name alpha_trader_1h \
+  --env-file .env \
+  --network unified-memory-stack_memory-net \
+  -v $(pwd)/alpha/data:/app/alpha/data \
+  -v $(pwd)/alpha/checkpoints:/app/alpha/checkpoints \
+  --restart unless-stopped \
+  alphatrader_1h trade-paper
+
+# Status
+docker run alphatrader_1h status
+```
+
+---
+
+## 📊 Confronto Sistemi: Botone V6 vs AlphaTrader
+
+### Tre Sistemi di Trading Attivi
+
+| Sistema | Branch | Tipo | Decisioni | FAST Loop |
+|---------|--------|------|-----------|-----------|
+| **Botone V6** | `claude/project-expansion-discussion-e6H5a` | LIVE HyperLiquid | AI LLM (DeepSeek) | ✅ Completo |
+| **AlphaTrader 15m** | `claude/continue-latest-branch-Wvo2L` | Paper/Live | Neural Network + MCTS | ⚠️ VPS ha versione estesa |
+| **AlphaTrader 1h** | Solo VPS | Paper | Neural Network + MCTS | ❓ Da verificare |
+
+### FAST Loop - Confronto Dettagliato
+
+| Feature | Botone V6 | AlphaTrader (git) | AlphaTrader (VPS 62KB) |
+|---------|-----------|-------------------|------------------------|
+| **Intervallo** | 5 secondi | 5 secondi | 5 secondi |
+| **SL su Exchange** | ✅ Ordini SL reali | ❌ Solo memoria | ❓ **Verificare** |
+| **Verifica SL** | ✅ `_verify_all_sl_orders()` | ❌ No | ❓ **Verificare** |
+| **Trailing Stop** | ✅ `TrailingSLManager` | ❌ MANCA | ❓ **Verificare** |
+| **BTC Watchdog** | ✅ Protegge altcoin | ❌ MANCA | ❓ **Verificare** |
+| **Timeout Exit** | ✅ Chiude dopo X ore | ❌ MANCA | ❓ **Verificare** |
+| **Health Check** | ✅ Score salute | ❌ MANCA | ❓ **Verificare** |
+| **MFE/MAE** | ✅ Nel DB | ✅ Nel DB | ✅ Nel DB |
+| **Tick Recording** | ❌ No | ✅ Ogni 5s | ✅ Ogni 5s |
+
+### Botone V6 - TrailingSLManager
+
+```python
+class TrailingSLManager:
+    """Manages trailing stop loss based on configurable steps."""
+
+    # Config: TRAILING_STEPS=2.0:0.0,3.0:1.0,4.0:2.0,5.0:3.0,...
+
+    def get_new_sl(direction, entry_price, current_price, leverage, current_sl_level):
+        # Calcola P&L %
+        # Trova step applicabile
+        # Ritorna (was_updated, new_sl_price, new_sl_level)
+```
+
+Trailing Steps configurabili:
+```
+2.0:0.0   → A +2.0% profit → SL a breakeven (0%)
+3.0:1.0   → A +3.0% profit → Lock +1.0%
+4.0:2.0   → A +4.0% profit → Lock +2.0%
+5.0:3.0   → A +5.0% profit → Lock +3.0%
+7.0:5.0   → A +7.0% profit → Lock +5.0%
+10.0:7.0  → A +10.0% profit → Lock +7.0%
+15.0:12.0 → A +15.0% profit → Lock +12.0%
+20.0:16.0 → A +20.0% profit → Lock +16.0%
+```
+
+### Botone V6 - BTC Watchdog
+
+```python
+# Protegge altcoin quando BTC è in zona estrema:
+if BTC_RSI >= 70:  # EXTREME
+    → Stringi SL SHORT a breakeven + X%
+elif BTC_RSI >= 65:  # DANGER
+    → Stringi SL se in profitto
+elif BTC_RSI <= 30:  # OVERSOLD
+    → Proteggi LONG da dump improvviso
+```
+
+### Botone V6 - Timeout Exit
+
+```python
+# Chiude posizioni stagnanti dopo TIMEOUT_HOURS (default 12h):
+if position_age > 12h:
+    if P&L < -3%:   → CHIUDI (taglia perdita)
+    elif P&L < +1%: → CHIUDI (stagnante)
+    else:           → MANTIENI (trailing lavora)
+```
+
+### Botone V6 - Health Check
+
+```python
+# Score salute ogni HEALTH_CHECK_INTERVAL secondi (default 30s):
+
+Score Components (range -9 a +9):
+├─ EMA Stack: bullish=+2, bearish=-2
+├─ RSI: favorable=+1, unfavorable=-1
+├─ MACD: strong=+1, against=-1
+├─ Volume: good=+1, low=-1
+├─ Bollinger: favorable=+1, squeeze=-1
+├─ OBV: aligned=+1, against=-1
+├─ Time Decay: -1 (4h), -2 (8h), -3 (12h) se in perdita
+
+Actions based on score:
+├─ Score >= 4: HEALTHY (tutto ok)
+├─ Score 0-3: CAUTION (stringi SL se profit > 0.5%)
+├─ Score -3 a -1: DANGER (SL a breakeven)
+└─ Score < -4: EMERGENCY (chiudi se profit > 0.5%)
+```
+
+---
+
+## 🛠️ TODO: Verificare e Sincronizzare VPS
+
+Il `trader.py` sul VPS (62KB) è **il doppio** di quello nel git (31KB).
+Probabilmente contiene già SL/trailing. Da verificare:
+
+### Comandi di Verifica
+
+```bash
+# Sul VPS, cerca logica SL/trailing nel trader.py:
+grep -n "stop_loss\|trailing\|SL_\|TP_\|_check_sl" ~/alphatrader/alpha/trader.py | head -30
+
+# Confronta con trader_1h.py:
+grep -n "stop_loss\|trailing\|SL_\|TP_" ~/alphatrader/alpha/trader_1h.py | head -30
+
+# Dimensioni file:
+wc -l ~/alphatrader/alpha/trader.py ~/alphatrader/alpha/trader_1h.py
+
+# Diff tra git e VPS:
+diff <(cat ~/alphatrader/alpha/trader.py) <(git show origin/claude/continue-latest-branch-Wvo2L:alpha/trader.py) | head -100
+```
+
+### Prossimi Passi
+
+1. **Verificare** cosa c'è nel `trader.py` VPS (62KB) - cercare SL/trailing
+2. **Confrontare** con `trader_1h.py` per vedere se ha le stesse feature
+3. **Sincronizzare** codice VPS → git se contiene miglioramenti
+4. **Implementare** SL/trailing per 1h se mancante
+5. **Testare** paper trading 1h con risk management completo
+
+### File da Committare (se contengono miglioramenti)
+
+```bash
+# Sul VPS, se i file hanno feature utili:
+cd ~/alphatrader
+git add alpha/trader.py alpha/trader_1h.py alpha/db_1h.py alpha/trainer_1h.py
+git add Dockerfile.alpha_1h alpha/entrypoint_1h.sh
+git commit -m "Add 1h model support and extended FAST loop features"
+git push origin claude/continue-latest-branch-Wvo2L
+```
+
+---
+
+*AlphaTrader v0.4.1 - January 2026 (VPS Structure + System Comparison)*
