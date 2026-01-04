@@ -199,13 +199,135 @@ entry_bb_squeeze, entry_obv_trend, exit_reason, sl_price, tp_price
 
 ---
 
+---
+
+## 🔬 ANALISI APPROFONDITA LOG (4 Gennaio 2026 - Pomeriggio)
+
+### Statistiche Decisioni (ultimi 10000 log)
+| Decisione | Count | % |
+|-----------|-------|---|
+| **VETO** | 626+ | ~55% |
+| HOLD | 202 | ~35% |
+| CLOSE | 5 | <1% |
+| **OPEN** | **0** | **0%** ❌ |
+
+### Motivi VETO (Top 5)
+| Motivo | Count | % dei VETO |
+|--------|-------|------------|
+| **OBV Divergence** | 156 | 25% |
+| Volume < Tier-2 (0.8x) | ~300 | 48% |
+| Volume < Tier-3 (1.0x) | ~100 | 16% |
+| Volume < Tier-1 (0.5x) | ~70 | 11% |
+
+### VETO per Simbolo (distribuiti uniformemente)
+```
+SUI: 39 | LINK: 39 | BNB: 37 | ARB: 35 | DOGE: 34
+AVAX: 34 | SOL: 33 | XRP: 30 | ETH: 30 | BTC: 29 | ADA: 27
+```
+
+---
+
+## 🐛 BUG/PROBLEMI NEL CODICE
+
+### 1. OBV Divergence VETO Troppo Semplice (linea 363-370)
+```python
+# PROBLEMA: Usa solo change_1h, troppo sensibile
+price_trend = "up" if market_data.get('change_1h', 0) > 0 else "down"
+obv_opposite = (price_trend == "down" and obv_trend == "RISING")
+if obv_opposite:
+    return VETO  # Blocca anche con -0.01% e OBV RISING!
+```
+
+**Esempio dai log**:
+- EMA Stack: bullish ✅
+- Volume Ratio: 3.67x ✅ (ottimo!)
+- OBV: RISING ✅
+- Ma price change_1h: -0.1% → **VETO!** ❌
+
+**Soluzione proposta**: Aggiungere soglia minima, es:
+```python
+if abs(change_1h) > 0.5 and obv_opposite:  # Solo se movimento > 0.5%
+    return VETO
+```
+
+### 2. Threshold Troppo Alti per TIER 3
+```python
+# Configurazione attuale (linee 216-228)
+"BTC":  {"tier": 1, "threshold": 60},   # OK
+"ETH":  {"tier": 1, "threshold": 57},   # OK
+"SOL":  {"tier": 2, "threshold": 74},   # Alto
+"DOGE": {"tier": 3, "threshold": 114},  # TROPPO ALTO!
+"AVAX": {"tier": 3, "threshold": 107},  # TROPPO ALTO!
+```
+
+**Dai log**:
+```
+AVAX: adjusted_score=66, threshold=107 → NO_TRADE (66 < 107)
+ADA:  adjusted_score=50, threshold=74  → NO_TRADE
+```
+
+**Soluzione proposta**: Abbassare threshold TIER 3:
+```python
+"DOGE": {"tier": 3, "threshold": 80},   # Era: 114
+"AVAX": {"tier": 3, "threshold": 75},   # Era: 107
+```
+
+### 3. Bug Parsing CLOSE (linee 960-961)
+```python
+# PROBLEMA: Se l'AI menziona "close" nel reasoning, viene parsato come azione CLOSE
+elif "close" in content_lower or "sell" in content_lower:
+    return {"action": "close", "reason": reason}
+```
+
+L'AI risponde `"action": "hold"` ma il log dice `AI → CLOSE` perché il reasoning contiene la parola "close".
+
+---
+
+## 🛠️ MODIFICHE PROPOSTE
+
+### Opzione A: Configurazione Meno Restrittiva (Veloce)
+```env
+# .env.baseline modifiche
+VOLUME_LOW_ACTION=WARN           # Era: VETO
+VOLUME_MIN_TIER1=0.2             # Era: 0.5
+VOLUME_MIN_TIER2=0.4             # Era: 0.8
+VOLUME_MIN_TIER3=0.6             # Era: 1.0
+```
+
+### Opzione B: Modifiche al Codice (Consigliato)
+
+#### B1. Ammorbidire OBV VETO
+```python
+# Aggiungere soglia minima per OBV divergence
+change_1h = market_data.get('change_1h', 0)
+if abs(change_1h) > 1.0 and obv_opposite:  # Solo se movimento > 1%
+    # VETO solo per divergenze significative
+```
+
+#### B2. Abbassare Threshold TIER 3
+```python
+"DOGE": {"tier": 3, "multiplier": 0.70, "threshold": 80},   # Era: 114
+"AVAX": {"tier": 3, "multiplier": 0.75, "threshold": 80},   # Era: 107
+```
+
+#### B3. Fixare Parsing CLOSE
+```python
+# Controllare prima il campo "action" esplicito, poi il contenuto
+if parsed.get("action") == "close":
+    return {"action": "close", ...}
+# Solo dopo cercare parole chiave nel contenuto
+```
+
+---
+
 ## 🚀 PROSSIMI PASSI
 
-1. [ ] Modificare configurazione per ridurre VETO
-2. [ ] Testare con VOLUME_LOW_ACTION=WARN
-3. [ ] Monitorare per 24-48h
-4. [ ] Analizzare se aumentano i trade
-5. [ ] Valutare aumento position size
+1. [ ] **Decidere approccio**: Config (A) o Codice (B)
+2. [ ] Implementare modifiche
+3. [ ] Restart container
+4. [ ] Monitorare per 24-48h
+5. [ ] Verificare aumento trade
+6. [ ] Analizzare P&L
 
 ---
 
