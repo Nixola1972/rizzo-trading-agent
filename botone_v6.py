@@ -231,33 +231,119 @@ class BotoneV6Config:
         symbols_str = os.getenv("TRADING_SYMBOLS", "BTC,ETH,SOL")
         self.symbols = [s.strip() for s in symbols_str.split(",")]
 
-        # Crypto Tiers Configuration (for RESEARCH_MODE)
-        # Tier 1: High liquidity, low manipulation - threshold 60
-        # Tier 2: Medium liquidity - threshold 70
-        # Tier 3: High volatility/manipulation - threshold 80
-        # min_volume now uses ENV values (volume_min_tier1/2/3)
-        self.crypto_tiers = {
-            # Tier 1 - Low risk
-            "BTC": {"tier": 1, "multiplier": 1.00, "threshold": 60, "min_volume": self.volume_min_tier1},
-            "ETH": {"tier": 1, "multiplier": 1.05, "threshold": 57, "min_volume": self.volume_min_tier1},
-            # Tier 2 - Medium risk
-            "SOL": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
-            "XRP": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
-            "BNB": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
-            "LINK": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
-            "ADA": {"tier": 2, "multiplier": 0.95, "threshold": 74, "min_volume": self.volume_min_tier2},
-            "SUI": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": self.volume_min_tier2},
-            "ARB": {"tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": self.volume_min_tier2},
-            # Tier 3 - High risk (need strong signals)
-            "DOGE": {"tier": 3, "multiplier": 0.70, "threshold": 114, "min_volume": self.volume_min_tier3},
-            "AVAX": {"tier": 3, "multiplier": 0.75, "threshold": 107, "min_volume": self.volume_min_tier3},
-        }
+        # === CRYPTO TIER CONFIGURATION (for RESEARCH_MODE) ===
+        # Configurable thresholds and multipliers per tier
+        self.tier1_threshold = float(os.getenv("CRYPTO_TIER1_THRESHOLD", "60"))
+        self.tier1_multiplier = float(os.getenv("CRYPTO_TIER1_MULTIPLIER", "1.0"))
+        self.tier2_threshold = float(os.getenv("CRYPTO_TIER2_THRESHOLD", "70"))
+        self.tier2_multiplier = float(os.getenv("CRYPTO_TIER2_MULTIPLIER", "0.95"))
+        self.tier3_threshold = float(os.getenv("CRYPTO_TIER3_THRESHOLD", "75"))  # Fixed: was 107-114 (impossible!)
+        self.tier3_multiplier = float(os.getenv("CRYPTO_TIER3_MULTIPLIER", "0.85"))
+
+        # Default tier for unknown cryptos
+        self.default_crypto_tier = int(os.getenv("DEFAULT_CRYPTO_TIER", "2"))
+
+        # Tier overrides: format "SYMBOL:TIER,SYMBOL:TIER" e.g. "PEPE:3,WIF:3,BONK:3"
+        self.tier_overrides_str = os.getenv("CRYPTO_TIER_OVERRIDES", "")
+        self.tier_overrides = {}
+        if self.tier_overrides_str:
+            for item in self.tier_overrides_str.split(","):
+                if ":" in item:
+                    symbol, tier = item.strip().split(":")
+                    self.tier_overrides[symbol.upper()] = int(tier)
+
+        # Build crypto_tiers dictionary using configurable values
+        self.crypto_tiers = self._build_crypto_tiers()
 
         # Loop intervals
         self.slow_loop_interval = int(os.getenv("SLOW_LOOP_INTERVAL", "60"))  # seconds
         self.fast_loop_interval = int(os.getenv("FAST_LOOP_INTERVAL", "5"))   # seconds
 
-        # Validate required fields
+        # Validate and log configuration
+        self._validate_and_log()
+
+    def _build_crypto_tiers(self) -> Dict[str, Dict]:
+        """Build crypto_tiers dictionary using configurable ENV values."""
+        # Base configuration for known cryptos
+        base_tiers = {
+            # Tier 1 - Low risk (high liquidity)
+            "BTC": 1,
+            "ETH": 1,
+            # Tier 2 - Medium risk
+            "SOL": 2,
+            "XRP": 2,
+            "BNB": 2,
+            "LINK": 2,
+            "ADA": 2,
+            "SUI": 2,
+            "ARB": 2,
+            # Tier 3 - High risk (meme coins, low liquidity)
+            "DOGE": 3,
+            "AVAX": 3,
+        }
+
+        # Apply tier overrides from ENV
+        for symbol, tier in self.tier_overrides.items():
+            base_tiers[symbol] = tier
+
+        # Build final dictionary with configurable thresholds/multipliers
+        crypto_tiers = {}
+        for symbol, tier in base_tiers.items():
+            if tier == 1:
+                crypto_tiers[symbol] = {
+                    "tier": 1,
+                    "multiplier": self.tier1_multiplier,
+                    "threshold": self.tier1_threshold,
+                    "min_volume": self.volume_min_tier1
+                }
+            elif tier == 2:
+                crypto_tiers[symbol] = {
+                    "tier": 2,
+                    "multiplier": self.tier2_multiplier,
+                    "threshold": self.tier2_threshold,
+                    "min_volume": self.volume_min_tier2
+                }
+            else:  # tier == 3
+                crypto_tiers[symbol] = {
+                    "tier": 3,
+                    "multiplier": self.tier3_multiplier,
+                    "threshold": self.tier3_threshold,
+                    "min_volume": self.volume_min_tier3
+                }
+
+        return crypto_tiers
+
+    def get_tier_for_symbol(self, symbol: str) -> Dict:
+        """Get tier info for a symbol, with fallback to default tier."""
+        if symbol in self.crypto_tiers:
+            return self.crypto_tiers[symbol]
+
+        # Unknown symbol - use default tier
+        default_tier = self.default_crypto_tier
+        if default_tier == 1:
+            return {
+                "tier": 1,
+                "multiplier": self.tier1_multiplier,
+                "threshold": self.tier1_threshold,
+                "min_volume": self.volume_min_tier1
+            }
+        elif default_tier == 2:
+            return {
+                "tier": 2,
+                "multiplier": self.tier2_multiplier,
+                "threshold": self.tier2_threshold,
+                "min_volume": self.volume_min_tier2
+            }
+        else:
+            return {
+                "tier": 3,
+                "multiplier": self.tier3_multiplier,
+                "threshold": self.tier3_threshold,
+                "min_volume": self.volume_min_tier3
+            }
+
+    def _validate_and_log(self):
+        """Validate required fields and log configuration."""
         if not self.openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY is required in .env.baseline")
         if not self.hl_private_key:
@@ -275,6 +361,13 @@ class BotoneV6Config:
         logger.info(f"  🔬 RESEARCH_MODE: {self.research_mode}")
         if self.research_mode:
             logger.info(f"  📊 Research Min Volume: {self.research_min_volume_ratio}x")
+            logger.info(f"  📊 Crypto Tiers (Threshold/Multiplier):")
+            logger.info(f"     TIER 1: threshold={self.tier1_threshold}, mult={self.tier1_multiplier}")
+            logger.info(f"     TIER 2: threshold={self.tier2_threshold}, mult={self.tier2_multiplier}")
+            logger.info(f"     TIER 3: threshold={self.tier3_threshold}, mult={self.tier3_multiplier}")
+            logger.info(f"     Default Tier: {self.default_crypto_tier}")
+            if self.tier_overrides:
+                logger.info(f"     Overrides: {self.tier_overrides}")
         logger.info(f"  AI Interval: {self.ai_interval_minutes} min")
         logger.info(f"  Symbols: {self.symbols}")
         logger.info(f"  Position Size: ${self.position_size_usd}")
@@ -362,10 +455,8 @@ class BotoneAIManager:
         """
         # RESEARCH MODE: Use weighted scoring with veto checks
         if self.config.research_mode:
-            # Get tier info for this symbol
-            tier_info = self.config.crypto_tiers.get(symbol, {
-                "tier": 2, "multiplier": 0.90, "threshold": 78, "min_volume": 1.0
-            })
+            # Get tier info for this symbol (uses configurable defaults for unknown symbols)
+            tier_info = self.config.get_tier_for_symbol(symbol)
 
             # === HARD VETO CHECKS (before calling AI) ===
             volume_ratio = market_data.get('volume_ratio', 0)
