@@ -85,14 +85,23 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 # Trading parameters (1h specific defaults)
+# Based on MFE/MAE analysis: winner avg MFE=0.98%, only 8% reach 2%
 CONFIG_1H = {
     # Hold times (based on analysis: golden zone 30-45min, death zone >2h)
     'min_hold_minutes': _env_int('ALPHA_MIN_HOLD_MINUTES', 30),
     'max_hold_minutes': _env_int('ALPHA_MAX_HOLD_MINUTES', 90),  # TIME STOP
 
-    # Take Profit / Stop Loss
-    'take_profit_pct': _env_float('ALPHA_TAKE_PROFIT_PCT', 2.0),
-    'stop_loss_pct': _env_float('ALPHA_STOP_LOSS_PCT', 5.0),
+    # Take Profit / Stop Loss (adjusted based on MFE/MAE analysis)
+    # - Winner avg MFE: 0.98% → TP should be ~1.0%
+    # - Winner avg MAE: -0.39%, Loser avg MAE: -1.66% → SL ~3.0%
+    'take_profit_pct': _env_float('ALPHA_TAKE_PROFIT_PCT', 1.0),
+    'stop_loss_pct': _env_float('ALPHA_STOP_LOSS_PCT', 3.0),
+
+    # Trailing Stop (lock in profits once reached threshold)
+    # - Activates when profit >= activate_pct
+    # - Closes when profit drops by distance_pct from max
+    'trailing_activate_pct': _env_float('ALPHA_TRAILING_ACTIVATE_PCT', 0.5),
+    'trailing_distance_pct': _env_float('ALPHA_TRAILING_DISTANCE_PCT', 0.3),
 
     # Position sizing
     'position_usd': _env_float('ALPHA_POSITION_USD', 25.0),
@@ -154,6 +163,7 @@ class AlphaTrader1H:
         logger.info(f"  Max hold: {CONFIG_1H['max_hold_minutes']} min (TIME STOP)")
         logger.info(f"  Take profit: {CONFIG_1H['take_profit_pct']}%")
         logger.info(f"  Stop loss: {CONFIG_1H['stop_loss_pct']}%")
+        logger.info(f"  Trailing: activate @ {CONFIG_1H['trailing_activate_pct']}%, distance {CONFIG_1H['trailing_distance_pct']}%")
         logger.info(f"  Position: ${CONFIG_1H['position_usd']} x {CONFIG_1H['max_leverage']}x")
         logger.info(f"  Restored positions: {len(self.positions)}")
 
@@ -504,7 +514,15 @@ class AlphaTrader1H:
         return True
 
     def check_positions(self):
-        """Check and manage open positions."""
+        """Check and manage open positions.
+
+        Exit priority:
+        1. TIME STOP - Force close after max_hold_minutes (avoid death zone)
+        2. STOP LOSS - Emergency exit at fixed loss %
+        3. TRAILING STOP - Lock in profits when price drops from MFE
+        4. TAKE PROFIT - Fixed profit target
+        5. SIGNAL - AI model says CLOSE
+        """
         for symbol, position in list(self.positions.items()):
             try:
                 market_data = self.get_market_data_1h(symbol)
@@ -531,32 +549,64 @@ class AlphaTrader1H:
                 # Check hold time
                 hold_minutes = (datetime.now() - position.opened_at).total_seconds() / 60
 
-                # TIME STOP: Force close after max_hold_minutes
-                # Analysis shows: 30-45min = +61.52, >2h = -37.04
+                # ==========================================
+                # EXIT PRIORITY 1: TIME STOP
+                # Force close after max_hold_minutes (avoid death zone: >2h = -37.04)
+                # ==========================================
                 max_hold = CONFIG_1H['max_hold_minutes']
                 if hold_minutes >= max_hold:
                     logger.info(f"[1H] ⏰ TIME STOP: {symbol} held {hold_minutes:.0f}m >= {max_hold}m limit")
                     self._close_position(symbol, price, "TIME_STOP")
                     continue
 
-                # STOP LOSS: Emergency exit
+                # ==========================================
+                # EXIT PRIORITY 2: STOP LOSS
+                # Emergency exit at fixed loss %
+                # ==========================================
                 stop_loss = CONFIG_1H['stop_loss_pct']
                 if pnl_pct <= -stop_loss:
                     logger.info(f"[1H] 🛑 STOP LOSS: {symbol} P&L {pnl_pct:.2f}% <= -{stop_loss}%")
                     self._close_position(symbol, price, "STOP_LOSS")
                     continue
 
+                # ==========================================
+                # EXIT PRIORITY 3: TRAILING STOP
+                # Lock in profits once threshold reached
+                # Based on MFE analysis: activate at 0.5%, trail by 0.3%
+                # ==========================================
+                trailing_activate = CONFIG_1H['trailing_activate_pct']
+                trailing_distance = CONFIG_1H['trailing_distance_pct']
+
+                # Check if trailing stop is activated (MFE reached activate threshold)
+                if position.max_profit_pct >= trailing_activate:
+                    # Calculate how much we've dropped from the max
+                    drop_from_max = position.max_profit_pct - pnl_pct
+
+                    if drop_from_max >= trailing_distance:
+                        logger.info(
+                            f"[1H] 📉 TRAILING STOP: {symbol} dropped {drop_from_max:.2f}% from max "
+                            f"(MFE: {position.max_profit_pct:.2f}%, now: {pnl_pct:.2f}%)"
+                        )
+                        self._close_position(symbol, price, "TRAILING_STOP")
+                        continue
+
                 # Check for close conditions (only after min_hold)
                 min_hold = CONFIG_1H['min_hold_minutes']
                 if hold_minutes >= min_hold:
-                    # TAKE PROFIT
+                    # ==========================================
+                    # EXIT PRIORITY 4: TAKE PROFIT
+                    # Fixed profit target
+                    # ==========================================
                     take_profit = CONFIG_1H['take_profit_pct']
                     if pnl_pct >= take_profit:
                         logger.info(f"[1H] 💰 TAKE PROFIT: {symbol} P&L {pnl_pct:.2f}% >= {take_profit}%")
                         self._close_position(symbol, price, "TAKE_PROFIT")
                         continue
 
-                    # Get fresh decision from model
+                    # ==========================================
+                    # EXIT PRIORITY 5: SIGNAL
+                    # AI model says CLOSE
+                    # ==========================================
                     action = self.make_decision(symbol, market_data)
                     if action and action.action_type == ActionType.CLOSE:
                         self._close_position(symbol, price, "SIGNAL")
