@@ -141,6 +141,19 @@ class BotoneV6Config:
         self.btc_entry_veto_long_rsi = float(os.getenv("BTC_ENTRY_VETO_LONG_RSI", "70"))   # Block LONG if BTC RSI >= this
         self.btc_entry_veto_short_rsi = float(os.getenv("BTC_ENTRY_VETO_SHORT_RSI", "30")) # Block SHORT if BTC RSI <= this
 
+        # === RSI ENTRY FILTER (per-symbol RSI check) ===
+        # Block LONG entries when symbol's own RSI is too high (overbought)
+        # Block SHORT entries when symbol's own RSI is too low (oversold)
+        self.rsi_entry_filter_enabled = os.getenv("RSI_ENTRY_FILTER_ENABLED", "true").lower() == "true"
+        self.long_max_rsi = float(os.getenv("LONG_MAX_RSI", "65"))      # Block LONG if symbol RSI >= this
+        self.short_min_rsi = float(os.getenv("SHORT_MIN_RSI", "35"))    # Block SHORT if symbol RSI <= this
+
+        # === SYMBOL COOLDOWN ===
+        # Minimum minutes between trades on same symbol (prevent overtrading)
+        self.symbol_cooldown_enabled = os.getenv("SYMBOL_COOLDOWN_ENABLED", "true").lower() == "true"
+        self.symbol_cooldown_minutes = int(os.getenv("SYMBOL_COOLDOWN_MINUTES", "30"))
+        self.symbol_last_trade_time: Dict[str, datetime] = {}  # Track last trade time per symbol
+
         # Timeout Exit - Chiudi trade stagnanti
         self.timeout_enabled = os.getenv("TIMEOUT_ENABLED", "true").lower() == "true"
         self.timeout_hours = float(os.getenv("TIMEOUT_HOURS", "12"))
@@ -402,6 +415,18 @@ class BotoneV6Config:
             logger.info(f"     Block SHORT if BTC RSI <= {self.btc_entry_veto_short_rsi}")
         else:
             logger.info(f"  🚫 BTC Entry Veto: disabled")
+        # RSI Entry Filter logging
+        if self.rsi_entry_filter_enabled:
+            logger.info(f"  📈 RSI Entry Filter: ENABLED")
+            logger.info(f"     Block LONG if symbol RSI >= {self.long_max_rsi}")
+            logger.info(f"     Block SHORT if symbol RSI <= {self.short_min_rsi}")
+        else:
+            logger.info(f"  📈 RSI Entry Filter: disabled")
+        # Symbol Cooldown logging
+        if self.symbol_cooldown_enabled:
+            logger.info(f"  ⏱️ Symbol Cooldown: ENABLED ({self.symbol_cooldown_minutes} min)")
+        else:
+            logger.info(f"  ⏱️ Symbol Cooldown: disabled")
         # Timeout logging
         if self.timeout_enabled:
             logger.info(f"  ⏰ Timeout Exit: ENABLED ({self.timeout_hours}h)")
@@ -2683,6 +2708,35 @@ class BotoneV6:
                 except Exception as e:
                     logger.warning(f"[VETO] Could not check BTC RSI: {e}")
 
+            # === SYMBOL RSI ENTRY FILTER ===
+            # Block LONG entries when symbol RSI is overbought (likely to reverse down)
+            # Block SHORT entries when symbol RSI is oversold (likely to bounce up)
+            if self.config.rsi_entry_filter_enabled:
+                symbol_rsi = market_data.get("rsi", 50)
+                if symbol_rsi is not None:
+                    # Block LONG if RSI too high (overbought)
+                    if direction == TradeDirection.LONG and symbol_rsi >= self.config.long_max_rsi:
+                        logger.warning(f"[VETO] 🚫 {symbol}: BLOCKED LONG entry - RSI {symbol_rsi:.1f} >= {self.config.long_max_rsi}")
+                        logger.warning(f"[VETO] 🚫 {symbol}: Overbought conditions - high reversal risk")
+                        return
+
+                    # Block SHORT if RSI too low (oversold)
+                    if direction == TradeDirection.SHORT and symbol_rsi <= self.config.short_min_rsi:
+                        logger.warning(f"[VETO] 🚫 {symbol}: BLOCKED SHORT entry - RSI {symbol_rsi:.1f} <= {self.config.short_min_rsi}")
+                        logger.warning(f"[VETO] 🚫 {symbol}: Oversold conditions - high bounce risk")
+                        return
+
+            # === SYMBOL COOLDOWN CHECK ===
+            # Prevent overtrading same symbol by enforcing minimum time between trades
+            if self.config.symbol_cooldown_enabled:
+                last_trade_time = self.config.symbol_last_trade_time.get(symbol)
+                if last_trade_time:
+                    elapsed_minutes = (datetime.now() - last_trade_time).total_seconds() / 60
+                    if elapsed_minutes < self.config.symbol_cooldown_minutes:
+                        remaining = self.config.symbol_cooldown_minutes - elapsed_minutes
+                        logger.warning(f"[COOLDOWN] ⏳ {symbol}: BLOCKED - Last trade {elapsed_minutes:.0f}min ago, need {remaining:.0f}min more")
+                        return
+
             # Calculate position size based on conviction tier
             position_size_usd, final_tier, tier_log = self._calculate_position_size(
                 ai_tier=conviction_tier,
@@ -3026,6 +3080,11 @@ class BotoneV6:
 
                 logger.info(f"[TRADE] ✅ Opened {direction.value} {symbol} | Size: ${size_usd:.0f}")
                 logger.info(f"[TRADE]    Entry: ${price:.2f} | SL: ${sl_price:.2f} | TP: ${tp_price:.2f}")
+
+                # Update cooldown timestamp for this symbol
+                if self.config.symbol_cooldown_enabled:
+                    self.config.symbol_last_trade_time[symbol] = datetime.now()
+                    logger.debug(f"[COOLDOWN] Updated last trade time for {symbol}")
 
                 # === PIAZZA SL SU HYPERLIQUID ===
                 try:
