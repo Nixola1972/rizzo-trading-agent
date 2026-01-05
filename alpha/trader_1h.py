@@ -115,6 +115,7 @@ class AlphaTrader1H:
         logger.info(f"  Symbols: {config.trading.symbols}")
         logger.info(f"  Loop interval: {config.interval.loop_interval_seconds}s")
         logger.info(f"  Min hold: {config.trading.min_hold_minutes} min")
+        logger.info(f"  Max hold: {getattr(config.trading, 'max_hold_minutes', 90)} min (TIME STOP)")
         logger.info(f"  Restored positions: {len(self.positions)}")
 
     def _load_models(self):
@@ -490,6 +491,15 @@ class AlphaTrader1H:
 
                 # Check hold time
                 hold_minutes = (datetime.now() - position.opened_at).total_seconds() / 60
+
+                # TIME STOP: Force close after max_hold_minutes (default 90 min)
+                # Analysis shows: 30-45min = +61.52, >2h = -37.04
+                # Cutoff at 90 min captures most profit, avoids death zone
+                max_hold = getattr(self.config.trading, 'max_hold_minutes', 90)
+                if hold_minutes >= max_hold:
+                    logger.info(f"[1H] ⏰ TIME STOP: {symbol} held {hold_minutes:.0f}m > {max_hold}m limit")
+                    self._close_position(symbol, price, "TIME_STOP")
+                    continue
 
                 # Check for close conditions
                 if hold_minutes >= self.config.trading.min_hold_minutes:
