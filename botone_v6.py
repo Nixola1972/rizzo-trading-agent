@@ -148,6 +148,10 @@ class BotoneV6Config:
         self.long_max_rsi = float(os.getenv("LONG_MAX_RSI", "65"))      # Block LONG if symbol RSI >= this
         self.short_min_rsi = float(os.getenv("SHORT_MIN_RSI", "35"))    # Block SHORT if symbol RSI <= this
 
+        # === EMA TREND FILTER ===
+        # Block trades against the trend: no SHORT in uptrend, no LONG in downtrend
+        self.ema_trend_filter_enabled = os.getenv("EMA_TREND_FILTER_ENABLED", "true").lower() == "true"
+
         # === SYMBOL COOLDOWN ===
         # Minimum minutes between trades on same symbol (prevent overtrading)
         self.symbol_cooldown_enabled = os.getenv("SYMBOL_COOLDOWN_ENABLED", "true").lower() == "true"
@@ -422,7 +426,14 @@ class BotoneV6Config:
             logger.info(f"     Block SHORT if symbol RSI <= {self.short_min_rsi}")
         else:
             logger.info(f"  📈 RSI Entry Filter: disabled")
-        # Symbol Cooldown logging
+        # EMA Trend Filter logging
+        if self.ema_trend_filter_enabled:
+            logger.info(f"  📊 EMA Trend Filter: ENABLED")
+            logger.info(f"     Block SHORT if EMA stack = bullish (uptrend)")
+            logger.info(f"     Block LONG if EMA stack = bearish (downtrend)")
+        else:
+            logger.info(f"  📊 EMA Trend Filter: disabled")
+        # Symbol Cooldown logging (now PRE-AI to save tokens)
         if self.symbol_cooldown_enabled:
             logger.info(f"  ⏱️ Symbol Cooldown: ENABLED ({self.symbol_cooldown_minutes} min)")
         else:
@@ -519,6 +530,19 @@ class BotoneAIManager:
                 elif obv_opposite:
                     # Small price change, just warn but don't VETO
                     logger.debug(f"[RESEARCH] {symbol}: ⚠️ OBV divergence detected but price change {change_1h:+.2f}% < {self.config.obv_veto_min_change}% threshold, continuing")
+
+            # VETO 3: Symbol Cooldown (prevent overtrading same symbol)
+            # Moved here BEFORE AI call to save tokens
+            if not has_position and self.config.symbol_cooldown_enabled:
+                last_trade_time = self.config.symbol_last_trade_time.get(symbol)
+                if last_trade_time:
+                    elapsed_minutes = (datetime.now() - last_trade_time).total_seconds() / 60
+                    if elapsed_minutes < self.config.symbol_cooldown_minutes:
+                        remaining = self.config.symbol_cooldown_minutes - elapsed_minutes
+                        reason = f"Cooldown active - last trade {elapsed_minutes:.0f}min ago, need {remaining:.0f}min more"
+                        logger.info(f"[RESEARCH] {symbol}: ⏳ VETO: {reason}")
+                        self._save_veto_log(symbol, "COOLDOWN_VETO", reason, market_data)
+                        return "hold", None, f"VETO: {reason}", 0.0, 1, 2, "VETO - cooldown active"
 
             # Build research prompt with tier info
             prompt = self._build_research_prompt(
@@ -2726,16 +2750,22 @@ class BotoneV6:
                         logger.warning(f"[VETO] 🚫 {symbol}: Oversold conditions - high bounce risk")
                         return
 
-            # === SYMBOL COOLDOWN CHECK ===
-            # Prevent overtrading same symbol by enforcing minimum time between trades
-            if self.config.symbol_cooldown_enabled:
-                last_trade_time = self.config.symbol_last_trade_time.get(symbol)
-                if last_trade_time:
-                    elapsed_minutes = (datetime.now() - last_trade_time).total_seconds() / 60
-                    if elapsed_minutes < self.config.symbol_cooldown_minutes:
-                        remaining = self.config.symbol_cooldown_minutes - elapsed_minutes
-                        logger.warning(f"[COOLDOWN] ⏳ {symbol}: BLOCKED - Last trade {elapsed_minutes:.0f}min ago, need {remaining:.0f}min more")
-                        return
+            # === EMA TREND FILTER ===
+            # Block trades against the trend: no SHORT in uptrend, no LONG in downtrend
+            if self.config.ema_trend_filter_enabled:
+                ema_stack = market_data.get("ema_stack", "")
+
+                # Block SHORT in uptrend (bullish EMA stack)
+                if direction == TradeDirection.SHORT and "bullish" in ema_stack.lower():
+                    logger.warning(f"[VETO] 🚫 {symbol}: BLOCKED SHORT - EMA stack bullish (trend UP)")
+                    logger.warning(f"[VETO] 🚫 {symbol}: Don't short an uptrend! EMA: {ema_stack}")
+                    return
+
+                # Block LONG in downtrend (bearish EMA stack)
+                if direction == TradeDirection.LONG and "bearish" in ema_stack.lower():
+                    logger.warning(f"[VETO] 🚫 {symbol}: BLOCKED LONG - EMA stack bearish (trend DOWN)")
+                    logger.warning(f"[VETO] 🚫 {symbol}: Don't long a downtrend! EMA: {ema_stack}")
+                    return
 
             # Calculate position size based on conviction tier
             position_size_usd, final_tier, tier_log = self._calculate_position_size(
