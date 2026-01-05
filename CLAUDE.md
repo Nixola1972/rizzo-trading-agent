@@ -14,7 +14,7 @@ botone_v6_fast  - Position monitoring (FAST loop ogni 5s)
 - **Host**: `memory_postgres`
 - **Database**: `botone_baseline`
 - **Tabella trade**: `botone_trades` (NON `bot_operations`)
-- **Connection**: `postgresql://tradingbot:BotoneDB2025@memory_postgres:5432/botone_baseline`
+- **Connection**: `postgresql://tradingbot:YOUR_PASSWORD@memory_postgres:5432/botone_baseline`
 
 ---
 

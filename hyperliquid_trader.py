@@ -1,8 +1,12 @@
 import json
+import os
 from decimal import Decimal, ROUND_DOWN
 from typing import Dict, Any
 
 import eth_account
+from dotenv import load_dotenv
+
+load_dotenv()
 from eth_account.signers.local import LocalAccount
 
 from hyperliquid.info import Info
@@ -32,6 +36,70 @@ class HyperLiquidTrader:
 
         # cache meta per tick-size e min-size
         self.meta = self.info.meta()
+
+    def _get_tick_size(self, symbol: str) -> float:
+        """Ottiene il tick size per un simbolo da meta usando pxDecimals dall'API."""
+        # Fallback mapping for common symbols (used if API doesn't return pxDecimals)
+        TICK_SIZE_FALLBACK = {
+            "BTC": 1.0,
+            "ETH": 0.1,
+            "SOL": 0.01,
+            "BNB": 0.1,       # BNB ~$600-900, needs 0.1 precision
+            "LINK": 0.001,    # LINK ~$10-30
+            "AVAX": 0.01,     # AVAX ~$20-50
+            "DOGE": 0.00001,  # DOGE ~$0.05-0.20
+            "XRP": 0.0001,    # XRP ~$0.50-2.00
+            "ARB": 0.0001,    # ARB ~$0.50-2.00
+            "SUI": 0.0001,    # SUI ~$1-5
+            "ADA": 0.0001,    # ADA ~$0.30-1.00
+            "MATIC": 0.0001,  # MATIC ~$0.50-1.50
+            "DOT": 0.001,     # DOT ~$5-10
+            "ATOM": 0.001,    # ATOM ~$7-15
+            "OP": 0.001,      # OP ~$1-3
+        }
+
+        try:
+            for asset in self.meta.get("universe", []):
+                if asset.get("name") == symbol:
+                    # pxDecimals indica i decimali per il prezzo (tick size = 10^-pxDecimals)
+                    # szDecimals indica i decimali per la size (non usato qui)
+                    px_decimals = asset.get("pxDecimals")
+                    if px_decimals is not None:
+                        tick_size = 10 ** (-int(px_decimals))
+                        return tick_size
+
+            # Use fallback mapping or default
+            return TICK_SIZE_FALLBACK.get(symbol, 0.0001)
+        except Exception:
+            return TICK_SIZE_FALLBACK.get(symbol, 0.0001)
+
+    def _round_to_tick(self, price: float, symbol: str) -> float:
+        """Arrotonda il prezzo al tick size più vicino."""
+        tick_size = self._get_tick_size(symbol)
+        return round(round(price / tick_size) * tick_size, 8)
+
+    def _round_to_tick_for_tp(self, price: float, symbol: str, is_long: bool) -> float:
+        """
+        Arrotonda il prezzo TP al tick size nella direzione corretta.
+
+        Per LONG TP (sell to close): arrotonda verso l'ALTO (ceil) per essere conservativi
+        Per SHORT TP (buy to close): arrotonda verso il BASSO (floor) per evitare fill immediati
+
+        Questo previene il bug dove il TP di uno SHORT viene arrotondato SOPRA l'entry price.
+        """
+        import math
+        tick_size = self._get_tick_size(symbol)
+        ticks = price / tick_size
+
+        if is_long:
+            # LONG TP: vendiamo sopra entry, arrotondiamo verso il basso per sicurezza
+            rounded_ticks = math.floor(ticks)
+        else:
+            # SHORT TP: compriamo sotto entry, arrotondiamo verso il basso
+            # Questo assicura che il TP sia SOTTO l'entry, non sopra
+            rounded_ticks = math.floor(ticks)
+
+        return round(rounded_ticks * tick_size, 8)
 
     def _to_hl_size(self, size_decimal: Decimal) -> str:
         # HL accetta max 8 decimali
@@ -159,7 +227,13 @@ class HyperLiquidTrader:
         symbol = order_json["symbol"]
         direction = order_json["direction"]
         portion = Decimal(str(order_json["target_portion_of_balance"]))
-        leverage = int(order_json.get("leverage", 1))
+
+        # Leggi la leva richiesta e applica MAX_LEVERAGE cap
+        requested_leverage = int(order_json.get("leverage", 1))
+        max_leverage_env = int(os.getenv('MAX_LEVERAGE', '10'))
+        leverage = min(requested_leverage, max_leverage_env)
+        if requested_leverage > max_leverage_env:
+            print(f"⚠️ Leva richiesta {requested_leverage}x limitata a MAX_LEVERAGE={max_leverage_env}x")
 
         if op == "hold":
             print(f"[HyperLiquidTrader] HOLD — nessuna azione per {symbol}.")
@@ -167,7 +241,33 @@ class HyperLiquidTrader:
 
         if op == "close":
             print(f"[HyperLiquidTrader] Market CLOSE per {symbol}")
-            return self.exchange.market_close(symbol)
+
+            # Verifica che esista una posizione aperta per questo simbolo
+            user_state = self.info.user_state(self.account_address)
+            asset_positions = user_state.get("assetPositions", [])
+
+            position_found = False
+            for p in asset_positions:
+                pos = p.get("position", {}) if isinstance(p, dict) else {}
+                coin = pos.get("coin", "")
+                size = float(pos.get("szi", 0))
+                if coin == symbol and size != 0:
+                    position_found = True
+                    break
+
+            if not position_found:
+                print(f"[HyperLiquidTrader] ⚠️ Nessuna posizione aperta per {symbol}, skip close")
+                return {"status": "skipped", "message": f"No open position for {symbol}"}
+
+            try:
+                result = self.exchange.market_close(symbol)
+                # Gestisce il caso in cui market_close restituisce None
+                if result is None:
+                    return {"status": "error", "message": "market_close returned None"}
+                return result
+            except Exception as e:
+                print(f"[HyperLiquidTrader] ❌ Errore durante market_close: {e}")
+                return {"status": "error", "message": str(e)}
 
         # OPEN --------------------------------------------------------
         # Prima di aprire la posizione, imposta la leva desiderata
@@ -195,7 +295,22 @@ class HyperLiquidTrader:
         if balance_usd <= 0:
             raise RuntimeError("Balance account = 0")
 
-        notional = balance_usd * portion * Decimal(str(leverage))
+        # === RISK MANAGEMENT: MAX_POSITION_SIZE_PCT ===
+        # Limita l'investimento massimo per singola operazione
+        max_position_pct = Decimal(os.getenv('MAX_POSITION_SIZE_PCT', '50'))
+        max_investment = balance_usd * (max_position_pct / Decimal('100'))
+
+        # Calcola il notional richiesto
+        requested_notional = balance_usd * portion * Decimal(str(leverage))
+
+        # Applica il limite se necessario
+        if requested_notional > max_investment:
+            print(f"⚠️ RISK LIMIT: Notional richiesto ${requested_notional:.2f} supera il limite ${max_investment:.2f} ({max_position_pct}% del portafoglio)")
+            print(f"   📊 Ridotto notional da ${requested_notional:.2f} a ${max_investment:.2f}")
+            notional = max_investment
+        else:
+            notional = requested_notional
+            print(f"✅ Notional ${notional:.2f} entro il limite ${max_investment:.2f} ({max_position_pct}%)")
 
         mids = self.info.all_mids()
         if symbol not in mids:
@@ -241,12 +356,17 @@ class HyperLiquidTrader:
 
         is_buy = (direction == "long")
 
+        # Check if MICRO_GAIN mode
+        trading_mode = order_json.get("trading_mode", "NORMAL")
+        micro_gain_target = order_json.get("micro_gain_target", 0.15)
+
         print(
             f"\n[HyperLiquidTrader] Market {'BUY' if is_buy else 'SELL'} "
             f"{size_float} {symbol}\n"
             f"  💰 Prezzo: ${mark_px}\n"
             f"  📊 Notional: ${notional:.2f}\n"
             f"  🎯 Leva target: {leverage}x\n"
+            f"  📋 Trading mode: {trading_mode}\n"
         )
 
         res = self.exchange.market_open(
@@ -256,6 +376,17 @@ class HyperLiquidTrader:
             None,
             0.01
         )
+
+        print(f"  📋 Market open response status: {res.get('status')}")
+
+        # DISABILITATO: Non piazzare TP LIMIT automatico per MICRO_GAIN/MICRO_PAY
+        # La sentinel gestisce il trailing stop, un ordine TP LIMIT aggiuntivo
+        # causa conflitti con la verifica SL (entrambi sono ordini SELL per LONG)
+        # e porta a chiusure premature inaspettate.
+        # Bug identificato: 2025-12-07 - ordine TP LIMIT confuso con SL
+        # Il codice originale piazzava un TP LIMIT order che veniva poi scambiato
+        # per l'SL durante la verifica, causando cancellazioni errate e chiusure
+        # premature della posizione.
 
         return res
 
