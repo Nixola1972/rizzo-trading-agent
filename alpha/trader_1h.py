@@ -87,25 +87,28 @@ def _env_int(key: str, default: int) -> int:
 # Trading parameters (1h specific defaults)
 # Based on MFE/MAE analysis: winner avg MFE=0.98%, only 8% reach 2%
 CONFIG_1H = {
+    # Config version for tracking (increment when params change significantly)
+    'config_version': os.getenv('ALPHA_CONFIG_VERSION', 'v2_trailing_5x'),
+
     # Hold times (based on analysis: golden zone 30-45min, death zone >2h)
     'min_hold_minutes': _env_int('ALPHA_MIN_HOLD_MINUTES', 30),
     'max_hold_minutes': _env_int('ALPHA_MAX_HOLD_MINUTES', 90),  # TIME STOP
 
-    # Take Profit / Stop Loss (adjusted based on MFE/MAE analysis)
-    # - Winner avg MFE: 0.98% → TP should be ~1.0%
-    # - Winner avg MAE: -0.39%, Loser avg MAE: -1.66% → SL ~3.0%
-    'take_profit_pct': _env_float('ALPHA_TAKE_PROFIT_PCT', 1.0),
-    'stop_loss_pct': _env_float('ALPHA_STOP_LOSS_PCT', 3.0),
+    # Take Profit / Stop Loss (adjusted for 5x leverage)
+    # Original MFE/MAE @ 3x: winner MFE=0.98%, MAE=-0.39%
+    # Scaled for 5x: TP=1.5%, SL=5.0%
+    'take_profit_pct': _env_float('ALPHA_TAKE_PROFIT_PCT', 1.5),
+    'stop_loss_pct': _env_float('ALPHA_STOP_LOSS_PCT', 5.0),
 
-    # Trailing Stop (lock in profits once reached threshold)
-    # - Activates when profit >= activate_pct
-    # - Closes when profit drops by distance_pct from max
-    'trailing_activate_pct': _env_float('ALPHA_TRAILING_ACTIVATE_PCT', 0.5),
-    'trailing_distance_pct': _env_float('ALPHA_TRAILING_DISTANCE_PCT', 0.3),
+    # Trailing Stop (scaled for 5x leverage)
+    # Original @ 3x: activate=0.5%, distance=0.3%
+    # Scaled for 5x: activate=0.8%, distance=0.5%
+    'trailing_activate_pct': _env_float('ALPHA_TRAILING_ACTIVATE_PCT', 0.8),
+    'trailing_distance_pct': _env_float('ALPHA_TRAILING_DISTANCE_PCT', 0.5),
 
     # Position sizing
     'position_usd': _env_float('ALPHA_POSITION_USD', 25.0),
-    'max_leverage': _env_int('ALPHA_MAX_LEVERAGE', 3),
+    'max_leverage': _env_int('ALPHA_MAX_LEVERAGE', 5),  # Increased from 3x to 5x
 
     # Loop timing
     'loop_interval': _env_int('ALPHA_SLOW_INTERVAL', 300),  # 5 min for 1h model
@@ -156,6 +159,7 @@ class AlphaTrader1H:
         self._load_open_positions_from_db()
 
         logger.info(f"AlphaTrader 1H initialized")
+        logger.info(f"  Config version: {CONFIG_1H['config_version']}")
         logger.info(f"  Interval: {config.interval.interval}")
         logger.info(f"  Symbols: {config.trading.symbols}")
         logger.info(f"  Loop interval: {CONFIG_1H['loop_interval']}s")
