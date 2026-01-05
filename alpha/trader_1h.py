@@ -69,6 +69,42 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# 1H MODEL CONFIGURATION (all from ENV for production flexibility)
+# ============================================================
+def _env_float(key: str, default: float) -> float:
+    try:
+        return float(os.getenv(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+def _env_int(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+# Trading parameters (1h specific defaults)
+CONFIG_1H = {
+    # Hold times (based on analysis: golden zone 30-45min, death zone >2h)
+    'min_hold_minutes': _env_int('ALPHA_MIN_HOLD_MINUTES', 30),
+    'max_hold_minutes': _env_int('ALPHA_MAX_HOLD_MINUTES', 90),  # TIME STOP
+
+    # Take Profit / Stop Loss
+    'take_profit_pct': _env_float('ALPHA_TAKE_PROFIT_PCT', 2.0),
+    'stop_loss_pct': _env_float('ALPHA_STOP_LOSS_PCT', 5.0),
+
+    # Position sizing
+    'position_usd': _env_float('ALPHA_POSITION_USD', 25.0),
+    'max_leverage': _env_int('ALPHA_MAX_LEVERAGE', 3),
+
+    # Loop timing
+    'loop_interval': _env_int('ALPHA_SLOW_INTERVAL', 300),  # 5 min for 1h model
+}
+
+logger.info(f"1H Config loaded: {CONFIG_1H}")
+
+
 @dataclass
 class AlphaPosition1H:
     """Current position tracking for 1H model."""
@@ -113,9 +149,12 @@ class AlphaTrader1H:
         logger.info(f"AlphaTrader 1H initialized")
         logger.info(f"  Interval: {config.interval.interval}")
         logger.info(f"  Symbols: {config.trading.symbols}")
-        logger.info(f"  Loop interval: {config.interval.loop_interval_seconds}s")
-        logger.info(f"  Min hold: {config.trading.min_hold_minutes} min")
-        logger.info(f"  Max hold: {getattr(config.trading, 'max_hold_minutes', 90)} min (TIME STOP)")
+        logger.info(f"  Loop interval: {CONFIG_1H['loop_interval']}s")
+        logger.info(f"  Min hold: {CONFIG_1H['min_hold_minutes']} min")
+        logger.info(f"  Max hold: {CONFIG_1H['max_hold_minutes']} min (TIME STOP)")
+        logger.info(f"  Take profit: {CONFIG_1H['take_profit_pct']}%")
+        logger.info(f"  Stop loss: {CONFIG_1H['stop_loss_pct']}%")
+        logger.info(f"  Position: ${CONFIG_1H['position_usd']} x {CONFIG_1H['max_leverage']}x")
         logger.info(f"  Restored positions: {len(self.positions)}")
 
     def _load_models(self):
@@ -383,8 +422,8 @@ class AlphaTrader1H:
 
     def _open_position(self, symbol: str, direction: str, price: float, action: Action) -> bool:
         """Open a new position."""
-        size_usd = self.config.trading.base_position_usd
-        leverage = min(self.config.trading.max_leverage, 3)  # Lower leverage for 1h
+        size_usd = CONFIG_1H['position_usd']
+        leverage = CONFIG_1H['max_leverage']
 
         # Save to DB
         decision_id = None
@@ -492,28 +531,35 @@ class AlphaTrader1H:
                 # Check hold time
                 hold_minutes = (datetime.now() - position.opened_at).total_seconds() / 60
 
-                # TIME STOP: Force close after max_hold_minutes (default 90 min)
+                # TIME STOP: Force close after max_hold_minutes
                 # Analysis shows: 30-45min = +61.52, >2h = -37.04
-                # Cutoff at 90 min captures most profit, avoids death zone
-                max_hold = getattr(self.config.trading, 'max_hold_minutes', 90)
+                max_hold = CONFIG_1H['max_hold_minutes']
                 if hold_minutes >= max_hold:
-                    logger.info(f"[1H] ⏰ TIME STOP: {symbol} held {hold_minutes:.0f}m > {max_hold}m limit")
+                    logger.info(f"[1H] ⏰ TIME STOP: {symbol} held {hold_minutes:.0f}m >= {max_hold}m limit")
                     self._close_position(symbol, price, "TIME_STOP")
                     continue
 
-                # Check for close conditions
-                if hold_minutes >= self.config.trading.min_hold_minutes:
-                    # Get fresh decision
+                # STOP LOSS: Emergency exit
+                stop_loss = CONFIG_1H['stop_loss_pct']
+                if pnl_pct <= -stop_loss:
+                    logger.info(f"[1H] 🛑 STOP LOSS: {symbol} P&L {pnl_pct:.2f}% <= -{stop_loss}%")
+                    self._close_position(symbol, price, "STOP_LOSS")
+                    continue
+
+                # Check for close conditions (only after min_hold)
+                min_hold = CONFIG_1H['min_hold_minutes']
+                if hold_minutes >= min_hold:
+                    # TAKE PROFIT
+                    take_profit = CONFIG_1H['take_profit_pct']
+                    if pnl_pct >= take_profit:
+                        logger.info(f"[1H] 💰 TAKE PROFIT: {symbol} P&L {pnl_pct:.2f}% >= {take_profit}%")
+                        self._close_position(symbol, price, "TAKE_PROFIT")
+                        continue
+
+                    # Get fresh decision from model
                     action = self.make_decision(symbol, market_data)
                     if action and action.action_type == ActionType.CLOSE:
                         self._close_position(symbol, price, "SIGNAL")
-                    # Also check if significant profit
-                    elif pnl_pct > 2.0:  # 2% profit threshold for 1h model
-                        self._close_position(symbol, price, "TAKE_PROFIT")
-
-                # Emergency stop loss
-                if pnl_pct < -5.0:  # 5% stop loss
-                    self._close_position(symbol, price, "STOP_LOSS")
 
             except Exception as e:
                 logger.error(f"[1H] Error checking position {symbol}: {e}")
@@ -571,13 +617,61 @@ class AlphaTrader1H:
         logger.info(f"[1H] Status: {open_count} open positions, Balance: ${self.paper_balance:.2f}")
 
     def run_loop(self):
-        """Run continuous trading loop."""
-        logger.info(f"[1H] Starting trading loop (interval: {self.config.interval.loop_interval_seconds}s)")
+        """Run continuous trading loop with FAST/SLOW structure like 15m model."""
+        slow_interval = CONFIG_1H['loop_interval']  # 300s = 5min for decisions
+        fast_interval = 30  # 30s for position monitoring
+
+        logger.info(f"[1H] Starting trading loop")
+        logger.info(f"[1H]   SLOW loop: {slow_interval}s (decisions)")
+        logger.info(f"[1H]   FAST loop: {fast_interval}s (monitoring)")
+
+        last_slow = datetime.min
+        loop_count = 0
 
         while True:
             try:
-                self.run_once()
-                time.sleep(self.config.interval.loop_interval_seconds)
+                loop_count += 1
+                now = datetime.now()
+
+                # FAST LOOP: Check positions every 30s
+                self.check_positions()
+
+                # SLOW LOOP: Make decisions every 5min
+                seconds_since_last = (now - last_slow).total_seconds()
+                if seconds_since_last >= slow_interval:
+                    logger.info(f"[1H] {'='*50}")
+                    logger.info(f"[1H] SLOW loop triggered at {now.strftime('%H:%M:%S')}")
+                    last_slow = now
+
+                    # Make decisions for each symbol
+                    for symbol in self.config.trading.symbols:
+                        try:
+                            if symbol in self.positions:
+                                continue
+                            if len(self.positions) >= self.config.trading.max_open_positions:
+                                break
+
+                            market_data = self.get_market_data_1h(symbol)
+                            if not market_data:
+                                continue
+
+                            action = self.make_decision(symbol, market_data)
+                            if not action:
+                                continue
+
+                            action_name = action.action_type.name if action.action_type else "NONE"
+                            logger.info(f"[1H] {symbol}: {action_name} conf={action.confidence:.1%}")
+
+                            if action.action_type != ActionType.HOLD:
+                                if action.mcts_approved or self.config.mcts.min_win_probability == 0:
+                                    self.execute_action(action, market_data)
+
+                        except Exception as e:
+                            logger.error(f"[1H] Error processing {symbol}: {e}")
+
+                    logger.info(f"[1H] Status: {len(self.positions)} positions, Balance: ${self.paper_balance:.2f}")
+
+                time.sleep(fast_interval)
 
             except KeyboardInterrupt:
                 logger.info("[1H] Shutting down...")
