@@ -1,4 +1,4 @@
-# CLAUDE.md - Analisi Botone V6 (4 Gennaio 2026)
+# CLAUDE.md - Botone V6 (Aggiornato 6 Gennaio 2026)
 
 ---
 
@@ -7,185 +7,272 @@
 ### Container in Esecuzione
 ```
 botone_v6_slow  - AI decisions (SLOW loop ogni 3 min)
-botone_v6_fast  - Position monitoring (FAST loop ogni 5s)
+botone_v6_fast  - Position monitoring (FAST loop ogni 10s)
 ```
 
 ### Database
 - **Host**: `memory_postgres`
 - **Database**: `botone_baseline`
-- **Tabella trade**: `botone_trades` (NON `bot_operations`)
+- **Tabella trade**: `botone_trades`
 - **Connection**: `postgresql://tradingbot:YOUR_PASSWORD@memory_postgres:5432/botone_baseline`
 
 ---
 
-## 🔴 PROBLEMI IDENTIFICATI (4 Gennaio 2026)
+## ✅ FILTRI IMPLEMENTATI (6 Gennaio 2026)
 
-### 1. Pochissimi Trade
-| Metrica | Valore | Problema |
+### Architettura Filtri
+
+```
+SLOW LOOP (ogni 3 min) - Decisioni AI
+├── PRE-AI (risparmia token se bloccato)
+│   ├── Volume VETO
+│   ├── OBV VETO
+│   ├── Symbol Cooldown VETO
+│   └── ADX Filter VETO (NUOVO!)
+│
+├── → Chiama AI →
+│
+└── POST-AI (dipendono dalla direzione)
+    ├── BTC RSI VETO
+    ├── RSI Entry Filter
+    └── EMA Trend Filter (NUOVO!)
+
+FAST LOOP (ogni 10s) - Monitoraggio Posizioni
+├── Aggiorna MFE/MAE
+├── Early Exit Bad Entry (NUOVO!)
+├── Check TP hit
+├── Check SL hit
+├── Trailing Stop update
+└── Health Check
+```
+
+---
+
+## 🆕 NUOVI FILTRI (6 Gennaio 2026)
+
+### 1. EMA Trend Filter
+**Problema risolto**: SHORT contro-trend perdevano (es: XRP -11 trade, -$7.64)
+
+```env
+EMA_TREND_FILTER_ENABLED=true
+```
+
+| EMA Stack | LONG | SHORT |
+|-----------|------|-------|
+| Bullish (uptrend) | ✅ OK | ❌ BLOCKED |
+| Bearish (downtrend) | ❌ BLOCKED | ✅ OK |
+| Neutral/Mixed | ✅ OK | ✅ OK |
+
+**Risultato atteso**: Blocca trade contro-trend che hanno 8% win rate.
+
+---
+
+### 2. ADX Filter
+**Problema risolto**: Trade con ADX >40 avevano P&L medio -1.17%
+
+```env
+ADX_FILTER_ENABLED=true
+ADX_MAX=40
+```
+
+| ADX | Performance | Azione |
+|-----|-------------|--------|
+| <20 | +3.79% avg, 100% win | ✅ OK |
+| 20-40 | ~0% avg | ✅ OK |
+| >40 | -1.17% avg | ❌ BLOCKED |
+
+**Motivo**: ADX alto = trend già maturo, si entra troppo tardi.
+
+---
+
+### 3. Early Exit for Bad Entry
+**Problema risolto**: Trade con MAE > MFE avevano solo 8% win rate
+
+```env
+EARLY_EXIT_ENABLED=true
+EARLY_EXIT_MINUTES=5
+EARLY_EXIT_MAE=1.5
+EARLY_EXIT_MFE=0.5
+```
+
+**Logica**: Dopo 5 minuti, se:
+- MAE >= 1.5% (è andato contro di 1.5%+)
+- MFE < 0.5% (non è MAI andato in profitto significativo)
+→ Chiudi subito (bad entry, non recupererà)
+
+**Esempio salvato**:
+- ADA: chiuso a -1.5% invece di -11.60% → **salvato 10%!**
+- BTC: chiuso a -1.5% invece di -6.48% → **salvato 5%!**
+
+---
+
+### 4. RSI Entry Filter
+```env
+RSI_ENTRY_FILTER_ENABLED=true
+LONG_MAX_RSI=65    # Blocca LONG se RSI >= 65
+SHORT_MIN_RSI=35   # Blocca SHORT se RSI <= 35
+```
+
+---
+
+### 5. Symbol Cooldown (Spostato PRE-AI)
+```env
+SYMBOL_COOLDOWN_ENABLED=true
+SYMBOL_COOLDOWN_MINUTES=60
+```
+
+**Novità**: Ora viene controllato PRIMA della chiamata AI per risparmiare token.
+
+---
+
+## 📊 ANALISI DATI (6 Gennaio 2026)
+
+### Performance per Direzione
+| Direzione | Trades | Win Rate | Total P&L |
+|-----------|--------|----------|-----------|
+| LONG | 35 | 60% | +$54.54 |
+| SHORT | 26 | 42% | -$8.70 |
+
+### Performance per Simbolo
+| Symbol | Trades | P&L | Note |
+|--------|--------|-----|------|
+| BTC | 11 | +$19.01 | Migliore |
+| ADA | 8 | +$13.38 | Ottimo |
+| SUI | 9 | +$11.94 | Buono |
+| XRP | 13 | **-$7.64** | Problema (troppi SHORT contro-trend) |
+
+### MFE Analysis
+| MFE Range | Win Rate | Conclusione |
+|-----------|----------|-------------|
+| 0-1% | 25% | Bad entries |
+| 1-2% | 55% | Borderline |
+| 3%+ | **100%** | Se raggiunge +3%, non perde MAI |
+
+### Trade Quality
+| Quality | Trades | Win Rate |
 |---------|--------|----------|
-| Trade totali | 7 | Solo 7 in 10 giorni! |
-| Ultimo trade | 29 Dicembre | 6 giorni senza trade |
-| Trade/giorno | 0.7 | Troppo pochi |
+| Clean Win (MAE<0.5, MFE>2) | 13 | 92% |
+| Good Entry (MAE<1, MFE>1) | 9 | 100% |
+| Bad Entry (MAE > MFE) | 24 | **8%** |
 
-### 2. Solo LONG, Mai SHORT
-Tutti i 7 trade sono LONG. Il bot non apre mai posizioni SHORT.
-
-### 3. P&L Minimo
-| Trade | P&L USD | P&L % |
-|-------|---------|-------|
-| ETH 29 Dic | +$0.25 | +0.70% |
-| BTC 29 Dic | +$0.15 | +0.61% |
-| Altri 5 | $0.00 | LEGACY_UNTRACKED |
-
-### 4. VETO Blocca Tutto
-Il bot ha troppi filtri che bloccano i trade:
-```
-[RESEARCH] AVAX: 🚫 VETO: Volume 0.93x < 1.0x min for Tier-3
-[RESEARCH] BTC: 🚫 VETO: Volume 0.52x < 1.5x
-```
+### Alignment (Trend)
+| Setup | Total P&L | Note |
+|-------|-----------|------|
+| LONG + Bullish | **+$52.95** | TUTTO IL PROFITTO! |
+| SHORT + Bullish | **-$8.06** | Disastro |
 
 ---
 
-## 📈 DATI TRADE (da botone_trades)
+## ⚙️ CONFIGURAZIONE CONSIGLIATA
 
-### Ultimi 7 Trade Registrati
-```sql
-SELECT id, symbol, direction, opened_at, pnl_usd, pnl_pct, exit_reason
-FROM botone_trades ORDER BY opened_at DESC;
-```
-
-| ID | Symbol | Dir | Data Apertura | P&L USD | P&L % | Exit |
-|----|--------|-----|---------------|---------|-------|------|
-| 7 | ETH | LONG | 29 Dic 09:57 | +0.25 | +0.70% | SYNC_CLOSED |
-| 6 | BTC | LONG | 29 Dic 09:56 | +0.15 | +0.61% | SYNC_CLOSED |
-| 5 | SOL | LONG | 26 Dic 15:01 | 0.00 | 0% | LEGACY_UNTRACKED |
-| 4 | BTC | LONG | 26 Dic 08:13 | 0.00 | 0% | LEGACY_UNTRACKED |
-| 3 | BTC | LONG | 26 Dic 08:08 | 0.00 | 0% | LEGACY_UNTRACKED |
-| 2 | ETH | LONG | 26 Dic 07:59 | 0.00 | 0% | LEGACY_UNTRACKED |
-| 1 | BTC | LONG | 25 Dic 20:33 | 0.00 | 0% | LEGACY_UNTRACKED |
-
-### Bilancio Account
-```
-Start:   $162.23
-Current: $160.79
-P&L:     -$1.44 (-0.9%)
-```
-
----
-
-## ⚙️ CONFIGURAZIONE ATTUALE (Troppo Restrittiva)
-
-### Filtri VETO (Bloccano i Trade)
+### .env.baseline
 ```env
-VOLUME_LOW_ACTION=VETO          # ❌ BLOCCA se volume basso
-VOLUME_MIN_TIER1=0.5            # BTC/ETH: minimo 50% volume
-VOLUME_MIN_TIER2=0.8            # SOL/XRP: minimo 80% volume
-VOLUME_MIN_TIER3=1.0            # Altre: minimo 100% volume
-```
+# === FILTRI ENTRY (6 Gennaio 2026) ===
 
-### Requisiti TIER3 (Troppo Alti)
-```env
-TIER3_MIN_ADX=25                # ADX deve essere >= 25
-TIER3_MIN_VOLUME_RATIO=1.2      # Volume ratio >= 1.2x
-TIER3_MIN_SCORE_MARGIN=15       # Score margin >= 15
-```
+# EMA Trend Filter - no trade contro-trend
+EMA_TREND_FILTER_ENABLED=true
 
-### BTC Entry VETO
-```env
+# ADX Filter - no trade in trend troppo forti
+ADX_FILTER_ENABLED=true
+ADX_MAX=40
+
+# RSI Entry Filter
+RSI_ENTRY_FILTER_ENABLED=true
+LONG_MAX_RSI=65
+SHORT_MIN_RSI=35
+
+# Symbol Cooldown (pre-AI per risparmiare token)
+SYMBOL_COOLDOWN_ENABLED=true
+SYMBOL_COOLDOWN_MINUTES=60
+
+# === EARLY EXIT (6 Gennaio 2026) ===
+
+# Chiudi bad entry prima che peggiorino
+EARLY_EXIT_ENABLED=true
+EARLY_EXIT_MINUTES=5
+EARLY_EXIT_MAE=1.5
+EARLY_EXIT_MFE=0.5
+
+# === TRAILING STOP ===
+STOP_LOSS_PCT=4.0
+TAKE_PROFIT_PCT=99.0
+TRAILING_STEPS=0.5:-2.0,1.0:-1.8,1.8:0.3,3.0:1.5,4.0:2.5,5.0:3.5,6.5:4.5,8.0:6.0,10.0:7.5,12.5:9.5,15.0:11.5,17.5:14.0,20.0:16.0,25.0:21.0,30.0:26.0,35.0:31.0,40.0:36.0
+
+# === ALTRI FILTRI ===
 BTC_ENTRY_VETO_ENABLED=true
-BTC_ENTRY_VETO_LONG_RSI=70      # Blocca LONG se BTC RSI >= 70
-BTC_ENTRY_VETO_SHORT_RSI=30     # Blocca SHORT se BTC RSI <= 30
-```
+BTC_ENTRY_VETO_LONG_RSI=70
+BTC_ENTRY_VETO_SHORT_RSI=30
 
-### Position Size
-```env
-TIER1_SIZE_USD=25               # Speculativo: $25
-TIER2_SIZE_USD=35               # Standard: $35
-TIER3_SIZE_USD=50               # High Conviction: $50
-```
-
----
-
-## ✅ RACCOMANDAZIONI PER MIGLIORARE
-
-### 1. Riduci Restrizioni VETO
-```env
-# PROPOSTA: Cambia da VETO a WARN
-VOLUME_LOW_ACTION=WARN          # Solo avviso, non blocca
-
-# Abbassa i minimi
-VOLUME_MIN_TIER1=0.3            # Era: 0.5
-VOLUME_MIN_TIER2=0.5            # Era: 0.8
-VOLUME_MIN_TIER3=0.8            # Era: 1.0
-```
-
-### 2. Riduci Requisiti TIER3
-```env
-TIER3_MIN_ADX=20                # Era: 25
-TIER3_MIN_VOLUME_RATIO=1.0      # Era: 1.2
-```
-
-### 3. Aumenta Position Size (Opzionale)
-```env
-TIER1_SIZE_USD=50               # Era: 25
-TIER2_SIZE_USD=75               # Era: 35
-TIER3_SIZE_USD=100              # Era: 50
-```
-
-### 4. Considera Disabilitare BTC VETO
-```env
-BTC_ENTRY_VETO_ENABLED=false    # Permetti trade anche in zone estreme
+OBV_VETO_ENABLED=true
+OBV_VETO_MIN_PRICE_CHANGE=0.5
 ```
 
 ---
 
 ## 🔧 QUERY UTILI
 
-### Conta Trade per Stato
+### Statistiche Generali
 ```sql
 SELECT
-    COUNT(*) as total,
-    COUNT(*) FILTER (WHERE closed_at IS NULL) as open,
-    COUNT(*) FILTER (WHERE closed_at IS NOT NULL) as closed,
-    ROUND(AVG(pnl_pct)::numeric, 2) as avg_pnl_pct,
-    SUM(pnl_usd) as total_pnl
-FROM botone_trades;
+    COUNT(*) as total_trades,
+    COUNT(*) FILTER (WHERE pnl_pct > 0) as wins,
+    COUNT(*) FILTER (WHERE pnl_pct < 0) as losses,
+    ROUND(100.0 * COUNT(*) FILTER (WHERE pnl_pct > 0) / NULLIF(COUNT(*), 0), 1) as win_rate,
+    ROUND(SUM(pnl_usd)::numeric, 2) as total_pnl_usd
+FROM botone_trades WHERE closed_at IS NOT NULL;
 ```
 
-### Trade Oggi
+### Performance per Simbolo
 ```sql
-SELECT * FROM botone_trades
-WHERE opened_at > NOW() - INTERVAL '24 hours'
-ORDER BY opened_at DESC;
+SELECT
+    symbol,
+    COUNT(*) as trades,
+    COUNT(*) FILTER (WHERE pnl_pct > 0) as wins,
+    ROUND(SUM(pnl_usd)::numeric, 2) as pnl_usd
+FROM botone_trades WHERE closed_at IS NOT NULL
+GROUP BY symbol ORDER BY pnl_usd DESC;
 ```
 
-### Vedi Posizioni Aperte su HyperLiquid (dal bot)
-```bash
-docker logs --tail 100 botone_v6_fast 2>&1 | grep -v "No open positions"
+### Analisi MFE/MAE
+```sql
+SELECT
+    CASE WHEN pnl_pct > 0 THEN 'WIN' ELSE 'LOSS' END as result,
+    ROUND(AVG(mfe_pct)::numeric, 2) as avg_mfe,
+    ROUND(AVG(mae_pct)::numeric, 2) as avg_mae,
+    COUNT(*) as trades
+FROM botone_trades WHERE closed_at IS NOT NULL
+GROUP BY CASE WHEN pnl_pct > 0 THEN 'WIN' ELSE 'LOSS' END;
 ```
 
-### Vedi Decisioni AI
-```bash
-docker logs --tail 200 botone_v6_slow 2>&1 | grep -E "(AI →|VETO|OPEN|CLOSE)"
+### Trade Quality Analysis
+```sql
+SELECT
+    CASE
+        WHEN mae_pct < 0.5 AND mfe_pct > 2 THEN 'Clean Win'
+        WHEN mae_pct < 1 AND mfe_pct > 1 THEN 'Good Entry'
+        WHEN mae_pct > mfe_pct THEN 'Bad Entry'
+        ELSE 'Choppy'
+    END as quality,
+    COUNT(*) as trades,
+    ROUND(AVG(pnl_pct)::numeric, 2) as avg_pnl,
+    COUNT(*) FILTER (WHERE pnl_pct > 0) as wins
+FROM botone_trades
+WHERE closed_at IS NOT NULL AND mfe_pct IS NOT NULL
+GROUP BY 1 ORDER BY avg_pnl DESC;
 ```
 
-### Conta VETO vs Trade
+### Verifica Filtri nei Log
 ```bash
-docker logs --tail 5000 botone_v6_slow 2>&1 | grep -c "VETO"
-docker logs --tail 5000 botone_v6_slow 2>&1 | grep -c "OPEN"
+# Verifica che i filtri siano attivi
+docker logs botone_v6_slow 2>&1 | grep -E "EMA Trend|ADX Filter|Early Exit|Cooldown"
+
+# Conta VETO per tipo
+docker logs botone_v6_slow 2>&1 | grep "VETO" | tail -100
 ```
 
 ---
 
 ## 📁 STRUTTURA DATABASE
-
-### Tabelle Principali
-| Tabella | Uso |
-|---------|-----|
-| `botone_trades` | Trade di Botone V6 (USARE QUESTA!) |
-| `bot_operations` | Vecchio sistema (non più usato) |
-| `account_snapshots` | Snapshot bilancio |
-| `alpha_trades` | Trade di AlphaTrader (sistema RL) |
 
 ### Schema botone_trades
 ```sql
@@ -197,147 +284,52 @@ entry_adx, entry_ema_stack, entry_volume_ratio, entry_bb_position,
 entry_bb_squeeze, entry_obv_trend, exit_reason, sl_price, tp_price
 ```
 
----
+### Exit Reasons
+| exit_reason | Descrizione |
+|-------------|-------------|
+| SYNC_CLOSED | Chiuso da sync con exchange |
+| SL hit | Stop Loss colpito |
+| TP hit | Take Profit colpito |
+| EARLY_EXIT | Bad entry detection (NUOVO!) |
+| HEALTH_EMERGENCY | Health check critico |
+| TIMEOUT_LOSS | Timeout con perdita |
+| AI profit-take | AI decide di prendere profitto |
 
 ---
 
-## 🔬 ANALISI APPROFONDITA LOG (4 Gennaio 2026 - Pomeriggio)
+## 🚀 DEPLOY
 
-### Statistiche Decisioni (ultimi 10000 log)
-| Decisione | Count | % |
-|-----------|-------|---|
-| **VETO** | 626+ | ~55% |
-| HOLD | 202 | ~35% |
-| CLOSE | 5 | <1% |
-| **OPEN** | **0** | **0%** ❌ |
-
-### Motivi VETO (Top 5)
-| Motivo | Count | % dei VETO |
-|--------|-------|------------|
-| **OBV Divergence** | 156 | 25% |
-| Volume < Tier-2 (0.8x) | ~300 | 48% |
-| Volume < Tier-3 (1.0x) | ~100 | 16% |
-| Volume < Tier-1 (0.5x) | ~70 | 11% |
-
-### VETO per Simbolo (distribuiti uniformemente)
-```
-SUI: 39 | LINK: 39 | BNB: 37 | ARB: 35 | DOGE: 34
-AVAX: 34 | SOL: 33 | XRP: 30 | ETH: 30 | BTC: 29 | ADA: 27
+```bash
+cd /root/trading-bots/rizzo-trading-agent && \
+git pull origin claude/update-botone-v6-4YxZq && \
+docker build -t botone-v6:latest . && \
+docker stop botone_v6_fast botone_v6_slow && \
+docker rm botone_v6_fast botone_v6_slow && \
+docker run -d --name botone_v6_fast --env-file /root/trading-bots/rizzo-trading-agent/.env.baseline -e PYTHONUNBUFFERED=1 --network unified-memory-stack_memory-net --restart unless-stopped --entrypoint python botone-v6:latest botone_v6.py --mode fast --loop && \
+docker run -d --name botone_v6_slow --env-file /root/trading-bots/rizzo-trading-agent/.env.baseline -e PYTHONUNBUFFERED=1 --network unified-memory-stack_memory-net --restart unless-stopped --entrypoint python botone-v6:latest botone_v6.py --mode slow --loop
 ```
 
 ---
 
-## 🐛 BUG/PROBLEMI NEL CODICE
+## 📝 STORICO MODIFICHE
 
-### 1. OBV Divergence VETO Troppo Semplice (linea 363-370)
-```python
-# PROBLEMA: Usa solo change_1h, troppo sensibile
-price_trend = "up" if market_data.get('change_1h', 0) > 0 else "down"
-obv_opposite = (price_trend == "down" and obv_trend == "RISING")
-if obv_opposite:
-    return VETO  # Blocca anche con -0.01% e OBV RISING!
-```
+### 6 Gennaio 2026
+- ✅ Implementato EMA Trend Filter (blocca contro-trend)
+- ✅ Implementato ADX Filter (blocca ADX > 40)
+- ✅ Implementato Early Exit for Bad Entry
+- ✅ Spostato Symbol Cooldown pre-AI (risparmia token)
+- ✅ Analisi completa MFE/MAE/Trade Quality
 
-**Esempio dai log**:
-- EMA Stack: bullish ✅
-- Volume Ratio: 3.67x ✅ (ottimo!)
-- OBV: RISING ✅
-- Ma price change_1h: -0.1% → **VETO!** ❌
+### 5 Gennaio 2026
+- ✅ Implementato RSI Entry Filter
+- ✅ Implementato Symbol Cooldown
+- ✅ Analisi trade XRP (problema SHORT contro-trend)
 
-**Soluzione proposta**: Aggiungere soglia minima, es:
-```python
-if abs(change_1h) > 0.5 and obv_opposite:  # Solo se movimento > 0.5%
-    return VETO
-```
-
-### 2. Threshold Troppo Alti per TIER 3
-```python
-# Configurazione attuale (linee 216-228)
-"BTC":  {"tier": 1, "threshold": 60},   # OK
-"ETH":  {"tier": 1, "threshold": 57},   # OK
-"SOL":  {"tier": 2, "threshold": 74},   # Alto
-"DOGE": {"tier": 3, "threshold": 114},  # TROPPO ALTO!
-"AVAX": {"tier": 3, "threshold": 107},  # TROPPO ALTO!
-```
-
-**Dai log**:
-```
-AVAX: adjusted_score=66, threshold=107 → NO_TRADE (66 < 107)
-ADA:  adjusted_score=50, threshold=74  → NO_TRADE
-```
-
-**Soluzione proposta**: Abbassare threshold TIER 3:
-```python
-"DOGE": {"tier": 3, "threshold": 80},   # Era: 114
-"AVAX": {"tier": 3, "threshold": 75},   # Era: 107
-```
-
-### 3. Bug Parsing CLOSE (linee 960-961)
-```python
-# PROBLEMA: Se l'AI menziona "close" nel reasoning, viene parsato come azione CLOSE
-elif "close" in content_lower or "sell" in content_lower:
-    return {"action": "close", "reason": reason}
-```
-
-L'AI risponde `"action": "hold"` ma il log dice `AI → CLOSE` perché il reasoning contiene la parola "close".
+### 4 Gennaio 2026
+- Analisi iniziale problemi bot
+- Identificato problema troppi VETO
+- Identificato problema OBV troppo sensibile
 
 ---
 
-## 🛠️ MODIFICHE PROPOSTE
-
-### Opzione A: Configurazione Meno Restrittiva (Veloce)
-```env
-# .env.baseline modifiche
-VOLUME_LOW_ACTION=WARN           # Era: VETO
-VOLUME_MIN_TIER1=0.2             # Era: 0.5
-VOLUME_MIN_TIER2=0.4             # Era: 0.8
-VOLUME_MIN_TIER3=0.6             # Era: 1.0
-```
-
-### Opzione B: Modifiche al Codice (Consigliato)
-
-#### B1. Ammorbidire OBV VETO
-```python
-# Aggiungere soglia minima per OBV divergence
-change_1h = market_data.get('change_1h', 0)
-if abs(change_1h) > 1.0 and obv_opposite:  # Solo se movimento > 1%
-    # VETO solo per divergenze significative
-```
-
-#### B2. Abbassare Threshold TIER 3
-```python
-"DOGE": {"tier": 3, "multiplier": 0.70, "threshold": 80},   # Era: 114
-"AVAX": {"tier": 3, "multiplier": 0.75, "threshold": 80},   # Era: 107
-```
-
-#### B3. Fixare Parsing CLOSE
-```python
-# Controllare prima il campo "action" esplicito, poi il contenuto
-if parsed.get("action") == "close":
-    return {"action": "close", ...}
-# Solo dopo cercare parole chiave nel contenuto
-```
-
----
-
-## 🚀 PROSSIMI PASSI
-
-1. [ ] **Decidere approccio**: Config (A) o Codice (B)
-2. [ ] Implementare modifiche
-3. [ ] Restart container
-4. [ ] Monitorare per 24-48h
-5. [ ] Verificare aumento trade
-6. [ ] Analizzare P&L
-
----
-
-## 📝 NOTE SESSIONE
-
-- **Data analisi**: 4 Gennaio 2026
-- **Container analizzati**: botone_v6_slow, botone_v6_fast
-- **Problema principale**: Troppi VETO bloccano i trade
-- **Soluzione proposta**: Ridurre restrizioni volume
-
----
-
-*Ultimo aggiornamento: 4 Gennaio 2026*
+*Ultimo aggiornamento: 6 Gennaio 2026*
