@@ -158,6 +158,14 @@ class BotoneV6Config:
         self.adx_filter_enabled = os.getenv("ADX_FILTER_ENABLED", "true").lower() == "true"
         self.adx_max = float(os.getenv("ADX_MAX", "40"))  # Block new trades when ADX >= this
 
+        # === EARLY EXIT FOR BAD ENTRY ===
+        # Close trade early if it goes against us without ever going in our favor
+        # Data shows: trades with MAE > MFE have only 8% win rate!
+        self.early_exit_enabled = os.getenv("EARLY_EXIT_ENABLED", "true").lower() == "true"
+        self.early_exit_minutes = int(os.getenv("EARLY_EXIT_MINUTES", "5"))  # Check after X minutes
+        self.early_exit_mae_threshold = float(os.getenv("EARLY_EXIT_MAE", "1.5"))  # Close if MAE >= this
+        self.early_exit_mfe_threshold = float(os.getenv("EARLY_EXIT_MFE", "0.5"))  # AND MFE < this
+
         # === SYMBOL COOLDOWN ===
         # Minimum minutes between trades on same symbol (prevent overtrading)
         self.symbol_cooldown_enabled = os.getenv("SYMBOL_COOLDOWN_ENABLED", "true").lower() == "true"
@@ -445,6 +453,12 @@ class BotoneV6Config:
             logger.info(f"     Block trades when ADX >= {self.adx_max} (trend too strong)")
         else:
             logger.info(f"  📈 ADX Filter: disabled")
+        # Early Exit logging
+        if self.early_exit_enabled:
+            logger.info(f"  🚨 Early Exit: ENABLED (after {self.early_exit_minutes} min)")
+            logger.info(f"     Close if MAE >= {self.early_exit_mae_threshold}% AND MFE < {self.early_exit_mfe_threshold}%")
+        else:
+            logger.info(f"  🚨 Early Exit: disabled")
         # Symbol Cooldown logging (now PRE-AI to save tokens)
         if self.symbol_cooldown_enabled:
             logger.info(f"  ⏱️ Symbol Cooldown: ENABLED ({self.symbol_cooldown_minutes} min)")
@@ -2902,9 +2916,28 @@ class BotoneV6:
         if position.direction == TradeDirection.LONG:
             pnl_pct = ((price - position.entry_price) / position.entry_price) * 100 * position.leverage
             price_move_pct = ((price - position.entry_price) / position.entry_price) * 100
+            # MFE = max profit seen, MAE = max loss seen
+            mfe_pct = ((position.max_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+            mae_pct = ((position.entry_price - position.min_price) / position.entry_price) * 100 * position.leverage
         else:
             pnl_pct = ((position.entry_price - price) / position.entry_price) * 100 * position.leverage
             price_move_pct = ((position.entry_price - price) / position.entry_price) * 100
+            # MFE = max profit seen (price went down), MAE = max loss seen (price went up)
+            mfe_pct = ((position.entry_price - position.min_price) / position.entry_price) * 100 * position.leverage
+            mae_pct = ((position.max_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+
+        # === EARLY EXIT FOR BAD ENTRY ===
+        # If trade has been open for X minutes and MAE > threshold while MFE < threshold, close it
+        # Data shows: trades with MAE > MFE have only 8% win rate!
+        if self.config.early_exit_enabled and position.opened_at:
+            elapsed_minutes = (datetime.now() - position.opened_at).total_seconds() / 60
+            if elapsed_minutes >= self.config.early_exit_minutes:
+                if mae_pct >= self.config.early_exit_mae_threshold and mfe_pct < self.config.early_exit_mfe_threshold:
+                    logger.warning(f"[EARLY EXIT] 🚨 {position.symbol}: BAD ENTRY detected!")
+                    logger.warning(f"[EARLY EXIT] 🚨 {position.symbol}: MAE {mae_pct:.2f}% >= {self.config.early_exit_mae_threshold}%, MFE {mfe_pct:.2f}% < {self.config.early_exit_mfe_threshold}%")
+                    logger.warning(f"[EARLY EXIT] 🚨 {position.symbol}: Closing after {elapsed_minutes:.0f} min to prevent further loss")
+                    self._close_position(position.symbol, "EARLY_EXIT", f"Bad entry: MAE {mae_pct:.1f}% > MFE {mfe_pct:.1f}% after {elapsed_minutes:.0f}min")
+                    return
 
         # Find current and next trailing step
         current_level_str = f"+{position.current_sl_level:.1f}%" if position.current_sl_level >= 0 else f"{position.current_sl_level:.1f}%"
