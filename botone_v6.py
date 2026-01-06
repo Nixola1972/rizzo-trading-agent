@@ -152,6 +152,12 @@ class BotoneV6Config:
         # Block trades against the trend: no SHORT in uptrend, no LONG in downtrend
         self.ema_trend_filter_enabled = os.getenv("EMA_TREND_FILTER_ENABLED", "true").lower() == "true"
 
+        # === ADX FILTER ===
+        # Block trades when ADX is too high (trend too strong = entering too late)
+        # Data shows: ADX >40 has negative avg P&L (-1.17%), ADX <20 has +3.79%!
+        self.adx_filter_enabled = os.getenv("ADX_FILTER_ENABLED", "true").lower() == "true"
+        self.adx_max = float(os.getenv("ADX_MAX", "40"))  # Block new trades when ADX >= this
+
         # === SYMBOL COOLDOWN ===
         # Minimum minutes between trades on same symbol (prevent overtrading)
         self.symbol_cooldown_enabled = os.getenv("SYMBOL_COOLDOWN_ENABLED", "true").lower() == "true"
@@ -433,6 +439,12 @@ class BotoneV6Config:
             logger.info(f"     Block LONG if EMA stack = bearish (downtrend)")
         else:
             logger.info(f"  📊 EMA Trend Filter: disabled")
+        # ADX Filter logging
+        if self.adx_filter_enabled:
+            logger.info(f"  📈 ADX Filter: ENABLED (max={self.adx_max})")
+            logger.info(f"     Block trades when ADX >= {self.adx_max} (trend too strong)")
+        else:
+            logger.info(f"  📈 ADX Filter: disabled")
         # Symbol Cooldown logging (now PRE-AI to save tokens)
         if self.symbol_cooldown_enabled:
             logger.info(f"  ⏱️ Symbol Cooldown: ENABLED ({self.symbol_cooldown_minutes} min)")
@@ -543,6 +555,16 @@ class BotoneAIManager:
                         logger.info(f"[RESEARCH] {symbol}: ⏳ VETO: {reason}")
                         self._save_veto_log(symbol, "COOLDOWN_VETO", reason, market_data)
                         return "hold", None, f"VETO: {reason}", 0.0, 1, 2, "VETO - cooldown active"
+
+            # VETO 4: ADX too high (trend too strong = entering too late)
+            # Data shows ADX >40 has -1.17% avg P&L, while ADX <20 has +3.79%!
+            if not has_position and self.config.adx_filter_enabled:
+                adx = market_data.get('adx', 0)
+                if adx and adx >= self.config.adx_max:
+                    reason = f"ADX {adx:.1f} >= {self.config.adx_max} (trend too strong, entering too late)"
+                    logger.info(f"[RESEARCH] {symbol}: 📊 VETO: {reason}")
+                    self._save_veto_log(symbol, "ADX_VETO", reason, market_data)
+                    return "hold", None, f"VETO: {reason}", 0.0, 1, 2, "VETO - ADX too high"
 
             # Build research prompt with tier info
             prompt = self._build_research_prompt(
