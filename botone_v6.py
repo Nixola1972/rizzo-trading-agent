@@ -166,6 +166,14 @@ class BotoneV6Config:
         self.early_exit_mae_threshold = float(os.getenv("EARLY_EXIT_MAE", "1.5"))  # Close if MAE >= this
         self.early_exit_mfe_threshold = float(os.getenv("EARLY_EXIT_MFE", "0.5"))  # AND MFE < this
 
+        # === MULTI-TIMEFRAME ANALYSIS ===
+        # Pass candle data from multiple timeframes to AI for broader context
+        self.multi_timeframe_enabled = os.getenv("MULTI_TIMEFRAME_ENABLED", "false").lower() == "true"
+        self.mtf_candles_1m = int(os.getenv("MTF_CANDLES_1M", "30"))    # Last 30 min (entry timing)
+        self.mtf_candles_15m = int(os.getenv("MTF_CANDLES_15M", "12"))  # Last 3 hours (intraday trend)
+        self.mtf_candles_4h = int(os.getenv("MTF_CANDLES_4H", "6"))     # Last 24 hours (daily trend)
+        self.mtf_candles_1d = int(os.getenv("MTF_CANDLES_1D", "7"))     # Last week (macro trend)
+
         # === SYMBOL COOLDOWN ===
         # Minimum minutes between trades on same symbol (prevent overtrading)
         self.symbol_cooldown_enabled = os.getenv("SYMBOL_COOLDOWN_ENABLED", "true").lower() == "true"
@@ -459,6 +467,13 @@ class BotoneV6Config:
             logger.info(f"     Close if MAE >= {self.early_exit_mae_threshold}% AND MFE < {self.early_exit_mfe_threshold}%")
         else:
             logger.info(f"  🚨 Early Exit: disabled")
+        # Multi-Timeframe logging
+        if self.multi_timeframe_enabled:
+            logger.info(f"  📊 Multi-Timeframe: ENABLED")
+            logger.info(f"     1m: {self.mtf_candles_1m} candles | 15m: {self.mtf_candles_15m} candles")
+            logger.info(f"     4h: {self.mtf_candles_4h} candles | 1d: {self.mtf_candles_1d} candles")
+        else:
+            logger.info(f"  📊 Multi-Timeframe: disabled")
         # Symbol Cooldown logging (now PRE-AI to save tokens)
         if self.symbol_cooldown_enabled:
             logger.info(f"  ⏱️ Symbol Cooldown: ENABLED ({self.symbol_cooldown_minutes} min)")
@@ -883,6 +898,46 @@ CURRENT POSITION:
 
         bb_squeeze_text = "⚠️ SQUEEZE DETECTED - wait for breakout" if market_data.get('bb_squeeze', False) else "no squeeze"
 
+        # Build multi-timeframe section if data available
+        mtf_section = ""
+        mtf_data = market_data.get("mtf_data", {})
+        if mtf_data:
+            # Use MarketDataProvider's format method via self reference
+            # Since we don't have direct access, build inline
+            mtf_lines = ["", "═══════════════════════════════════════════════════════════════════════",
+                        "                    MULTI-TIMEFRAME ANALYSIS",
+                        "═══════════════════════════════════════════════════════════════════════"]
+
+            for label, data in mtf_data.items():
+                summary = data.get("summary", {})
+                trend = summary.get("trend", "?")
+                change = summary.get("change_pct", 0)
+                high = summary.get("high", 0)
+                low = summary.get("low", 0)
+                range_pct = summary.get("range_pct", 0)
+
+                mtf_lines.append(f"\n{label.upper()} ({data.get('count', 0)} candles):")
+                mtf_lines.append(f"  Trend: {trend} ({change:+.2f}%)")
+                mtf_lines.append(f"  Range: ${low:.4f} - ${high:.4f} ({range_pct:.2f}%)")
+
+                # Add last 5 candles as compact OHLC
+                candles = data.get("candles", [])[-5:]
+                if candles:
+                    mtf_lines.append(f"  Last {len(candles)} candles (O/H/L/C):")
+                    for c in candles:
+                        change_c = ((c['c'] - c['o']) / c['o'] * 100) if c['o'] > 0 else 0
+                        direction = "▲" if change_c > 0 else "▼" if change_c < 0 else "─"
+                        mtf_lines.append(f"    {direction} {c['o']:.4f}/{c['h']:.4f}/{c['l']:.4f}/{c['c']:.4f}")
+
+            mtf_lines.append("")
+            mtf_lines.append("MULTI-TIMEFRAME RULES:")
+            mtf_lines.append("- ALL timeframes same trend → STRONG signal (+10 bonus)")
+            mtf_lines.append("- Short-term opposite to long-term → CAUTION (reduce tier)")
+            mtf_lines.append("- 1min/15min UP but 4h/1d DOWN → possible reversal, consider SHORT")
+            mtf_lines.append("")
+
+            mtf_section = "\n".join(mtf_lines)
+
         return f"""🔬 RESEARCH MODE - WEIGHTED SCORING SYSTEM
 Symbol: {symbol}
 Tier: {tier} (multiplier: {multiplier:.2f}x, threshold: {threshold})
@@ -1006,7 +1061,7 @@ RICHIEDE TUTTI questi criteri:
 - NO divergenze OBV
 - Score almeno 15 punti sopra threshold
 - Pattern tecnico chiaro (breakout, double bottom, etc.)
-
+{mtf_section}
 ═══════════════════════════════════════════════════════════════════════
 
 OUTPUT FORMAT (JSON):
@@ -1417,6 +1472,130 @@ class MarketDataProvider:
         except Exception as e:
             logger.error(f"[VOLUME] Error calculating hybrid volume for {symbol}: {e}")
             return (1.0, 0, 0)  # Default ratio = 1.0 (neutral)
+
+    def get_multi_timeframe_candles(self, symbol: str) -> Dict[str, Any]:
+        """
+        Fetch candles from multiple timeframes for broader market context.
+        Returns formatted candle data for AI prompt.
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            Dict with candle data per timeframe, formatted for AI consumption
+        """
+        if not self.config.multi_timeframe_enabled:
+            return {}
+
+        result = {}
+
+        try:
+            analyzer = self.get_analyzer()
+
+            # Define timeframes to fetch
+            timeframes = [
+                ("1m", self.config.mtf_candles_1m, "1min"),
+                ("15m", self.config.mtf_candles_15m, "15min"),
+                ("4h", self.config.mtf_candles_4h, "4hour"),
+                ("1d", self.config.mtf_candles_1d, "1day"),
+            ]
+
+            for tf, count, label in timeframes:
+                if count <= 0:
+                    continue
+
+                try:
+                    df = analyzer.fetch_ohlcv(symbol, tf, limit=count + 2)
+
+                    if df.empty:
+                        continue
+
+                    # Get last N candles
+                    candles = df.tail(count)
+
+                    # Format candles compactly for AI
+                    candle_data = []
+                    for idx, row in candles.iterrows():
+                        candle_data.append({
+                            "o": round(float(row.get('open', 0)), 4),
+                            "h": round(float(row.get('high', 0)), 4),
+                            "l": round(float(row.get('low', 0)), 4),
+                            "c": round(float(row.get('close', 0)), 4),
+                            "v": int(float(row.get('volume', 0))),
+                        })
+
+                    # Calculate summary stats for this timeframe
+                    if len(candle_data) > 0:
+                        closes = [c['c'] for c in candle_data]
+                        highs = [c['h'] for c in candle_data]
+                        lows = [c['l'] for c in candle_data]
+
+                        first_close = closes[0] if closes else 0
+                        last_close = closes[-1] if closes else 0
+                        change_pct = ((last_close - first_close) / first_close * 100) if first_close > 0 else 0
+
+                        result[label] = {
+                            "count": len(candle_data),
+                            "candles": candle_data,
+                            "summary": {
+                                "trend": "UP" if change_pct > 0.5 else "DOWN" if change_pct < -0.5 else "FLAT",
+                                "change_pct": round(change_pct, 2),
+                                "high": max(highs) if highs else 0,
+                                "low": min(lows) if lows else 0,
+                                "range_pct": round((max(highs) - min(lows)) / min(lows) * 100, 2) if min(lows) > 0 else 0,
+                            }
+                        }
+
+                except Exception as e:
+                    logger.warning(f"[MTF] Error fetching {tf} candles for {symbol}: {e}")
+                    continue
+
+            return result
+
+        except Exception as e:
+            logger.error(f"[MTF] Error getting multi-timeframe data for {symbol}: {e}")
+            return {}
+
+    def format_mtf_for_prompt(self, mtf_data: Dict[str, Any]) -> str:
+        """
+        Format multi-timeframe data as a compact string for AI prompt.
+        """
+        if not mtf_data:
+            return ""
+
+        lines = ["", "═══════════════════════════════════════════════════════════════════════",
+                 "                    MULTI-TIMEFRAME ANALYSIS",
+                 "═══════════════════════════════════════════════════════════════════════"]
+
+        for label, data in mtf_data.items():
+            summary = data.get("summary", {})
+            trend = summary.get("trend", "?")
+            change = summary.get("change_pct", 0)
+            high = summary.get("high", 0)
+            low = summary.get("low", 0)
+            range_pct = summary.get("range_pct", 0)
+
+            lines.append(f"\n{label.upper()} ({data.get('count', 0)} candles):")
+            lines.append(f"  Trend: {trend} ({change:+.2f}%)")
+            lines.append(f"  Range: ${low:.4f} - ${high:.4f} ({range_pct:.2f}%)")
+
+            # Add last 5 candles as compact OHLC
+            candles = data.get("candles", [])[-5:]  # Last 5 only to save tokens
+            if candles:
+                lines.append(f"  Last {len(candles)} candles (O/H/L/C):")
+                for i, c in enumerate(candles):
+                    change_c = ((c['c'] - c['o']) / c['o'] * 100) if c['o'] > 0 else 0
+                    direction = "▲" if change_c > 0 else "▼" if change_c < 0 else "─"
+                    lines.append(f"    {direction} {c['o']:.4f}/{c['h']:.4f}/{c['l']:.4f}/{c['c']:.4f}")
+
+        lines.append("")
+        lines.append("MULTI-TIMEFRAME INTERPRETATION:")
+        lines.append("- If ALL timeframes show same trend → STRONG signal")
+        lines.append("- If 1m/15m UP but 4h/1d DOWN → possible reversal, CAUTION")
+        lines.append("- If short-term opposite to long-term → wait for alignment")
+        lines.append("")
+
+        return "\n".join(lines)
 
     def get_market_data(self, symbol: str, force_refresh_volume: bool = False) -> Dict[str, Any]:
         """Get full market data for a symbol.
@@ -2692,6 +2871,14 @@ class BotoneV6:
         else:
             # Always show volume ratio even without verbose logging
             logger.info(f"[SLOW] {symbol}: 📊 Volume {market_data.get('volume_ratio', 1.0):.2f}x (2m={market_data.get('volume_current', 0):.0f} / 15m={market_data.get('volume_baseline', 0):.0f})")
+
+        # === MULTI-TIMEFRAME DATA ===
+        # Fetch candles from multiple timeframes if enabled
+        if self.config.multi_timeframe_enabled:
+            mtf_data = self.market_data.get_multi_timeframe_candles(symbol)
+            if mtf_data:
+                market_data["mtf_data"] = mtf_data
+                logger.info(f"[SLOW] {symbol}: 📈 MTF data loaded ({len(mtf_data)} timeframes)")
 
         # Check if we have a position
         position = self.position_tracker.get_position(symbol)
