@@ -930,10 +930,29 @@ CURRENT POSITION:
                         mtf_lines.append(f"    {direction} {c['o']:.4f}/{c['h']:.4f}/{c['l']:.4f}/{c['c']:.4f}")
 
             mtf_lines.append("")
-            mtf_lines.append("MULTI-TIMEFRAME RULES:")
-            mtf_lines.append("- ALL timeframes same trend → STRONG signal (+10 bonus)")
-            mtf_lines.append("- Short-term opposite to long-term → CAUTION (reduce tier)")
-            mtf_lines.append("- 1min/15min UP but 4h/1d DOWN → possible reversal, consider SHORT")
+            mtf_lines.append("═══════════════════════════════════════════════════════════════════════")
+            mtf_lines.append("                MTF HIERARCHY RULES (STRICT!)")
+            mtf_lines.append("═══════════════════════════════════════════════════════════════════════")
+            mtf_lines.append("")
+            mtf_lines.append("1. 1D TREND IS KING - Defines allowed direction:")
+            mtf_lines.append("   • 1D UP (>+5%) → Only LONG allowed, SHORT forbidden")
+            mtf_lines.append("   • 1D DOWN (<-5%) → Only SHORT allowed, LONG forbidden")
+            mtf_lines.append("   • 1D FLAT (-5% to +5%) → Both directions allowed")
+            mtf_lines.append("")
+            mtf_lines.append("2. 4H CONFIRMS DIRECTION:")
+            mtf_lines.append("   • 1D UP + 4H UP → STRONG LONG (+10 bonus)")
+            mtf_lines.append("   • 1D DOWN + 4H DOWN → STRONG SHORT (+10 bonus)")
+            mtf_lines.append("   • 1D and 4H conflict → Reduce confidence by 0.2")
+            mtf_lines.append("")
+            mtf_lines.append("3. 15M/1M ARE FOR TIMING ONLY:")
+            mtf_lines.append("   • Use lower timeframes to find entry point")
+            mtf_lines.append("   • Do NOT use them to determine direction")
+            mtf_lines.append("   • 1M/15M pullback in 1D uptrend = LONG entry opportunity")
+            mtf_lines.append("")
+            mtf_lines.append("4. CONFLICT PENALTIES:")
+            mtf_lines.append("   • All 4 timeframes aligned → +10 bonus points")
+            mtf_lines.append("   • 1D vs 4H conflict → -0.2 confidence")
+            mtf_lines.append("   • 3+ timeframes conflict → NO_TRADE")
             mtf_lines.append("")
 
             mtf_section = "\n".join(mtf_lines)
@@ -987,7 +1006,27 @@ SENTIMENT:
                     SCORING INSTRUCTIONS
 ═══════════════════════════════════════════════════════════════════════
 
+STEP 0: DETERMINE SETUP DIRECTION FIRST (CRITICAL!)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BEFORE scoring, you MUST identify the setup direction:
+
+1. Check EMA Stack + Price position:
+   - Price > EMA20 AND EMA Stack bullish → LONG setup
+   - Price < EMA20 AND EMA Stack bearish → SHORT setup
+
+2. Confirm with 4H/1D trend (if MTF data available):
+   - 1D UP + 4H UP → confirms LONG
+   - 1D DOWN + 4H DOWN → confirms SHORT
+   - Conflicting timeframes → NEUTRAL (likely NO_TRADE)
+
+3. IMPORTANT: Once direction is determined:
+   - Score ONLY indicators that support THAT direction
+   - RSI >50 gives points ONLY for LONG setups
+   - RSI <50 gives points ONLY for SHORT setups
+   - Do NOT mix bullish and bearish points together!
+
 STEP 1: CALCULATE RAW SCORE (0-100 points)
+Score ONLY indicators aligned with your chosen direction:
 - Category A (Trend): up to 40 points
 - Category B (Momentum): up to 30 points
 - Category C (Volume): up to 30 points
@@ -1019,9 +1058,15 @@ STOCHASTIC RULE:
 - Crossover in oversold (<30) = STRONG BUY
 - Crossover in overbought (>70) = STRONG SELL
 
-BOLLINGER SQUEEZE RULE:
-- If squeeze detected: DO NOT ENTER until breakout confirmed
-- Wait for candle close outside band + volume >1.5x
+BOLLINGER SQUEEZE RULE (STRICT - NO EXCEPTIONS):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- If squeeze detected → DEFAULT = NO_TRADE (wait for breakout)
+- BREAKOUT CONFIRMATION REQUIRED:
+  1. Candle CLOSES outside Bollinger Band (not just wick)
+  2. Volume > 1.5x average
+  3. Both conditions must be met
+- If you MUST trade during squeeze → Maximum Tier 1, reduce confidence by 0.3
+- Squeeze + low volume = HIGH PROBABILITY FAKE BREAKOUT → AVOID
 
 ADX RULE (critical for trend-following):
 - ADX <25: SKIP trade (ranging market)
@@ -1044,8 +1089,9 @@ TIER 1 - SPECULATIVO ($25):
 - Segnale presente ma debole
 - ADX < 20 (mercato laterale)
 - Volume < 0.8x (poca partecipazione)
-- Bollinger squeeze (incertezza)
 - Score appena sopra threshold (< 10 punti)
+- MTF timeframes in conflitto
+- NOTA: Se squeeze attivo, preferire NO_TRADE (vedi Squeeze Rule)
 
 TIER 2 - STANDARD ($35):
 - Indicatori allineati
