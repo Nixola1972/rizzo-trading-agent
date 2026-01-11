@@ -939,20 +939,26 @@ CURRENT POSITION:
             mtf_lines.append("   • 1D DOWN (<-5%) → Only SHORT allowed, LONG forbidden")
             mtf_lines.append("   • 1D FLAT (-5% to +5%) → Both directions allowed")
             mtf_lines.append("")
-            mtf_lines.append("2. 4H CONFIRMS DIRECTION:")
+            mtf_lines.append("2. 4H CONFIRMS OR SHOWS PULLBACK:")
             mtf_lines.append("   • 1D UP + 4H UP → STRONG LONG (+10 bonus)")
             mtf_lines.append("   • 1D DOWN + 4H DOWN → STRONG SHORT (+10 bonus)")
-            mtf_lines.append("   • 1D and 4H conflict → Reduce confidence by 0.2")
+            mtf_lines.append("   • 1D UP + 4H DOWN → PULLBACK! Look for LONG entry (Tier 1-2)")
+            mtf_lines.append("   • 1D DOWN + 4H UP → PULLBACK! Look for SHORT entry (Tier 1-2)")
             mtf_lines.append("")
-            mtf_lines.append("3. 15M/1M ARE FOR TIMING ONLY:")
-            mtf_lines.append("   • Use lower timeframes to find entry point")
+            mtf_lines.append("3. PULLBACK ENTRY CONDITIONS (when 1D vs 4H conflict):")
+            mtf_lines.append("   • RSI oversold (<35) for LONG pullback = GOOD entry")
+            mtf_lines.append("   • RSI overbought (>65) for SHORT pullback = GOOD entry")
+            mtf_lines.append("   • Price near support (S1/S2) for LONG = GOOD entry")
+            mtf_lines.append("   • Price near resistance (R1/R2) for SHORT = GOOD entry")
+            mtf_lines.append("   • Stochastic showing reversal signal = confirmation")
+            mtf_lines.append("")
+            mtf_lines.append("4. 15M/1M ARE FOR TIMING ONLY:")
+            mtf_lines.append("   • Use lower timeframes to find precise entry point")
             mtf_lines.append("   • Do NOT use them to determine direction")
-            mtf_lines.append("   • 1M/15M pullback in 1D uptrend = LONG entry opportunity")
             mtf_lines.append("")
-            mtf_lines.append("4. CONFLICT PENALTIES:")
+            mtf_lines.append("5. ALIGNMENT BONUSES:")
             mtf_lines.append("   • All 4 timeframes aligned → +10 bonus points")
-            mtf_lines.append("   • 1D vs 4H conflict → -0.2 confidence")
-            mtf_lines.append("   • 3+ timeframes conflict → NO_TRADE")
+            mtf_lines.append("   • Pullback setup with reversal signal → OK to trade (Tier 1-2)")
             mtf_lines.append("")
 
             mtf_section = "\n".join(mtf_lines)
@@ -1058,20 +1064,28 @@ STOCHASTIC RULE:
 - Crossover in oversold (<30) = STRONG BUY
 - Crossover in overbought (>70) = STRONG SELL
 
-BOLLINGER SQUEEZE RULE (STRICT - NO EXCEPTIONS):
+BOLLINGER SQUEEZE RULE (BALANCED):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- If squeeze detected → DEFAULT = NO_TRADE (wait for breakout)
-- BREAKOUT CONFIRMATION REQUIRED:
-  1. Candle CLOSES outside Bollinger Band (not just wick)
+- If squeeze detected → CAUTION, prefer waiting for breakout
+- SQUEEZE + CAN TRADE CONDITIONS (Tier 1 only):
+  1. Volume > 1.0x (not dead market)
+  2. ADX > 20 (some trend present)
+  3. MTF aligned (1D and 4H same direction)
+  4. If all 3 met → Tier 1 OK, reduce confidence by 0.2
+- SQUEEZE + NO TRADE CONDITIONS:
+  1. Volume < 0.8x (dead market)
+  2. ADX < 20 (no trend)
+  3. MTF conflicting
+  → If any of these, skip trade
+- BREAKOUT CONFIRMATION (for Tier 2-3 during squeeze):
+  1. Candle CLOSES outside Bollinger Band
   2. Volume > 1.5x average
-  3. Both conditions must be met
-- If you MUST trade during squeeze → Maximum Tier 1, reduce confidence by 0.3
-- Squeeze + low volume = HIGH PROBABILITY FAKE BREAKOUT → AVOID
 
-ADX RULE (critical for trend-following):
-- ADX <25: SKIP trade (ranging market)
-- ADX 25-30: OK but reduce position size 50%
-- ADX >30: Strong trend, proceed normally
+ADX RULE (balanced for crypto):
+- ADX <20: SKIP trade (strongly ranging market)
+- ADX 20-25: OK but Tier 1 only (weak trend)
+- ADX 25-30: OK, Tier 2 allowed
+- ADX >30: Strong trend, Tier 3 allowed
 
 WARNING SIGNALS (reduce position or SKIP):
 - OBV opposite to price = whale distribution (DANGER)
@@ -1087,11 +1101,11 @@ Valuta la QUALITÀ COMPLESSIVA del setup e assegna un tier per il sizing:
 
 TIER 1 - SPECULATIVO ($25):
 - Segnale presente ma debole
-- ADX < 20 (mercato laterale)
-- Volume < 0.8x (poca partecipazione)
+- ADX 20-25 (trend debole ma presente)
+- Volume 0.8x - 1.0x (partecipazione bassa)
 - Score appena sopra threshold (< 10 punti)
-- MTF timeframes in conflitto
-- NOTA: Se squeeze attivo, preferire NO_TRADE (vedi Squeeze Rule)
+- Pullback setup (1D UP + 4H DOWN con segnale reversal)
+- Squeeze con condizioni OK (Volume >1x, ADX >20, MTF aligned)
 
 TIER 2 - STANDARD ($35):
 - Indicatori allineati

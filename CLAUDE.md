@@ -1,4 +1,4 @@
-# CLAUDE.md - Botone V6 (Aggiornato 10 Gennaio 2026)
+# CLAUDE.md - Botone V6 (Aggiornato 11 Gennaio 2026)
 
 ---
 
@@ -313,6 +313,12 @@ docker run -d --name botone_v6_slow --env-file /root/trading-bots/rizzo-trading-
 
 ## 📝 STORICO MODIFICHE
 
+### 11 Gennaio 2026
+- ✅ Rilassato ADX Rule: minimo da 25 → 20 (più trade permessi)
+- ✅ Aggiunto Pullback Trading: 1D UP + 4H DOWN = opportunità LONG
+- ✅ Bollinger Squeeze meno restrittivo: Tier 1 OK se Volume >1x, ADX >20
+- ✅ Aggiornati TIER con nuove condizioni
+
 ### 10 Gennaio 2026
 - ✅ Migliorato AI Prompt con STEP 0: Direction First (elimina bias direzionale)
 - ✅ Aggiunto MTF Hierarchy Rules (1D è KING, 4H conferma, 15M/1M solo timing)
@@ -339,4 +345,4 @@ docker run -d --name botone_v6_slow --env-file /root/trading-bots/rizzo-trading-
 
 ---
 
-*Ultimo aggiornamento: 10 Gennaio 2026*
+*Ultimo aggiornamento: 11 Gennaio 2026*
