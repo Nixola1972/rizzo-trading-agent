@@ -1,4 +1,4 @@
-# CLAUDE.md - Botone V6 (Aggiornato 11 Gennaio 2026)
+# CLAUDE.md - Botone V6 (Aggiornato 12 Gennaio 2026)
 
 ---
 
@@ -193,9 +193,14 @@ EARLY_EXIT_MINUTES=5
 EARLY_EXIT_MAE=1.5
 EARLY_EXIT_MFE=0.5
 
-# === TRAILING STOP ===
-STOP_LOSS_PCT=4.0
-TAKE_PROFIT_PCT=99.0
+# === TIME STOP (12 Gennaio 2026) ===
+# Dati: 0-30min = 80% win, 90+min = 15% win
+TIME_STOP_ENABLED=true
+TIME_STOP_MINUTES=30
+
+# === TRAILING STOP (12 Gennaio 2026) ===
+STOP_LOSS_PCT=2.5
+TAKE_PROFIT_PCT=1.5
 TRAILING_STEPS=0.5:-2.0,1.0:-1.8,1.8:0.3,3.0:1.5,4.0:2.5,5.0:3.5,6.5:4.5,8.0:6.0,10.0:7.5,12.5:9.5,15.0:11.5,17.5:14.0,20.0:16.0,25.0:21.0,30.0:26.0,35.0:31.0,40.0:36.0
 
 # === ALTRI FILTRI ===
@@ -313,6 +318,11 @@ docker run -d --name botone_v6_slow --env-file /root/trading-bots/rizzo-trading-
 
 ## 📝 STORICO MODIFICHE
 
+### 12 Gennaio 2026
+- ✅ Implementato TIME_STOP: chiude TUTTI i trade dopo 30 min
+- ✅ Dati mostrano: 0-30min = 80% win rate, 90+min = 15% win rate
+- ✅ Raccomandazione: TP=1.5%, SL=2.5%, TIME_STOP=30min
+
 ### 11 Gennaio 2026
 - ✅ Rilassato ADX Rule: minimo da 25 → 20 (più trade permessi)
 - ✅ Aggiunto Pullback Trading: 1D UP + 4H DOWN = opportunità LONG
@@ -345,4 +355,4 @@ docker run -d --name botone_v6_slow --env-file /root/trading-bots/rizzo-trading-
 
 ---
 
-*Ultimo aggiornamento: 11 Gennaio 2026*
+*Ultimo aggiornamento: 12 Gennaio 2026*

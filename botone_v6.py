@@ -166,6 +166,12 @@ class BotoneV6Config:
         self.early_exit_mae_threshold = float(os.getenv("EARLY_EXIT_MAE", "1.5"))  # Close if MAE >= this
         self.early_exit_mfe_threshold = float(os.getenv("EARLY_EXIT_MFE", "0.5"))  # AND MFE < this
 
+        # === TIME STOP ===
+        # Close ALL trades after X minutes regardless of P&L
+        # Data shows: trades > 30min have significantly lower win rate (80% → 15%)
+        self.time_stop_enabled = os.getenv("TIME_STOP_ENABLED", "true").lower() == "true"
+        self.time_stop_minutes = int(os.getenv("TIME_STOP_MINUTES", "30"))  # Close after 30 min
+
         # === MULTI-TIMEFRAME ANALYSIS ===
         # Pass candle data from multiple timeframes to AI for broader context
         self.multi_timeframe_enabled = os.getenv("MULTI_TIMEFRAME_ENABLED", "false").lower() == "true"
@@ -467,6 +473,11 @@ class BotoneV6Config:
             logger.info(f"     Close if MAE >= {self.early_exit_mae_threshold}% AND MFE < {self.early_exit_mfe_threshold}%")
         else:
             logger.info(f"  🚨 Early Exit: disabled")
+        # Time Stop logging
+        if self.time_stop_enabled:
+            logger.info(f"  ⏰ Time Stop: ENABLED (close ALL after {self.time_stop_minutes} min)")
+        else:
+            logger.info(f"  ⏰ Time Stop: disabled")
         # Multi-Timeframe logging
         if self.multi_timeframe_enabled:
             logger.info(f"  📊 Multi-Timeframe: ENABLED")
@@ -3185,6 +3196,16 @@ class BotoneV6:
                     logger.warning(f"[EARLY EXIT] 🚨 {position.symbol}: Closing after {elapsed_minutes:.0f} min to prevent further loss")
                     self._close_position(position.symbol, "EARLY_EXIT", f"Bad entry: MAE {mae_pct:.1f}% > MFE {mfe_pct:.1f}% after {elapsed_minutes:.0f}min")
                     return
+
+        # === TIME STOP ===
+        # Close ALL trades after X minutes - data shows win rate drops from 80% to 15% after 30 min
+        if self.config.time_stop_enabled and position.opened_at:
+            elapsed_minutes = (datetime.now() - position.opened_at).total_seconds() / 60
+            if elapsed_minutes >= self.config.time_stop_minutes:
+                logger.warning(f"[TIME STOP] ⏰ {position.symbol}: Trade open {elapsed_minutes:.0f} min >= {self.config.time_stop_minutes} min limit")
+                logger.warning(f"[TIME STOP] ⏰ {position.symbol}: P&L: {pnl_pct:+.2f}% | MFE: {mfe_pct:.2f}% | MAE: {mae_pct:.2f}%")
+                self._close_position(position.symbol, "TIME_STOP", f"Time limit: {elapsed_minutes:.0f}min >= {self.config.time_stop_minutes}min | P&L: {pnl_pct:+.2f}%")
+                return
 
         # Find current and next trailing step
         current_level_str = f"+{position.current_sl_level:.1f}%" if position.current_sl_level >= 0 else f"{position.current_sl_level:.1f}%"
