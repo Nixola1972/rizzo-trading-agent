@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ImexGreen - Preventivo Fotovoltaico Gratuito | Ti Richiamiamo in 30 Minuti</title>
+    <meta name="description" content="Richiedi un preventivo gratuito per il fotovoltaico. Ti richiamiamo entro 30 minuti. Sopralluogo gratuito e senza impegno.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #1565C0;
+            --primary-dark: #0D47A1;
+            --accent: #FF6F00;
+            --accent-hover: #E65100;
+            --success: #2E7D32;
+            --bg-light: #FAFAFA;
+            --text-dark: #212121;
+            --text-gray: #616161;
+            --white: #FFFFFF;
+            --whatsapp: #25D366;
+            --shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: var(--text-dark);
+            line-height: 1.6;
+            background: var(--bg-light);
+            padding-bottom: 80px;
+        }
+
+        /* Header */
+        .header {
+            background: var(--white);
+            padding: 12px 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .header-content {
+            max-width: 600px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 800;
+            color: var(--success);
+        }
+
+        .logo span {
+            color: #4CAF50;
+        }
+
+        .urgency-badge {
+            background: #FFEBEE;
+            color: #C62828;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        /* Hero */
+        .hero {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+            padding: 40px 20px 60px;
+            text-align: center;
+            position: relative;
+        }
+
+        .hero::after {
+            content: '';
+            position: absolute;
+            bottom: -30px;
+            left: 0;
+            right: 0;
+            height: 60px;
+            background: var(--bg-light);
+            border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+        }
+
+        .hero-badge {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+
+        .hero h1 {
+            font-size: 26px;
+            font-weight: 800;
+            line-height: 1.2;
+            margin-bottom: 12px;
+        }
+
+        .hero h1 span {
+            color: #FFD54F;
+        }
+
+        .hero p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+
+        .callback-promise {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--success);
+            padding: 10px 20px;
+            border-radius: 30px;
+            margin-top: 16px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        /* Form Section */
+        .form-section {
+            background: var(--white);
+            margin: -20px 20px 20px;
+            padding: 28px 24px;
+            border-radius: 20px;
+            box-shadow: var(--shadow);
+            position: relative;
+            z-index: 10;
+        }
+
+        .form-header {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+
+        .form-header h2 {
+            font-size: 20px;
+            color: var(--primary);
+            margin-bottom: 8px;
+        }
+
+        .step-indicator {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .step-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #E0E0E0;
+            transition: all 0.3s;
+        }
+
+        .step-dot.active {
+            background: var(--primary);
+            width: 30px;
+            border-radius: 5px;
+        }
+
+        /* Step 1 */
+        .step-1 {
+            display: block;
+        }
+
+        .step-2 {
+            display: none;
+        }
+
+        .step-2.show {
+            display: block;
+            animation: slideIn 0.4s ease;
+        }
+
+        .step-1.hide {
+            display: none;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .option-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-gray);
+            margin-bottom: 12px;
+            display: block;
+        }
+
+        .service-options {
+            display: grid;
+            gap: 12px;
+        }
+
+        .service-option {
+            background: var(--bg-light);
+            border: 2px solid transparent;
+            border-radius: 12px;
+            padding: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .service-option:hover {
+            border-color: var(--primary);
+        }
+
+        .service-option.selected {
+            border-color: var(--primary);
+            background: #E3F2FD;
+        }
+
+        .service-icon {
+            width: 44px;
+            height: 44px;
+            background: var(--white);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+
+        .service-text {
+            flex: 1;
+        }
+
+        .service-text h3 {
+            font-size: 15px;
+            margin-bottom: 2px;
+        }
+
+        .service-text p {
+            font-size: 12px;
+            color: var(--text-gray);
+        }
+
+        .service-check {
+            width: 24px;
+            height: 24px;
+            border: 2px solid #E0E0E0;
+            border-radius: 50%;
+            transition: all 0.3s;
+        }
+
+        .service-option.selected .service-check {
+            background: var(--primary);
+            border-color: var(--primary);
+            position: relative;
+        }
+
+        .service-option.selected .service-check::after {
+            content: '✓';
+            color: white;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 14px;
+        }
+
+        /* Step 2 Form */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-gray);
+            margin-bottom: 8px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 16px;
+            border: 2px solid #E0E0E0;
+            border-radius: 12px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .form-group input::placeholder {
+            color: #BDBDBD;
+        }
+
+        .privacy-note {
+            font-size: 11px;
+            color: var(--text-gray);
+            text-align: center;
+            margin: 16px 0;
+        }
+
+        .privacy-note a {
+            color: var(--primary);
+        }
+
+        .submit-btn {
+            width: 100%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 18px;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .submit-btn:hover {
+            background: var(--accent-hover);
+        }
+
+        .submit-btn:disabled {
+            background: #BDBDBD;
+            cursor: not-allowed;
+        }
+
+        .back-btn {
+            display: block;
+            text-align: center;
+            color: var(--text-gray);
+            font-size: 14px;
+            margin-top: 12px;
+            cursor: pointer;
+        }
+
+        /* Success State */
+        .success-state {
+            display: none;
+            text-align: center;
+            padding: 20px 0;
+        }
+
+        .success-state.show {
+            display: block;
+            animation: fadeIn 0.5s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .success-icon {
+            width: 80px;
+            height: 80px;
+            background: #E8F5E9;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 40px;
+        }
+
+        .success-state h3 {
+            font-size: 22px;
+            color: var(--success);
+            margin-bottom: 8px;
+        }
+
+        .success-state p {
+            color: var(--text-gray);
+            font-size: 15px;
+        }
+
+        /* Why Section */
+        .why-section {
+            padding: 30px 20px;
+        }
+
+        .why-section h2 {
+            text-align: center;
+            font-size: 20px;
+            margin-bottom: 20px;
+            color: var(--primary);
+        }
+
+        .why-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        .why-card {
+            background: var(--white);
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .why-card-icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+
+        .why-card h3 {
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+
+        .why-card p {
+            font-size: 12px;
+            color: var(--text-gray);
+        }
+
+        /* Process */
+        .process {
+            background: var(--white);
+            padding: 30px 20px;
+        }
+
+        .process h2 {
+            text-align: center;
+            font-size: 20px;
+            margin-bottom: 24px;
+            color: var(--primary);
+        }
+
+        .process-step {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .process-step:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            left: 19px;
+            top: 44px;
+            width: 2px;
+            height: calc(100% - 4px);
+            background: #E0E0E0;
+        }
+
+        .process-number {
+            width: 40px;
+            height: 40px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        .process-content h3 {
+            font-size: 15px;
+            margin-bottom: 4px;
+        }
+
+        .process-content p {
+            font-size: 13px;
+            color: var(--text-gray);
+        }
+
+        /* Guarantee */
+        .guarantee {
+            background: linear-gradient(135deg, #E8F5E9 0%, #C8E6C9 100%);
+            margin: 0 20px 20px;
+            padding: 24px;
+            border-radius: 16px;
+            text-align: center;
+        }
+
+        .guarantee-icon {
+            font-size: 40px;
+            margin-bottom: 12px;
+        }
+
+        .guarantee h3 {
+            font-size: 18px;
+            color: var(--success);
+            margin-bottom: 8px;
+        }
+
+        .guarantee p {
+            font-size: 14px;
+            color: var(--text-gray);
+        }
+
+        /* Sticky Bar */
+        .sticky-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--white);
+            padding: 12px 20px;
+            box-shadow: 0 -4px 20px rgba(0,0,0,0.1);
+            display: flex;
+            gap: 12px;
+            z-index: 1000;
+        }
+
+        .sticky-btn {
+            flex: 1;
+            padding: 14px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            border: none;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-secondary {
+            background: var(--whatsapp);
+            color: white;
+        }
+
+        /* Desktop */
+        @media (min-width: 768px) {
+            .hero h1 {
+                font-size: 32px;
+            }
+
+            .form-section {
+                max-width: 500px;
+                margin-left: auto;
+                margin-right: auto;
+            }
+
+            .why-section,
+            .process {
+                max-width: 600px;
+                margin-left: auto;
+                margin-right: auto;
+            }
+
+            .guarantee {
+                max-width: 500px;
+                margin-left: auto;
+                margin-right: auto;
+            }
+
+            .sticky-bar {
+                max-width: 500px;
+                left: 50%;
+                transform: translateX(-50%);
+                border-radius: 16px 16px 0 0;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">Imex<span>Green</span></div>
+            <div class="urgency-badge">Incentivi 2025 Attivi</div>
+        </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="hero-badge">Preventivo Gratuito Senza Impegno</div>
+        <h1>Risparmia Fino al <span>70%</span> sulla Bolletta</h1>
+        <p>Fotovoltaico, pompe di calore, efficientamento energetico</p>
+        <div class="callback-promise">
+            <span>📞</span> Ti richiamiamo entro 30 minuti
+        </div>
+    </section>
+
+    <!-- Form Section -->
+    <section class="form-section">
+        <div class="form-header">
+            <h2>Richiedi Preventivo Gratuito</h2>
+            <div class="step-indicator">
+                <div class="step-dot active" id="dot1"></div>
+                <div class="step-dot" id="dot2"></div>
+            </div>
+        </div>
+
+        <!-- Step 1: Service Selection -->
+        <div class="step-1" id="step1">
+            <span class="option-label">Cosa ti interessa?</span>
+            <div class="service-options">
+                <div class="service-option" data-service="fotovoltaico">
+                    <div class="service-icon">☀️</div>
+                    <div class="service-text">
+                        <h3>Impianto Fotovoltaico</h3>
+                        <p>Produci energia pulita dal sole</p>
+                    </div>
+                    <div class="service-check"></div>
+                </div>
+
+                <div class="service-option" data-service="pompa-calore">
+                    <div class="service-icon">🌡️</div>
+                    <div class="service-text">
+                        <h3>Pompa di Calore</h3>
+                        <p>Riscaldamento e raffrescamento efficiente</p>
+                    </div>
+                    <div class="service-check"></div>
+                </div>
+
+                <div class="service-option" data-service="efficientamento">
+                    <div class="service-icon">🏠</div>
+                    <div class="service-text">
+                        <h3>Efficientamento Energetico</h3>
+                        <p>Riduci consumi e sprechi</p>
+                    </div>
+                    <div class="service-check"></div>
+                </div>
+
+                <div class="service-option" data-service="completo">
+                    <div class="service-icon">⚡</div>
+                    <div class="service-text">
+                        <h3>Soluzione Completa</h3>
+                        <p>Fotovoltaico + Pompa di calore + Accumulo</p>
+                    </div>
+                    <div class="service-check"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 2: Contact Form -->
+        <div class="step-2" id="step2">
+            <form id="contactForm">
+                <input type="hidden" id="selectedService" name="service">
+
+                <div class="form-group">
+                    <label>Il tuo nome</label>
+                    <input type="text" id="nome" name="nome" placeholder="Mario Rossi" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Numero di telefono</label>
+                    <input type="tel" id="telefono" name="telefono" placeholder="333 1234567" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Citt&agrave; / Comune</label>
+                    <input type="text" id="citta" name="citta" placeholder="Milano" required>
+                </div>
+
+                <p class="privacy-note">
+                    Inviando accetti la <a href="#">Privacy Policy</a>. Ti contatteremo solo per il preventivo richiesto.
+                </p>
+
+                <button type="submit" class="submit-btn">
+                    <span>📞</span> RICHIEDI CHIAMATA GRATUITA
+                </button>
+
+                <span class="back-btn" id="backBtn">← Torna indietro</span>
+            </form>
+        </div>
+
+        <!-- Success State -->
+        <div class="success-state" id="successState">
+            <div class="success-icon">✓</div>
+            <h3>Richiesta Inviata!</h3>
+            <p>Ti richiameremo entro 30 minuti.<br>Controlla il telefono!</p>
+        </div>
+    </section>
+
+    <!-- Why Section -->
+    <section class="why-section">
+        <h2>Perch&eacute; Scegliere Noi</h2>
+        <div class="why-grid">
+            <div class="why-card">
+                <div class="why-card-icon">🎯</div>
+                <h3>Zero Pensieri</h3>
+                <p>Gestiamo tutto noi, dalle pratiche all'installazione</p>
+            </div>
+            <div class="why-card">
+                <div class="why-card-icon">💶</div>
+                <h3>Incentivi 2025</h3>
+                <p>Ti aiutiamo ad ottenere tutte le detrazioni</p>
+            </div>
+            <div class="why-card">
+                <div class="why-card-icon">🔧</div>
+                <h3>Assistenza</h3>
+                <p>Supporto tecnico sempre disponibile</p>
+            </div>
+            <div class="why-card">
+                <div class="why-card-icon">🛡️</div>
+                <h3>Garanzia 25 Anni</h3>
+                <p>Prodotti certificati e garantiti</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Process -->
+    <section class="process">
+        <h2>Come Funziona</h2>
+
+        <div class="process-step">
+            <div class="process-number">1</div>
+            <div class="process-content">
+                <h3>Richiedi Preventivo</h3>
+                <p>Compila il form, ti richiamiamo entro 30 minuti</p>
+            </div>
+        </div>
+
+        <div class="process-step">
+            <div class="process-number">2</div>
+            <div class="process-content">
+                <h3>Sopralluogo Gratuito</h3>
+                <p>Un tecnico valuta la tua situazione senza impegno</p>
+            </div>
+        </div>
+
+        <div class="process-step">
+            <div class="process-number">3</div>
+            <div class="process-content">
+                <h3>Preventivo Personalizzato</h3>
+                <p>Ricevi un'offerta su misura con tutti gli incentivi</p>
+            </div>
+        </div>
+
+        <div class="process-step">
+            <div class="process-number">4</div>
+            <div class="process-content">
+                <h3>Installazione Rapida</h3>
+                <p>Impianto operativo in 1-2 giorni</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Guarantee -->
+    <div class="guarantee">
+        <div class="guarantee-icon">🛡️</div>
+        <h3>Garanzia Soddisfatti o Rimborsati</h3>
+        <p>Se il preventivo non ti soddisfa, nessun obbligo. Il sopralluogo &egrave; sempre gratuito e senza impegno.</p>
+    </div>
+
+    <!-- Sticky Bar -->
+    <div class="sticky-bar">
+        <a href="tel:+39XXXXXXXXXX" class="sticky-btn btn-primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 00-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/></svg>
+            Chiama Ora
+        </a>
+        <a href="https://wa.me/39XXXXXXXXXX?text=Ciao!%20Vorrei%20un%20preventivo%20per%20il%20fotovoltaico." class="sticky-btn btn-secondary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+            WhatsApp
+        </a>
+    </div>
+
+    <script>
+        let selectedService = null;
+
+        // Service Selection
+        document.querySelectorAll('.service-option').forEach(option => {
+            option.addEventListener('click', function() {
+                // Remove previous selection
+                document.querySelectorAll('.service-option').forEach(o => o.classList.remove('selected'));
+
+                // Select this one
+                this.classList.add('selected');
+                selectedService = this.dataset.service;
+
+                // Go to step 2 after a short delay
+                setTimeout(() => {
+                    document.getElementById('step1').classList.add('hide');
+                    document.getElementById('step2').classList.add('show');
+                    document.getElementById('dot1').classList.remove('active');
+                    document.getElementById('dot2').classList.add('active');
+                    document.getElementById('selectedService').value = selectedService;
+                }, 300);
+            });
+        });
+
+        // Back button
+        document.getElementById('backBtn').addEventListener('click', function() {
+            document.getElementById('step2').classList.remove('show');
+            document.getElementById('step1').classList.remove('hide');
+            document.getElementById('dot2').classList.remove('active');
+            document.getElementById('dot1').classList.add('active');
+        });
+
+        // Form submission
+        document.getElementById('contactForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const nome = document.getElementById('nome').value;
+            const telefono = document.getElementById('telefono').value;
+            const citta = document.getElementById('citta').value;
+            const service = document.getElementById('selectedService').value;
+
+            // Qui puoi integrare con il tuo backend/webhook/Google Forms/etc.
+            // Per ora mostriamo solo il success state
+
+            console.log('Lead:', { nome, telefono, citta, service });
+
+            // Mostra success state
+            document.getElementById('step2').classList.remove('show');
+            document.getElementById('successState').classList.add('show');
+
+            // Opzionale: invia dati via webhook
+            // fetch('YOUR_WEBHOOK_URL', {
+            //     method: 'POST',
+            //     headers: { 'Content-Type': 'application/json' },
+            //     body: JSON.stringify({ nome, telefono, citta, service })
+            // });
+        });
+
+        // Scroll to form on sticky button click
+        document.querySelector('.btn-primary').addEventListener('click', function(e) {
+            // Se siamo su mobile e c'è il click-to-call, lascia il comportamento normale
+            // Altrimenti scrolla al form
+        });
+
+        // Sostituisci XXXXXXXXXX con il numero reale
+        // Esempio: 39123456789 (senza + iniziale per WhatsApp)
+    </script>
+
+</body>
+</html>
