@@ -474,6 +474,7 @@
     <section class="hero">
         <h1>Scopri Quanto <span>Risparmi</span> con il Fotovoltaico</h1>
         <p>Calcola in 1 minuto il tuo risparmio annuale sulla bolletta elettrica</p>
+        <div style="margin-top: 12px; display: inline-block; background: rgba(255,255,255,0.2); padding: 6px 14px; border-radius: 20px; font-size: 13px;">📍 Operiamo in tutta la Lombardia</div>
     </section>
 
     <!-- Calculator -->
@@ -494,15 +495,6 @@
                     <option value="appartamento">Appartamento</option>
                     <option value="villetta" selected>Villetta / Casa indipendente</option>
                     <option value="bifamiliare">Bifamiliare</option>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label>Regione</label>
-                <select id="regione">
-                    <option value="nord">Nord Italia</option>
-                    <option value="centro">Centro Italia</option>
-                    <option value="sud">Sud Italia e Isole</option>
                 </select>
             </div>
 
@@ -648,16 +640,10 @@
             e.preventDefault();
 
             const bolletta = parseFloat(document.getElementById('bolletta').value);
-            const regione = document.getElementById('regione').value;
 
-            // Coefficienti di irraggiamento per regione
-            const coefficienti = {
-                'nord': 0.70,
-                'centro': 0.80,
-                'sud': 0.90
-            };
-
-            const coeff = coefficienti[regione];
+            // Coefficiente per Lombardia (irraggiamento medio ~1.100-1.200 kWh/kWp)
+            // Stima conservativa: risparmio circa 70% della bolletta con autoconsumo
+            const coeff = 0.70;
 
             // Calcolo risparmio annuale (stima conservativa)
             const risparmioAnnuale = Math.round(bolletta * 12 * coeff);
