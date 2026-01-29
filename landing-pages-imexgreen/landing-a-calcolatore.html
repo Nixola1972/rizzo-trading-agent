@@ -2,9 +2,9 @@
 <html lang="it">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>ImexGreen - Calcola Quanto Risparmi con il Fotovoltaico</title>
-    <meta name="description" content="Scopri in 1 minuto quanto puoi risparmiare sulla bolletta con un impianto fotovoltaico. Preventivo gratuito e sopralluogo senza impegno.">
+    <meta name="description" content="Scopri in 1 minuto quanto puoi risparmiare sulla bolletta con un impianto fotovoltaico in Lombardia. Preventivo gratuito.">
 
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,7 +18,9 @@
         }
 
         :root {
-            --primary: #1B5E20;
+            /* Colori ImexGreen - MODIFICA QUI SE NECESSARIO */
+            --primary: #2E7D32;
+            --primary-dark: #1B5E20;
             --primary-light: #4CAF50;
             --accent: #FF6F00;
             --accent-hover: #E65100;
@@ -26,8 +28,12 @@
             --text-dark: #212121;
             --text-gray: #616161;
             --white: #FFFFFF;
-            --whatsapp: #25D366;
+            --call-green: #2E7D32;
             --shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        html {
+            scroll-behavior: smooth;
         }
 
         body {
@@ -35,13 +41,14 @@
             color: var(--text-dark);
             line-height: 1.6;
             background: var(--bg-light);
-            padding-bottom: 80px; /* Space for sticky bar */
+            padding-bottom: 90px;
+            -webkit-font-smoothing: antialiased;
         }
 
         /* Header */
         .header {
             background: var(--white);
-            padding: 12px 20px;
+            padding: 12px 16px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.05);
             position: sticky;
             top: 0;
@@ -49,7 +56,7 @@
         }
 
         .header-content {
-            max-width: 600px;
+            max-width: 500px;
             margin: 0 auto;
             display: flex;
             justify-content: space-between;
@@ -57,7 +64,7 @@
         }
 
         .logo {
-            font-size: 24px;
+            font-size: 22px;
             font-weight: 800;
             color: var(--primary);
         }
@@ -67,28 +74,31 @@
         }
 
         .header-cta {
-            background: var(--accent);
+            background: var(--call-green);
             color: white;
-            padding: 8px 16px;
-            border-radius: 20px;
+            padding: 10px 16px;
+            border-radius: 25px;
             text-decoration: none;
             font-size: 14px;
             font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
 
         /* Hero */
         .hero {
             background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
             color: white;
-            padding: 40px 20px;
+            padding: 32px 16px 50px;
             text-align: center;
         }
 
         .hero h1 {
-            font-size: 28px;
+            font-size: 26px;
             font-weight: 800;
             line-height: 1.2;
-            margin-bottom: 16px;
+            margin-bottom: 12px;
         }
 
         .hero h1 span {
@@ -96,17 +106,24 @@
         }
 
         .hero p {
-            font-size: 16px;
+            font-size: 15px;
             opacity: 0.9;
-            max-width: 400px;
-            margin: 0 auto;
+        }
+
+        .lombardia-badge {
+            margin-top: 12px;
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
         }
 
         /* Calculator Section */
         .calculator {
             background: var(--white);
-            margin: -30px 20px 20px;
-            padding: 24px;
+            margin: -30px 16px 20px;
+            padding: 24px 20px;
             border-radius: 16px;
             box-shadow: var(--shadow);
             position: relative;
@@ -114,7 +131,7 @@
         }
 
         .calculator h2 {
-            font-size: 20px;
+            font-size: 18px;
             text-align: center;
             margin-bottom: 20px;
             color: var(--primary);
@@ -137,12 +154,13 @@
         .form-group input,
         .form-group select {
             width: 100%;
-            padding: 16px;
+            padding: 14px 16px;
             border: 2px solid #E0E0E0;
             border-radius: 12px;
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 600;
             transition: border-color 0.3s;
+            -webkit-appearance: none;
         }
 
         .form-group input:focus,
@@ -168,28 +186,26 @@
             background: var(--accent);
             color: white;
             border: none;
-            padding: 18px;
+            padding: 16px;
             border-radius: 12px;
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 700;
             cursor: pointer;
             transition: background 0.3s, transform 0.2s;
-        }
-
-        .calc-btn:hover {
-            background: var(--accent-hover);
+            -webkit-tap-highlight-color: transparent;
         }
 
         .calc-btn:active {
             transform: scale(0.98);
+            background: var(--accent-hover);
         }
 
         /* Results */
         .results {
             display: none;
             background: linear-gradient(135deg, #E8F5E9 0%, #C8E6C9 100%);
-            border-radius: 12px;
-            padding: 24px;
+            border-radius: 16px;
+            padding: 24px 20px;
             margin-top: 20px;
             text-align: center;
             animation: fadeIn 0.5s ease;
@@ -205,15 +221,17 @@
         }
 
         .results h3 {
-            font-size: 16px;
+            font-size: 14px;
             color: var(--primary);
             margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         .savings-amount {
-            font-size: 48px;
+            font-size: 44px;
             font-weight: 800;
-            color: var(--primary);
+            color: var(--primary-dark);
             line-height: 1;
         }
 
@@ -225,9 +243,9 @@
 
         .savings-detail {
             background: white;
-            border-radius: 8px;
-            padding: 12px;
-            margin: 12px 0;
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin: 10px 0;
             font-size: 14px;
         }
 
@@ -235,90 +253,195 @@
             color: var(--primary);
         }
 
-        .results-cta {
-            display: inline-block;
-            background: var(--whatsapp);
+        /* CTA dopo risultato */
+        .results-cta-section {
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 2px dashed rgba(46, 125, 50, 0.3);
+        }
+
+        .results-cta-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--primary-dark);
+            margin-bottom: 16px;
+        }
+
+        .cta-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .cta-call {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background: var(--call-green);
             color: white;
-            padding: 14px 28px;
-            border-radius: 30px;
+            padding: 16px 20px;
+            border-radius: 12px;
             text-decoration: none;
             font-weight: 700;
-            margin-top: 16px;
             font-size: 16px;
+            transition: transform 0.2s;
+        }
+
+        .cta-call:active {
+            transform: scale(0.98);
+        }
+
+        .cta-call svg {
+            width: 22px;
+            height: 22px;
+        }
+
+        .cta-divider {
+            text-align: center;
+            color: var(--text-gray);
+            font-size: 13px;
+            margin: 4px 0;
+        }
+
+        /* Form contatto */
+        .contact-form {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .contact-form-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-gray);
+            margin-bottom: 12px;
+            text-align: center;
+        }
+
+        .contact-form input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #E0E0E0;
+            border-radius: 10px;
+            font-size: 16px;
+            margin-bottom: 12px;
+            -webkit-appearance: none;
+        }
+
+        .contact-form input:focus {
+            outline: none;
+            border-color: var(--primary-light);
+        }
+
+        .contact-form button {
+            width: 100%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 14px;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .contact-form button:active {
+            background: var(--accent-hover);
+        }
+
+        .form-success {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .form-success.show {
+            display: block;
+        }
+
+        .form-success-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .form-success h4 {
+            color: var(--primary);
+            margin-bottom: 8px;
         }
 
         /* Benefits */
         .benefits {
-            padding: 30px 20px;
+            padding: 24px 16px;
         }
 
         .benefits h2 {
             text-align: center;
-            font-size: 22px;
-            margin-bottom: 24px;
+            font-size: 20px;
+            margin-bottom: 20px;
             color: var(--primary);
         }
 
         .benefit-card {
             background: var(--white);
             border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 16px;
+            padding: 16px;
+            margin-bottom: 12px;
             display: flex;
-            align-items: flex-start;
-            gap: 16px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            align-items: center;
+            gap: 14px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
         }
 
         .benefit-icon {
-            width: 50px;
-            height: 50px;
+            width: 44px;
+            height: 44px;
             background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary) 100%);
-            border-radius: 12px;
+            border-radius: 10px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 24px;
+            font-size: 20px;
             flex-shrink: 0;
         }
 
         .benefit-text h3 {
-            font-size: 16px;
-            margin-bottom: 4px;
+            font-size: 15px;
+            margin-bottom: 2px;
         }
 
         .benefit-text p {
-            font-size: 14px;
+            font-size: 13px;
             color: var(--text-gray);
         }
 
         /* Trust */
         .trust {
             background: var(--white);
-            padding: 30px 20px;
+            padding: 24px 16px;
             text-align: center;
         }
 
         .trust-stats {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 16px;
-            margin-bottom: 24px;
+            gap: 12px;
+            margin-bottom: 20px;
         }
 
         .stat {
-            padding: 16px 8px;
+            padding: 12px 8px;
         }
 
         .stat-number {
-            font-size: 32px;
+            font-size: 28px;
             font-weight: 800;
             color: var(--primary);
             line-height: 1;
         }
 
         .stat-label {
-            font-size: 12px;
+            font-size: 11px;
             color: var(--text-gray);
             margin-top: 4px;
         }
@@ -326,75 +449,19 @@
         .trust-badges {
             display: flex;
             justify-content: center;
-            gap: 24px;
+            gap: 16px;
             flex-wrap: wrap;
-            padding: 16px;
+            padding: 12px;
             background: var(--bg-light);
-            border-radius: 12px;
+            border-radius: 10px;
         }
 
         .badge {
-            font-size: 12px;
+            font-size: 11px;
             color: var(--text-gray);
             display: flex;
             align-items: center;
-            gap: 6px;
-        }
-
-        /* FAQ */
-        .faq {
-            padding: 30px 20px;
-        }
-
-        .faq h2 {
-            text-align: center;
-            font-size: 22px;
-            margin-bottom: 24px;
-            color: var(--primary);
-        }
-
-        .faq-item {
-            background: var(--white);
-            border-radius: 12px;
-            margin-bottom: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }
-
-        .faq-question {
-            padding: 18px 20px;
-            font-weight: 600;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .faq-question::after {
-            content: '+';
-            font-size: 24px;
-            color: var(--primary-light);
-            transition: transform 0.3s;
-        }
-
-        .faq-item.active .faq-question::after {
-            transform: rotate(45deg);
-        }
-
-        .faq-answer {
-            max-height: 0;
-            overflow: hidden;
-            transition: max-height 0.3s ease;
-        }
-
-        .faq-answer-content {
-            padding: 0 20px 18px;
-            color: var(--text-gray);
-            font-size: 14px;
-        }
-
-        .faq-item.active .faq-answer {
-            max-height: 200px;
+            gap: 4px;
         }
 
         /* Sticky Bottom Bar */
@@ -404,55 +471,67 @@
             left: 0;
             right: 0;
             background: var(--white);
-            padding: 12px 20px;
+            padding: 12px 16px;
+            padding-bottom: calc(12px + env(safe-area-inset-bottom));
             box-shadow: 0 -4px 20px rgba(0,0,0,0.1);
-            display: flex;
-            gap: 12px;
             z-index: 1000;
         }
 
         .sticky-btn {
-            flex: 1;
-            padding: 14px;
-            border-radius: 12px;
-            text-decoration: none;
-            font-weight: 700;
-            font-size: 14px;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 10px;
+            width: 100%;
+            padding: 16px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 16px;
+            background: var(--call-green);
+            color: white;
+            border: none;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
         }
 
-        .btn-whatsapp {
-            background: var(--whatsapp);
-            color: white;
+        .sticky-btn:active {
+            opacity: 0.9;
         }
 
-        .btn-call {
-            background: var(--accent);
-            color: white;
+        .sticky-btn svg {
+            width: 22px;
+            height: 22px;
         }
 
         /* Desktop adjustments */
         @media (min-width: 768px) {
+            body {
+                padding-bottom: 100px;
+            }
+
             .hero h1 {
-                font-size: 36px;
+                font-size: 32px;
             }
 
             .calculator {
-                max-width: 500px;
+                max-width: 480px;
                 margin-left: auto;
                 margin-right: auto;
             }
 
             .benefits {
-                max-width: 600px;
+                max-width: 500px;
+                margin: 0 auto;
+            }
+
+            .trust {
+                max-width: 500px;
                 margin: 0 auto;
             }
 
             .sticky-bar {
-                max-width: 500px;
+                max-width: 480px;
                 left: 50%;
                 transform: translateX(-50%);
                 border-radius: 16px 16px 0 0;
@@ -466,25 +545,28 @@
     <header class="header">
         <div class="header-content">
             <div class="logo">Imex<span>Green</span></div>
-            <a href="tel:+39XXXXXXXXXX" class="header-cta">Chiama Ora</a>
+            <a href="tel:+39XXXXXXXXXX" class="header-cta">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 00-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/></svg>
+                Chiama
+            </a>
         </div>
     </header>
 
     <!-- Hero -->
     <section class="hero">
-        <h1>Scopri Quanto <span>Risparmi</span> con il Fotovoltaico</h1>
-        <p>Calcola in 1 minuto il tuo risparmio annuale sulla bolletta elettrica</p>
-        <div style="margin-top: 12px; display: inline-block; background: rgba(255,255,255,0.2); padding: 6px 14px; border-radius: 20px; font-size: 13px;">📍 Operiamo in tutta la Lombardia</div>
+        <h1>Calcola Quanto <span>Risparmi</span> con il Fotovoltaico</h1>
+        <p>Scopri in 1 minuto il tuo risparmio annuale</p>
+        <div class="lombardia-badge">Operiamo in tutta la Lombardia</div>
     </section>
 
     <!-- Calculator -->
     <section class="calculator">
-        <h2>Calcola il Tuo Risparmio</h2>
+        <h2>Inserisci i tuoi dati</h2>
         <form class="calc-form" id="calcForm">
             <div class="form-group">
                 <label>Quanto spendi di bolletta al mese?</label>
                 <div class="input-prefix">
-                    <input type="number" id="bolletta" placeholder="150" min="30" max="1000" required>
+                    <input type="number" id="bolletta" placeholder="150" min="30" max="1000" required inputmode="numeric">
                     <span>€/mese</span>
                 </div>
             </div>
@@ -501,6 +583,7 @@
             <button type="submit" class="calc-btn">CALCOLA IL MIO RISPARMIO</button>
         </form>
 
+        <!-- Risultati -->
         <div class="results" id="results">
             <h3>Il tuo risparmio stimato</h3>
             <div class="savings-amount" id="savingsAmount">€ 1.250</div>
@@ -514,21 +597,46 @@
                 Ammortizzi l'impianto in circa <strong id="payback">5-6 anni</strong>
             </div>
 
-            <a href="https://wa.me/39XXXXXXXXXX?text=Ciao!%20Ho%20calcolato%20un%20risparmio%20di%20%E2%82%AC1250%2Fanno.%20Vorrei%20un%20preventivo%20gratuito." class="results-cta" id="whatsappCta">
-                Richiedi Preventivo Gratuito
-            </a>
+            <!-- CTA Section -->
+            <div class="results-cta-section">
+                <div class="results-cta-title">Vuoi un preventivo gratuito?</div>
+
+                <div class="cta-buttons">
+                    <!-- Chiamata diretta -->
+                    <a href="tel:+39XXXXXXXXXX" class="cta-call">
+                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 00-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/></svg>
+                        Chiama Ora
+                    </a>
+
+                    <div class="cta-divider">oppure lascia il tuo numero</div>
+
+                    <!-- Form contatto -->
+                    <div class="contact-form" id="contactForm">
+                        <input type="text" id="nome" placeholder="Il tuo nome" required>
+                        <input type="tel" id="telefono" placeholder="Il tuo numero di telefono" required inputmode="tel">
+                        <button type="button" id="submitContact">TI RICHIAMIAMO NOI</button>
+                    </div>
+
+                    <!-- Success message -->
+                    <div class="form-success" id="formSuccess">
+                        <div class="form-success-icon">✓</div>
+                        <h4>Richiesta inviata!</h4>
+                        <p>Ti ricontatteremo al più presto.</p>
+                    </div>
+                </div>
+            </div>
         </div>
     </section>
 
     <!-- Benefits -->
     <section class="benefits">
-        <h2>Perch&eacute; Scegliere ImexGreen</h2>
+        <h2>Perché ImexGreen</h2>
 
         <div class="benefit-card">
             <div class="benefit-icon">☀️</div>
             <div class="benefit-text">
                 <h3>Fotovoltaico Chiavi in Mano</h3>
-                <p>Progettiamo, installiamo e gestiamo le pratiche. Tu non devi pensare a nulla.</p>
+                <p>Progettiamo, installiamo e gestiamo le pratiche</p>
             </div>
         </div>
 
@@ -536,7 +644,7 @@
             <div class="benefit-icon">💰</div>
             <div class="benefit-text">
                 <h3>Incentivi e Detrazioni 2025</h3>
-                <p>Ti aiutiamo ad accedere a tutti gli incentivi disponibili per massimizzare il risparmio.</p>
+                <p>Ti aiutiamo ad accedere a tutti gli incentivi</p>
             </div>
         </div>
 
@@ -544,7 +652,7 @@
             <div class="benefit-icon">🔧</div>
             <div class="benefit-text">
                 <h3>Efficientamento Completo</h3>
-                <p>Fotovoltaico, pompe di calore, accumulo: soluzioni integrate per la tua casa.</p>
+                <p>Fotovoltaico, pompe di calore, accumulo</p>
             </div>
         </div>
 
@@ -552,7 +660,7 @@
             <div class="benefit-icon">✅</div>
             <div class="benefit-text">
                 <h3>Sopralluogo Gratuito</h3>
-                <p>Analizziamo la tua situazione senza impegno e ti proponiamo la soluzione migliore.</p>
+                <p>Senza impegno, analizziamo la tua situazione</p>
             </div>
         </div>
     </section>
@@ -562,75 +670,30 @@
         <div class="trust-stats">
             <div class="stat">
                 <div class="stat-number">10+</div>
-                <div class="stat-label">Anni di esperienza</div>
+                <div class="stat-label">Anni esperienza</div>
             </div>
             <div class="stat">
                 <div class="stat-number">500+</div>
-                <div class="stat-label">Impianti installati</div>
+                <div class="stat-label">Installazioni</div>
             </div>
             <div class="stat">
                 <div class="stat-number">25</div>
-                <div class="stat-label">Anni di garanzia</div>
+                <div class="stat-label">Anni garanzia</div>
             </div>
         </div>
 
         <div class="trust-badges">
             <div class="badge">🏆 Installatori Certificati</div>
-            <div class="badge">📋 Gestione Pratiche Inclusa</div>
+            <div class="badge">📋 Pratiche Incluse</div>
             <div class="badge">🛡️ Garanzia Totale</div>
-        </div>
-    </section>
-
-    <!-- FAQ -->
-    <section class="faq">
-        <h2>Domande Frequenti</h2>
-
-        <div class="faq-item">
-            <div class="faq-question">Quanto costa un impianto fotovoltaico?</div>
-            <div class="faq-answer">
-                <div class="faq-answer-content">
-                    Il costo dipende dalle dimensioni e dalla tipologia. Un impianto da 3kW parte da circa €5.000-7.000 con le detrazioni fiscali. Ti forniamo un preventivo personalizzato gratuito.
-                </div>
-            </div>
-        </div>
-
-        <div class="faq-item">
-            <div class="faq-question">Quali incentivi sono disponibili nel 2025?</div>
-            <div class="faq-answer">
-                <div class="faq-answer-content">
-                    Sono disponibili detrazioni fiscali fino al 50%, Scambio sul Posto con il GSE, e bonus specifici per l'efficientamento energetico. Ti guidiamo noi in tutte le pratiche.
-                </div>
-            </div>
-        </div>
-
-        <div class="faq-item">
-            <div class="faq-question">Quanto tempo serve per l'installazione?</div>
-            <div class="faq-answer">
-                <div class="faq-answer-content">
-                    L'installazione richiede 1-2 giorni. Per le pratiche burocratiche servono 2-4 settimane. Gestiamo tutto noi, tu devi solo firmare.
-                </div>
-            </div>
-        </div>
-
-        <div class="faq-item">
-            <div class="faq-question">Il sopralluogo è davvero gratuito?</div>
-            <div class="faq-answer">
-                <div class="faq-answer-content">
-                    S&igrave;, il sopralluogo e il preventivo sono completamente gratuiti e senza impegno. Analizziamo la tua situazione e ti proponiamo la soluzione migliore.
-                </div>
-            </div>
         </div>
     </section>
 
     <!-- Sticky Bottom Bar -->
     <div class="sticky-bar">
-        <a href="https://wa.me/39XXXXXXXXXX?text=Ciao!%20Vorrei%20informazioni%20sul%20fotovoltaico." class="sticky-btn btn-whatsapp">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-            WhatsApp
-        </a>
-        <a href="tel:+39XXXXXXXXXX" class="sticky-btn btn-call">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 00-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/></svg>
-            Chiama
+        <a href="tel:+39XXXXXXXXXX" class="sticky-btn">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 00-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/></svg>
+            Chiama per Preventivo Gratuito
         </a>
     </div>
 
@@ -641,15 +704,14 @@
 
             const bolletta = parseFloat(document.getElementById('bolletta').value);
 
-            // Coefficiente per Lombardia (irraggiamento medio ~1.100-1.200 kWh/kWp)
-            // Stima conservativa: risparmio circa 70% della bolletta con autoconsumo
+            // Coefficiente per Lombardia
             const coeff = 0.70;
 
-            // Calcolo risparmio annuale (stima conservativa)
+            // Calcolo risparmio annuale
             const risparmioAnnuale = Math.round(bolletta * 12 * coeff);
             const risparmio25 = risparmioAnnuale * 25;
 
-            // Payback period (stima)
+            // Payback period
             let payback;
             if (risparmioAnnuale > 1500) {
                 payback = '4-5 anni';
@@ -666,27 +728,56 @@
             document.getElementById('savings25').textContent = '€ ' + risparmio25.toLocaleString('it-IT');
             document.getElementById('payback').textContent = payback;
 
-            // Aggiorna link WhatsApp con dati
-            const whatsappMsg = encodeURIComponent(`Ciao! Ho calcolato un risparmio di €${risparmioAnnuale}/anno con il fotovoltaico. Vorrei un preventivo gratuito.`);
-            document.getElementById('whatsappCta').href = `https://wa.me/39XXXXXXXXXX?text=${whatsappMsg}`;
+            // Salva risparmio per form
+            window.risparmioCalcolato = risparmioAnnuale;
 
             // Mostra risultati
             document.getElementById('results').classList.add('show');
 
             // Scroll ai risultati
-            document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => {
+                document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 100);
         });
 
-        // FAQ Accordion
-        document.querySelectorAll('.faq-question').forEach(question => {
-            question.addEventListener('click', function() {
-                const item = this.parentElement;
-                item.classList.toggle('active');
+        // Contact Form Submission
+        document.getElementById('submitContact').addEventListener('click', function() {
+            const nome = document.getElementById('nome').value.trim();
+            const telefono = document.getElementById('telefono').value.trim();
+
+            if (!nome || !telefono) {
+                alert('Inserisci nome e telefono');
+                return;
+            }
+
+            // Qui puoi integrare Formspree o altro servizio
+            // Per ora simulo l'invio
+            const risparmio = window.risparmioCalcolato || 'N/A';
+            const tipoAbitazione = document.getElementById('tipoAbitazione').value;
+
+            console.log('Lead:', { nome, telefono, risparmio, tipoAbitazione });
+
+            // INTEGRAZIONE FORMSPREE (decommentare e inserire ID):
+            /*
+            fetch('https://formspree.io/f/IL_TUO_ID', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    nome: nome,
+                    telefono: telefono,
+                    risparmio_calcolato: risparmio + '€/anno',
+                    tipo_abitazione: tipoAbitazione
+                })
             });
+            */
+
+            // Mostra successo
+            document.getElementById('contactForm').style.display = 'none';
+            document.getElementById('formSuccess').classList.add('show');
         });
 
         // Sostituisci XXXXXXXXXX con il numero reale
-        // Esempio: 39123456789 (senza + iniziale per WhatsApp)
+        // Esempio: +393331234567
     </script>
 
 </body>
