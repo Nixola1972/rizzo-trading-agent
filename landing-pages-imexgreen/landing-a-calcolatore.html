@@ -594,7 +594,11 @@
             </div>
 
             <div class="savings-detail">
-                Ammortizzi l'impianto in circa <strong id="payback">5-6 anni</strong>
+                Ammortizzi l'impianto in circa <strong id="payback">3-4 anni</strong>
+            </div>
+
+            <div class="savings-detail" style="background: #FFF3E0; border: 1px solid #FFB74D;">
+                <strong style="color: #E65100;">Con detrazione fiscale 50%</strong> paghi solo metà del costo!
             </div>
 
             <!-- CTA Section -->
@@ -702,23 +706,34 @@
 
             const bolletta = parseFloat(document.getElementById('bolletta').value);
 
-            // Coefficiente per Lombardia
+            // Coefficiente risparmio per Lombardia (autoconsumo stimato 70%)
             const coeff = 0.70;
 
-            // Calcolo risparmio annuale
+            // Calcolo risparmio annuale in bolletta
             const risparmioAnnuale = Math.round(bolletta * 12 * coeff);
             const risparmio25 = risparmioAnnuale * 25;
 
-            // Payback period
+            // Stima costo impianto basato sulla bolletta
+            // Bolletta €150/mese → circa 3kW → circa €6.000-7.000
+            const consumoAnnuo = (bolletta * 12) / 0.25; // kWh consumati (prezzo medio 0.25€/kWh)
+            const potenzaKw = Math.ceil(consumoAnnuo / 1100); // kWh/kWp in Lombardia
+            const costoImpianto = potenzaKw * 2000; // €2.000/kWp installato
+
+            // CON DETRAZIONE 50% - il costo effettivo è la metà!
+            const costoConDetrazione = costoImpianto * 0.50;
+
+            // Payback = costo effettivo / risparmio annuale
+            const paybackAnni = costoConDetrazione / risparmioAnnuale;
+
             let payback;
-            if (risparmioAnnuale > 1500) {
+            if (paybackAnni <= 3) {
+                payback = '2-3 anni';
+            } else if (paybackAnni <= 4) {
+                payback = '3-4 anni';
+            } else if (paybackAnni <= 5) {
                 payback = '4-5 anni';
-            } else if (risparmioAnnuale > 1000) {
-                payback = '5-6 anni';
-            } else if (risparmioAnnuale > 700) {
-                payback = '6-7 anni';
             } else {
-                payback = '7-8 anni';
+                payback = '5-6 anni';
             }
 
             // Aggiorna risultati
