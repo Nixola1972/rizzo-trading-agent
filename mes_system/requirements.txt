@@ -1,0 +1,43 @@
+# MES/MRP/WMS Sistema Integrato - Trade Skill S.R.L.
+# Python 3.11+
+
+# Web Framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.18
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.1
+
+# Validation & Settings
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# MCP Server
+fastmcp==2.3.4
+
+# Barcode & QR
+python-barcode==0.15.1
+qrcode[pil]==8.0
+
+# Excel/CSV (Danea sync)
+openpyxl==3.1.5
+pandas==2.2.3
+
+# PDF Generation (documenti doganali)
+reportlab==4.2.5
+
+# Date/Time
+python-dateutil==2.9.0
+
+# HTTP Client
+httpx==0.28.1
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Utilities
+python-dotenv==1.0.1
