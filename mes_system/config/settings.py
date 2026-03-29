@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     danea_export_path: Optional[str] = None
     danea_import_path: Optional[str] = None
 
+    # Danea Bridge Agent (PC locale con Cloudflare Tunnel)
+    danea_bridge_url: Optional[str] = None  # es. https://danea-bridge.yourdomain.com
+
     # Supabase (opzionale, alternativa a database_url diretto)
     supabase_url: Optional[str] = None
     supabase_key: Optional[str] = None

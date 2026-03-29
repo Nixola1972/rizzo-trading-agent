@@ -255,5 +255,90 @@ async def quality_dashboard() -> dict:
         }
 
 
+# ============================================
+# TOOLS DANEA — Dati in tempo reale dal gestionale
+# (via Bridge Agent sul PC locale + Cloudflare Tunnel)
+# ============================================
+
+@mcp.tool()
+async def danea_cerca_articolo(query: str) -> dict:
+    """Cerca un articolo nel gestionale Danea Easyfatt in tempo reale.
+
+    Cerca per codice articolo o descrizione nel database SQL Server di Danea.
+    Esempio: danea_cerca_articolo("STM32") o danea_cerca_articolo("condensatore 100nF")
+    """
+    from mes_system.bridge.client import DaneaBridgeClient
+    client = DaneaBridgeClient()
+    try:
+        items = await client.search_articoli(query)
+        return {
+            "fonte": "Danea Easyfatt (tempo reale)",
+            "risultati": len(items),
+            "articoli": items,
+        }
+    except Exception as e:
+        return {"error": f"Bridge Agent non raggiungibile: {e}. Verificare che sia attivo sul PC locale."}
+
+
+@mcp.tool()
+async def danea_giacenza(codice: str | None = None) -> dict:
+    """Giacenze in tempo reale dal gestionale Danea.
+
+    Senza parametri: tutte le giacenze > 0.
+    Con codice: filtra per codice articolo.
+    """
+    from mes_system.bridge.client import DaneaBridgeClient
+    client = DaneaBridgeClient()
+    try:
+        items = await client.get_giacenze(codice)
+        return {
+            "fonte": "Danea Easyfatt (tempo reale)",
+            "articoli_con_giacenza": len(items),
+            "giacenze": items,
+        }
+    except Exception as e:
+        return {"error": f"Bridge Agent non raggiungibile: {e}"}
+
+
+@mcp.tool()
+async def danea_movimenti(codice: str | None = None, data_da: str | None = None) -> dict:
+    """Movimenti di magazzino dal gestionale Danea.
+
+    Parametri:
+    - codice: filtra per codice articolo
+    - data_da: data inizio in formato YYYY-MM-DD
+    """
+    from mes_system.bridge.client import DaneaBridgeClient
+    client = DaneaBridgeClient()
+    try:
+        items = await client.get_movimenti(codice=codice, data_da=data_da)
+        return {
+            "fonte": "Danea Easyfatt (tempo reale)",
+            "movimenti": len(items),
+            "dettaglio": items,
+        }
+    except Exception as e:
+        return {"error": f"Bridge Agent non raggiungibile: {e}"}
+
+
+@mcp.tool()
+async def danea_query(sql: str) -> dict:
+    """Esegue una query SQL personalizzata sul database Danea (solo SELECT).
+
+    Utile per query specifiche che non sono coperte dagli altri tool.
+    Esempio: danea_query("SELECT TOP 10 * FROM Articoli WHERE Giacenza > 100")
+    """
+    from mes_system.bridge.client import DaneaBridgeClient
+    client = DaneaBridgeClient()
+    try:
+        result = await client.custom_query(sql)
+        return {
+            "fonte": "Danea Easyfatt (tempo reale)",
+            **result,
+        }
+    except Exception as e:
+        return {"error": f"Errore query: {e}"}
+
+
 if __name__ == "__main__":
     mcp.run()

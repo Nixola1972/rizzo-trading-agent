@@ -16,6 +16,7 @@ from mes_system.api.routers import (
     mes,
     shipments,
     quality,
+    danea,
 )
 from mes_system.telegram_bot.webhook import router as telegram_router
 
@@ -81,6 +82,13 @@ def create_app() -> FastAPI:
         tags=["Qualità"],
     )
 
+    # Danea Bridge — Dati in tempo reale dal gestionale
+    app.include_router(
+        danea.router,
+        prefix=f"{prefix}/danea",
+        tags=["Danea Easyfatt (tempo reale)"],
+    )
+
     # Telegram Bot Webhook
     app.include_router(
         telegram_router,
@@ -108,6 +116,7 @@ def create_app() -> FastAPI:
                 "MES (Manufacturing Execution)",
                 "Spedizioni IT↔AL",
                 "Qualità",
+                "Danea Easyfatt (dati tempo reale via bridge)",
                 "Telegram Bot (produzione vocale)",
             ],
         }
