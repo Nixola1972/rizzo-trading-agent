@@ -1,0 +1,13 @@
+# Dipendenze dei tool Move 37 — isolate da quelle del trading agent.
+#   pip install -r move37/tools/requirements.txt
+
+anthropic>=0.116.0
+python-docx>=1.1.0
+
+# dossier.py --from-files
+beautifulsoup4>=4.12.0
+pypdf>=4.0.0
+
+# verbale.py --audio (trascrizione in locale: l'audio non lascia il computer).
+# Richiede ffmpeg installato nel sistema.
+faster-whisper>=1.0.0
