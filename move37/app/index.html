@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Move 37</title>
+<style>
+  :root {
+    --bg:#faf9f7; --card:#fff; --testo:#1a1a1a; --tenue:#6b6b6b;
+    --bordo:#e2e0dc; --accento:#b4531f; --accento-tenue:#f5ede7;
+    --ok:#1f6b3a; --avviso:#8a5a00; --errore:#a32020;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#161614; --card:#1f1e1c; --testo:#ece9e4; --tenue:#9a958d;
+      --bordo:#333029; --accento:#e0834a; --accento-tenue:#2a221c;
+      --ok:#5fbf85; --avviso:#d6a54a; --errore:#e07070;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#161614; --card:#1f1e1c; --testo:#ece9e4; --tenue:#9a958d;
+    --bordo:#333029; --accento:#e0834a; --accento-tenue:#2a221c;
+    --ok:#5fbf85; --avviso:#d6a54a; --errore:#e07070;
+  }
+  :root[data-theme="light"] {
+    --bg:#faf9f7; --card:#fff; --testo:#1a1a1a; --tenue:#6b6b6b;
+    --bordo:#e2e0dc; --accento:#b4531f; --accento-tenue:#f5ede7;
+    --ok:#1f6b3a; --avviso:#8a5a00; --errore:#a32020;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--testo);
+    font:15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  .wrap { max-width:820px; margin:0 auto; padding:28px 20px 80px; }
+  header { margin-bottom:22px; }
+  .marchio { font-size:12px; letter-spacing:.16em; color:var(--accento); font-weight:700; }
+  h1 { font-size:26px; margin:4px 0 6px; font-weight:650; }
+  .sub { color:var(--tenue); font-size:14px; margin:0; }
+
+  .card { background:var(--card); border:1px solid var(--bordo); border-radius:12px; padding:20px; margin-bottom:16px; }
+  .card h2 { font-size:17px; margin:0 0 4px; font-weight:620; }
+  .card .nota { color:var(--tenue); font-size:13.5px; margin:0 0 16px; }
+
+  .tabs { display:flex; gap:6px; margin-bottom:16px; flex-wrap:wrap; }
+  .tab {
+    padding:9px 15px; border:1px solid var(--bordo); background:var(--card);
+    color:var(--testo); border-radius:8px; cursor:pointer; font-size:14px; font-weight:500;
+  }
+  .tab[aria-selected="true"] { background:var(--accento-tenue); border-color:var(--accento); color:var(--accento); }
+
+  label { display:block; font-size:13px; font-weight:600; margin:14px 0 5px; }
+  input[type=text], input[type=password], textarea, select {
+    width:100%; padding:9px 11px; border:1px solid var(--bordo); border-radius:8px;
+    background:var(--bg); color:var(--testo); font:inherit; font-size:14px;
+  }
+  textarea { min-height:150px; resize:vertical; font-size:13.5px; }
+  input:focus, textarea:focus, select:focus { outline:2px solid var(--accento); outline-offset:-1px; }
+  .riga { display:flex; gap:12px; flex-wrap:wrap; }
+  .riga > * { flex:1; min-width:150px; }
+
+  button.azione {
+    margin-top:18px; padding:11px 20px; border:0; border-radius:8px;
+    background:var(--accento); color:#fff; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button.azione:disabled { opacity:.45; cursor:not-allowed; }
+  button.mini {
+    padding:7px 13px; border:1px solid var(--bordo); border-radius:7px;
+    background:var(--card); color:var(--testo); font:inherit; font-size:13px; cursor:pointer;
+  }
+
+  .drop {
+    border:2px dashed var(--bordo); border-radius:10px; padding:26px; text-align:center;
+    color:var(--tenue); cursor:pointer; font-size:14px; transition:.15s;
+  }
+  .drop:hover, .drop.sopra { border-color:var(--accento); background:var(--accento-tenue); color:var(--accento); }
+  .drop strong { color:var(--testo); display:block; margin-bottom:3px; font-size:14.5px; }
+
+  .stato { font-size:13px; padding:4px 10px; border-radius:20px; display:inline-block; }
+  .stato.si { background:var(--accento-tenue); color:var(--ok); }
+  .stato.no { background:var(--accento-tenue); color:var(--avviso); }
+
+  #esito { display:none; }
+  .log {
+    background:var(--bg); border:1px solid var(--bordo); border-radius:8px; padding:13px;
+    font:12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    max-height:260px; overflow:auto; white-space:pre-wrap;
+  }
+  .log .att { color:var(--avviso); }
+  .log .err { color:var(--errore); }
+  .file { display:flex; gap:9px; flex-wrap:wrap; margin-top:14px; }
+  .file a {
+    padding:8px 13px; border:1px solid var(--accento); border-radius:7px;
+    color:var(--accento); text-decoration:none; font-size:13.5px; font-weight:550;
+  }
+  .file a:hover { background:var(--accento-tenue); }
+  .spinner {
+    display:inline-block; width:13px; height:13px; border:2px solid var(--bordo);
+    border-top-color:var(--accento); border-radius:50%; animation:g .8s linear infinite;
+    vertical-align:-2px; margin-right:7px;
+  }
+  @keyframes g { to { transform:rotate(360deg); } }
+  .avvertenza {
+    border-left:3px solid var(--accento); padding:9px 14px; margin:16px 0 0;
+    background:var(--accento-tenue); border-radius:0 7px 7px 0; font-size:13.5px; color:var(--testo);
+  }
+  footer { margin-top:34px; color:var(--tenue); font-size:12.5px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="marchio">MOVE 37</div>
+  <h1>Preparazione e verbale</h1>
+  <p class="sub">Gira sul tuo computer. L'audio delle riunioni non esce di qui.</p>
+</header>
+
+<div class="card">
+  <h2>Chiave API <span id="statoChiave" class="stato no">non impostata</span></h2>
+  <p class="nota">Si prende da console.anthropic.com. Si salva una volta sola, sul tuo computer.</p>
+  <div class="riga">
+    <input type="password" id="chiave" placeholder="sk-ant-...">
+    <button class="mini" id="salvaChiave" style="flex:0 0 auto">Salva</button>
+  </div>
+  <div id="statoWhisper" class="nota" style="margin:12px 0 0"></div>
+</div>
+
+<div class="tabs" role="tablist">
+  <button class="tab" role="tab" data-p="verbale" aria-selected="true">Verbale dopo l'incontro</button>
+  <button class="tab" role="tab" data-p="dossier" aria-selected="false">Dossier prima dell'incontro</button>
+  <button class="tab" role="tab" data-p="stampabili" aria-selected="false">Fogli da stampare</button>
+</div>
+
+<section class="card" id="p-verbale">
+  <h2>Verbale dopo l'incontro</h2>
+  <p class="nota">Trascina la registrazione, oppure incolla gli appunti se non hai potuto registrare.
+     Mandalo al cliente entro poche ore: è quello il momento in cui capisce.</p>
+
+  <div class="riga">
+    <div><label for="vAzienda">Azienda</label><input type="text" id="vAzienda" placeholder="Rossi Srl"></div>
+    <div><label for="vData">Data dell'incontro</label><input type="text" id="vData" placeholder="oggi"></div>
+  </div>
+  <label for="vPresenti">Presenti (facoltativo)</label>
+  <input type="text" id="vPresenti" placeholder="Titolare, responsabile produzione">
+
+  <label>Registrazione</label>
+  <div class="drop" id="dropAudio">
+    <strong>Trascina qui il file audio</strong>
+    oppure clicca per sceglierlo — m4a, mp3, wav, mp4
+  </div>
+  <input type="file" id="fileAudio" accept="audio/*,video/*" hidden>
+
+  <label for="vTesto">…oppure appunti / trascrizione già pronta</label>
+  <textarea id="vTesto" placeholder="Incolla qui le schede processo o gli appunti. Funziona anche senza registrazione."></textarea>
+
+  <button class="azione" id="goVerbale">Genera il verbale</button>
+</section>
+
+<section class="card" id="p-dossier" hidden>
+  <h2>Dossier prima dell'incontro</h2>
+  <p class="nota">Ricerca su fonti pubbliche. Serve a te per fare domande di secondo livello,
+     non da presentare al cliente in apertura.</p>
+
+  <div class="riga">
+    <div><label for="dNome">Azienda</label><input type="text" id="dNome" placeholder="Rossi Srl"></div>
+    <div><label for="dUrl">Sito</label><input type="text" id="dUrl" placeholder="https://rossi.it"></div>
+  </div>
+
+  <label for="dMateriale">Se il sito blocca la ricerca, incolla qui le pagine salvate a mano</label>
+  <textarea id="dMateriale" placeholder="Facoltativo. Se lo compili, la ricerca usa solo questo."></textarea>
+
+  <div class="avvertenza">Esce una <strong>bozza</strong>. Va riletta e potata prima dell'incontro:
+     le ipotesi deboli si tolgono, e ogni numero senza fonte va verificato o cancellato.</div>
+
+  <button class="azione" id="goDossier">Prepara il dossier</button>
+</section>
+
+<section class="card" id="p-stampabili" hidden>
+  <h2>Fogli da stampare</h2>
+  <p class="nota">La scheda A4 è quella che userai davvero: una per processo, campi in ordine sparso.
+     Il canvas A3 solo se il cliente non sa da dove partire.</p>
+  <button class="azione" id="goStampabili">Genera i fogli</button>
+</section>
+
+<section class="card" id="esito">
+  <h2 id="esitoTitolo">In corso</h2>
+  <div class="log" id="log"></div>
+  <div class="file" id="file"></div>
+</section>
+
+<footer>Move 37 · in ascolto solo su questo computer · per chiudere, Ctrl-C nella finestra del terminale</footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let audioCaricato = null, sondaggio = null;
+
+// --- schede ---
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-selected', x === t));
+  ['verbale','dossier','stampabili'].forEach(p => $('#p-' + p).hidden = (p !== t.dataset.p));
+});
+
+// --- stato iniziale ---
+async function stato() {
+  const s = await (await fetch('/api/stato')).json();
+  $('#statoChiave').className = 'stato ' + (s.chiave ? 'si' : 'no');
+  $('#statoChiave').textContent = s.chiave ? 'impostata' : 'non impostata';
+  $('#statoWhisper').textContent = s.whisper
+    ? 'Trascrizione automatica pronta: l’audio viene trascritto qui, sul tuo computer.'
+    : 'Trascrizione automatica non disponibile (mancano faster-whisper o ffmpeg). Puoi incollare gli appunti.';
+}
+stato();
+
+$('#salvaChiave').onclick = async () => {
+  await fetch('/api/chiave', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({api_key: $('#chiave').value})
+  });
+  $('#chiave').value = '';
+  stato();
+};
+
+// --- caricamento audio ---
+const drop = $('#dropAudio'), input = $('#fileAudio');
+drop.onclick = () => input.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('sopra'); };
+drop.ondragleave = () => drop.classList.remove('sopra');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('sopra'); carica(e.dataTransfer.files[0]); };
+input.onchange = () => carica(input.files[0]);
+
+async function carica(f) {
+  if (!f) return;
+  drop.innerHTML = '<strong>Caricamento…</strong>' + f.name;
+  const r = await fetch('/api/carica', {method: 'POST', headers: {'X-Filename': f.name}, body: f});
+  const d = await r.json();
+  audioCaricato = d.percorso;
+  const mb = (f.size / 1048576).toFixed(1);
+  drop.innerHTML = '<strong>' + d.nome + '</strong>' + mb + ' MB — pronto. Clicca per cambiare file.';
+}
+
+// --- avvio lavori ---
+function mostraEsito(titolo) {
+  $('#esito').style.display = 'block';
+  $('#esitoTitolo').innerHTML = '<span class="spinner"></span>' + titolo;
+  $('#log').textContent = '';
+  $('#file').innerHTML = '';
+  $('#esito').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+async function avvia(url, corpo, titolo, bottone) {
+  bottone.disabled = true;
+  mostraEsito(titolo);
+  try {
+    const r = await fetch(url, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(corpo || {})
+    });
+    const d = await r.json();
+    if (d.errore) { finisci(null, d.errore); bottone.disabled = false; return; }
+    segui(d.job, bottone);
+  } catch (e) {
+    finisci(null, String(e));
+    bottone.disabled = false;
+  }
+}
+
+function segui(jid, bottone) {
+  clearInterval(sondaggio);
+  sondaggio = setInterval(async () => {
+    const j = await (await fetch('/api/job/' + jid)).json();
+    $('#log').innerHTML = j.log.map(riga => {
+      const c = riga.startsWith('ATTENZIONE') ? ' class="att"' : '';
+      return '<span' + c + '>' + riga.replace(/[<>&]/g, m => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[m])) + '</span>';
+    }).join('\n');
+    $('#log').scrollTop = $('#log').scrollHeight;
+    if (j.stato !== 'in corso') {
+      clearInterval(sondaggio);
+      bottone.disabled = false;
+      finisci(j, j.errore, jid);
+    }
+  }, 900);
+}
+
+function finisci(j, errore, jid) {
+  if (errore) {
+    $('#esitoTitolo').textContent = 'Non ha funzionato';
+    $('#log').innerHTML += '\n<span class="err">' + errore + '</span>';
+    return;
+  }
+  $('#esitoTitolo').textContent = 'Pronto';
+  $('#file').innerHTML = (j.file || [])
+    .map(f => '<a href="/api/file/' + jid + '/' + encodeURIComponent(f) + '" download>' + f + '</a>')
+    .join('');
+}
+
+$('#goVerbale').onclick = e => {
+  if (!audioCaricato && !$('#vTesto').value.trim()) {
+    alert('Serve la registrazione oppure gli appunti.');
+    return;
+  }
+  avvia('/api/verbale', {
+    azienda: $('#vAzienda').value, data: $('#vData').value,
+    presenti: $('#vPresenti').value, testo: $('#vTesto').value, audio: audioCaricato
+  }, 'Verbale in preparazione', e.target);
+};
+
+$('#goDossier').onclick = e => {
+  if (!$('#dUrl').value.trim() && !$('#dMateriale').value.trim()) {
+    alert('Serve il sito oppure il materiale incollato.');
+    return;
+  }
+  avvia('/api/dossier', {
+    nome: $('#dNome').value, url: $('#dUrl').value, materiale: $('#dMateriale').value
+  }, 'Dossier in preparazione', e.target);
+};
+
+$('#goStampabili').onclick = e => avvia('/api/stampabili', {}, 'Generazione fogli', e.target);
+</script>
+</body>
+</html>

@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Move 37 — applicazione locale
+move37/.venv/
+move37/app/lavori/
+move37/out/
+move37/stampabili/
